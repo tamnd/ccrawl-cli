@@ -241,9 +241,21 @@ make vet     # go vet
 make build   # build ./bin/ccrawl
 ```
 
-The code is two packages: `ccrawl/` is the library (clients, parsers,
-extractors), and `cli/` is the command tree built on Cobra. The library has no
-dependency on the CLI, so it is usable on its own.
+The code is layered. `cli/` is the command tree built on Cobra. `ccrawl/` is
+the library it sits on: the collection list, the CDX index, the columnar index,
+downloads, ranks, and CC-NEWS. The archive format parsers live in their own
+small packages under `pkg/`, each importable on its own:
+
+| Package | What it reads |
+| --- | --- |
+| `pkg/warc` | WARC records, plus the HTTP header/body split helpers |
+| `pkg/wat` | WAT metadata: status, title, meta tags, and links |
+| `pkg/wet` | WET extracted plain text |
+
+`pkg/wat` and `pkg/wet` build on `pkg/warc`; none of them depend on `ccrawl/`
+or the CLI, so you can pull just the parser you need into your own program. The
+matching `ccrawl.IterateWARC`, `ccrawl.WARCRecord`, and friends stay as thin
+aliases over these packages.
 
 ## License
 
