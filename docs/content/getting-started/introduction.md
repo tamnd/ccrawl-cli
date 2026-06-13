@@ -31,10 +31,9 @@ index) and the **web graph** with host and domain ranks.
 
 ## The load-bearing trick
 
-A WARC file is not one big gzip stream. It is a sequence of independently
-compressed gzip members, one per record. That means a single record can be
-fetched and decompressed on its own with an HTTP byte-range request, without
-downloading the file it lives in.
+Each record in a WARC file is its own gzip member, compressed independently of
+the rest. That means a single record can be fetched and decompressed on its own
+with an HTTP byte-range request, without downloading the file it lives in.
 
 This is the whole reason ccrawl feels instant. When you run `ccrawl get
 example.com --text`, it looks the URL up in the index, reads the one record at
@@ -42,12 +41,13 @@ its offset and length, decompresses just that member, and extracts the text.
 You get the page Common Crawl saw without touching the other 100,000 records in
 that WARC.
 
-## What ccrawl is not
+## Scope
 
-ccrawl is a read-only client. It does not crawl the web, build or serve an
-index, or run any part of the Common Crawl pipeline. It reads the public data
-and shapes it for you. That narrow scope is what keeps it a single small binary
-with no database, no daemon, and no setup.
+ccrawl is a read-only client over data Common Crawl already publishes. It reads
+that public data and shapes it for you, and stops there: no crawling the web, no
+building or serving an index, no running any part of the Common Crawl pipeline.
+That narrow scope is what keeps it a single small binary with no database, no
+daemon, and no setup.
 
 Next: [install it](/getting-started/installation/), then take the
 [quick start](/getting-started/quick-start/).
