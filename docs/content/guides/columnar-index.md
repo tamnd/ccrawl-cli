@@ -28,8 +28,8 @@ DuckDB skip Parquet shards it does not need.
 ## Running it: DuckDB or print
 
 If a `duckdb` binary is on your `PATH`, `ccrawl table` runs the query and
-streams the result. If it is not, ccrawl prints the SQL so you can run it
-wherever you like. You can also ask for the SQL explicitly:
+streams the result. With no `duckdb` on your `PATH`, ccrawl prints the SQL so
+you can run it wherever you like. You can also ask for the SQL explicitly:
 
 ```bash
 ccrawl table sql --tld gov --mime application/pdf --print
