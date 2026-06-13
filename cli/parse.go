@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -58,6 +59,28 @@ Examples:
 	return cmd
 }
 
+// errLimit is returned by a limited emitter once the requested number of rows
+// has been written, to stop the record iterator early.
+var errLimit = errors.New("limit reached")
+
+// limitedEmit wraps app.Out.Emit and honours the global -n limit: once that many
+// rows have been emitted it returns errLimit so iteration stops. A limit of 0
+// means unlimited.
+func limitedEmit(app *App) func(Row) error {
+	n := app.Limit
+	emitted := 0
+	return func(row Row) error {
+		if err := app.Out.Emit(row); err != nil {
+			return err
+		}
+		emitted++
+		if n > 0 && emitted >= n {
+			return errLimit
+		}
+		return nil
+	}
+}
+
 func runParse(app *App, c *cobra.Command, path string, pf *parseFlags) error {
 	r, name, closeFn, err := openInput(path)
 	if err != nil {
@@ -83,6 +106,7 @@ func runParse(app *App, c *cobra.Command, path string, pf *parseFlags) error {
 
 func parseWARC(app *App, r io.Reader, pf *parseFlags) error {
 	count := 0
+	emit := limitedEmit(app)
 	err := ccrawl.IterateWARC(r, func(rec ccrawl.WARCRecord) error {
 		if !warcMatches(rec, pf) {
 			return nil
@@ -92,22 +116,22 @@ func parseWARC(app *App, r io.Reader, pf *parseFlags) error {
 		case pf.links && rec.Header.Type == "response":
 			body := ccrawl.HTTPBody(rec.Block)
 			for _, l := range ccrawl.ExtractLinks(rec.Header.TargetURI, body) {
-				if err := app.Out.Emit(linkRow(l)); err != nil {
+				if err := emit(linkRow(l)); err != nil {
 					return err
 				}
 			}
+			return nil
 		case pf.text && rec.Header.Type == "response":
 			text := ccrawl.ExtractText(ccrawl.HTTPBody(rec.Block))
-			return app.Out.Emit(textRow(rec.Header.TargetURI, "", text))
+			return emit(textRow(rec.Header.TargetURI, "", text))
 		case pf.markdown && rec.Header.Type == "response":
 			md, _ := ccrawl.ExtractMarkdown(ccrawl.HTTPBody(rec.Block))
-			return app.Out.Emit(textRow(rec.Header.TargetURI, "", md))
+			return emit(textRow(rec.Header.TargetURI, "", md))
 		default:
-			return app.Out.Emit(warcRow(rec))
+			return emit(warcRow(rec))
 		}
-		return nil
 	})
-	if err != nil {
+	if err != nil && err != errLimit {
 		return err
 	}
 	if err := app.Out.Flush(); err != nil {
@@ -120,27 +144,29 @@ func parseWARC(app *App, r io.Reader, pf *parseFlags) error {
 }
 
 func parseWAT(app *App, r io.Reader, id string, pf *parseFlags) error {
+	emit := limitedEmit(app)
 	err := ccrawl.IterateWAT(r, id, func(w ccrawl.WATRecord) error {
 		if pf.urlRe != "" && !strings.Contains(w.URL, pf.urlRe) {
 			return nil
 		}
 		if pf.links {
 			for _, l := range w.Links {
-				if err := app.Out.Emit(linkRow(l)); err != nil {
+				if err := emit(linkRow(l)); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		return app.Out.Emit(watRow(w))
+		return emit(watRow(w))
 	})
-	if err != nil {
+	if err != nil && err != errLimit {
 		return err
 	}
 	return app.Out.Flush()
 }
 
 func parseWET(app *App, r io.Reader, id string, pf *parseFlags) error {
+	emit := limitedEmit(app)
 	err := ccrawl.IterateWET(r, id, func(w ccrawl.WETRecord) error {
 		if pf.urlRe != "" && !strings.Contains(w.URL, pf.urlRe) {
 			return nil
@@ -148,9 +174,9 @@ func parseWET(app *App, r io.Reader, id string, pf *parseFlags) error {
 		if pf.lang != "" && !strings.Contains(w.ContentLanguage, pf.lang) {
 			return nil
 		}
-		return app.Out.Emit(wetRow(w))
+		return emit(wetRow(w))
 	})
-	if err != nil {
+	if err != nil && err != errLimit {
 		return err
 	}
 	return app.Out.Flush()
