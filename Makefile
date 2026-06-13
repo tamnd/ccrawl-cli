@@ -1,4 +1,6 @@
-BINARY  := ccrawl
+# Build into bin/ (gitignored) so the binary never collides with the ccrawl/
+# source package at the repo root.
+BINARY  := bin/ccrawl
 PKG     := ./cmd/ccrawl
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -11,6 +13,7 @@ LDFLAGS := -s -w \
 .PHONY: build install test vet lint fmt clean run
 
 build:
+	@mkdir -p $(dir $(BINARY))
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
 
 install:
@@ -26,8 +29,7 @@ fmt:
 	gofmt -w -s .
 
 clean:
-	rm -f $(BINARY)
-	rm -rf dist
+	rm -rf bin dist
 
 run: build
 	./$(BINARY) $(ARGS)

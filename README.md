@@ -38,7 +38,7 @@ Build from source:
 ```sh
 git clone https://github.com/tamnd/ccrawl-cli
 cd ccrawl-cli
-make build      # produces ./ccrawl
+make build      # produces ./bin/ccrawl
 ```
 
 ## Quick start
@@ -180,8 +180,10 @@ ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --text
 
 ## Configuration
 
-ccrawl stores its cache and downloads under XDG directories by default. See the
-resolved paths and settings any time:
+ccrawl keeps all of its state under one tree, `~/data/ccrawl` by default: the
+cache, downloaded archives, converted Parquet, and the local DuckDB file. Point
+it somewhere else with `CCRAWL_DATA_DIR`. See the resolved paths and settings any
+time:
 
 ```sh
 ccrawl config show
@@ -204,7 +206,7 @@ Useful global flags (all have sensible defaults):
 ```sh
 make test    # run the test suite
 make vet     # go vet
-make build   # build ./ccrawl
+make build   # build ./bin/ccrawl
 ```
 
 The code is two packages: `ccrawl/` is the library (clients, parsers,
