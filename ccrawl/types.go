@@ -4,7 +4,13 @@
 // ccrawl command line tool but is usable on its own.
 package ccrawl
 
-import "time"
+import (
+	"time"
+
+	"github.com/tamnd/ccrawl-cli/pkg/warc"
+	"github.com/tamnd/ccrawl-cli/pkg/wat"
+	"github.com/tamnd/ccrawl-cli/pkg/wet"
+)
 
 // Crawl is one Common Crawl collection as published in collinfo.json.
 type Crawl struct {
@@ -59,81 +65,28 @@ func (r CDXRecord) Location() Location {
 	return Location{Filename: r.Filename, Offset: off, Length: length, URL: r.URL}
 }
 
+// The WARC, WAT, and WET record types live in their own importable packages
+// under pkg/. These aliases keep the long-standing ccrawl.* names working for
+// existing callers while the canonical definitions sit with their parsers.
+
 // WARCHeader holds parsed WARC record headers.
-type WARCHeader struct {
-	Type          string // warcinfo|request|response|metadata|revisit|conversion|resource
-	Date          time.Time
-	RecordID      string
-	TargetURI     string
-	IPAddress     string
-	ConcurrentTo  string
-	WarcinfoID    string
-	BlockDigest   string
-	PayloadDigest string
-	RefersTo      string
-	Truncated     string
-	ContentType   string
-	ContentLength int64
-	Language      string // WARC-Identified-Content-Language (WET records)
-	// Response records only: extracted HTTP fields.
-	HTTPStatus int
-	HTTPMIME   string
-	// Source location for range-request retrieval.
-	WARCFilename string
-	WARCOffset   int64
-	WARCLength   int64
-}
+type WARCHeader = warc.Header
 
 // WARCRecord is a parsed WARC record: its header and the raw block bytes. For a
 // response record the block is the full HTTP message (status line, headers, body).
-type WARCRecord struct {
-	Header WARCHeader
-	Block  []byte
-}
+type WARCRecord = warc.Record
 
 // WATRecord is metadata extracted by Common Crawl from a single page.
-type WATRecord struct {
-	RecordID    string
-	CrawlID     string
-	URL         string
-	Date        time.Time
-	HTTPStatus  int
-	ContentType string
-	Title       string
-	Links       []WATLink
-	LinksCount  int
-	Metas       []WATMeta
-	WARCFile    string
-	WARCOffset  int64
-	WARCLength  int64
-}
+type WATRecord = wat.Record
 
 // WATLink is a hyperlink extracted from page HTML.
-type WATLink struct {
-	Path  string `json:"path"`
-	URL   string `json:"url"`
-	Text  string `json:"text,omitempty"`
-	Title string `json:"title,omitempty"`
-	Alt   string `json:"alt,omitempty"`
-}
+type WATLink = wat.Link
 
 // WATMeta is a <meta> tag extracted from page HTML.
-type WATMeta struct {
-	Name     string `json:"name,omitempty"`
-	Property string `json:"property,omitempty"`
-	Content  string `json:"content,omitempty"`
-	Charset  string `json:"charset,omitempty"`
-}
+type WATMeta = wat.Meta
 
 // WETRecord is extracted plain text for one page.
-type WETRecord struct {
-	RecordID        string
-	CrawlID         string
-	URL             string
-	Date            time.Time
-	ContentLanguage string
-	Text            string
-}
+type WETRecord = wet.Record
 
 // NewsFile describes one CC-NEWS WARC file.
 type NewsFile struct {

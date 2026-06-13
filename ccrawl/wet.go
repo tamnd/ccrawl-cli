@@ -2,27 +2,12 @@ package ccrawl
 
 import (
 	"io"
-	"strings"
+
+	"github.com/tamnd/ccrawl-cli/pkg/wet"
 )
 
 // IterateWET reads a WET file (WARC conversion records holding plain text) and
-// calls fn for each record.
+// calls fn for each record. The parser lives in pkg/wet.
 func IterateWET(r io.Reader, crawlID string, fn func(WETRecord) error) error {
-	return IterateWARC(r, func(rec WARCRecord) error {
-		if rec.Header.Type != "conversion" {
-			return nil
-		}
-		text := strings.TrimSpace(string(rec.Block))
-		if rec.Header.TargetURI == "" || text == "" {
-			return nil
-		}
-		return fn(WETRecord{
-			RecordID:        rec.Header.RecordID,
-			CrawlID:         crawlID,
-			URL:             rec.Header.TargetURI,
-			Date:            rec.Header.Date,
-			ContentLanguage: rec.Header.Language,
-			Text:            text,
-		})
-	})
+	return wet.Iterate(r, crawlID, fn)
 }

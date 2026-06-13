@@ -1,4 +1,4 @@
-package ccrawl
+package warc
 
 import (
 	"bytes"
@@ -8,16 +8,15 @@ import (
 	kgzip "github.com/klauspost/compress/gzip"
 )
 
-// warcMember frames one WARC record and returns it as its own gzip member, the
-// way Common Crawl stores records (one gzip member per record).
-func warcMember(t *testing.T, recType, uri, payload string) []byte {
+// member frames one WARC record and returns it as its own gzip member, the way
+// Common Crawl stores records (one gzip member per record).
+func member(t *testing.T, recType, uri, payload string) []byte {
 	t.Helper()
-	block := payload
 	rec := fmt.Sprintf("WARC/1.0\r\n"+
 		"WARC-Type: %s\r\n"+
 		"WARC-Target-URI: %s\r\n"+
 		"Content-Length: %d\r\n"+
-		"\r\n%s\r\n\r\n", recType, uri, len(block), block)
+		"\r\n%s\r\n\r\n", recType, uri, len(payload), payload)
 
 	var buf bytes.Buffer
 	zw := kgzip.NewWriter(&buf)
@@ -30,14 +29,14 @@ func warcMember(t *testing.T, recType, uri, payload string) []byte {
 	return buf.Bytes()
 }
 
-func TestIterateWARCMultiMember(t *testing.T) {
+func TestIterateMultiMember(t *testing.T) {
 	var file bytes.Buffer
-	file.Write(warcMember(t, "response", "https://a.example/", "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<title>A</title>"))
-	file.Write(warcMember(t, "response", "https://b.example/", "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nmissing"))
-	file.Write(warcMember(t, "metadata", "https://c.example/", "k: v"))
+	file.Write(member(t, "response", "https://a.example/", "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<title>A</title>"))
+	file.Write(member(t, "response", "https://b.example/", "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nmissing"))
+	file.Write(member(t, "metadata", "https://c.example/", "k: v"))
 
-	var got []WARCRecord
-	if err := IterateWARC(bytes.NewReader(file.Bytes()), func(r WARCRecord) error {
+	var got []Record
+	if err := Iterate(bytes.NewReader(file.Bytes()), func(r Record) error {
 		got = append(got, r)
 		return nil
 	}); err != nil {
@@ -67,5 +66,14 @@ func TestHTTPBodyAndHeaders(t *testing.T) {
 	}
 	if !bytes.Contains(HTTPHeaders(block), []byte("Content-Type")) {
 		t.Errorf("HTTPHeaders missing content type")
+	}
+}
+
+func TestTrimURI(t *testing.T) {
+	if got := TrimURI("  <https://x.example/>  "); got != "https://x.example/" {
+		t.Errorf("TrimURI = %q", got)
+	}
+	if got := TrimURI("https://y.example/"); got != "https://y.example/" {
+		t.Errorf("TrimURI bare = %q", got)
 	}
 }
