@@ -1,0 +1,11 @@
+/ccrawl
+/dist/
+/bin/
+*.out
+*.test
+*.parquet
+*.duckdb
+*.warc.gz
+*.wat.gz
+*.wet.gz
+.DS_Store
