@@ -1,0 +1,10 @@
+title       = "ccrawl"
+baseURL     = "https://ccrawl-cli.tamnd.com/"
+description = "A fast, friendly command line for Common Crawl. One binary that finds pages in the URL index, fetches the exact bytes Common Crawl saw, streams WARC/WAT/WET archives, queries the columnar Parquet index, and builds datasets."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/ccrawl-cli"

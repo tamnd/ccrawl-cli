@@ -15,6 +15,8 @@ This domain is for use in documentation examples without needing permission.
 Learn more
 ```
 
+Full documentation: [ccrawl-cli.tamnd.com](https://ccrawl-cli.tamnd.com).
+
 ## Why
 
 Working with Common Crawl usually means stitching together the CDX API, S3
