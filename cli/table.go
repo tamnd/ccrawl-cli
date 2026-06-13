@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -31,8 +31,9 @@ func (tf *tableFlags) query(crawl string) ccrawl.ColumnarQuery {
 	}
 }
 
-func addTableFlags(cmd *cobra.Command, tf *tableFlags) {
-	f := cmd.Flags()
+// bind registers the columnar filter flags shared by every table subcommand. It
+// is a method so a command can wire it as kit.Command.Flags without a closure.
+func (tf *tableFlags) bind(f *kit.FlagSet) {
 	f.StringVar(&tf.domain, "domain", "", "url_host_registered_domain")
 	f.StringVar(&tf.host, "host", "", "url_host_name")
 	f.StringVar(&tf.tld, "tld", "", "url_host_tld (e.g. gov)")
@@ -45,8 +46,8 @@ func addTableFlags(cmd *cobra.Command, tf *tableFlags) {
 	f.BoolVar(&tf.print, "print", false, "print the SQL and exit")
 }
 
-func newTableCmd() *cobra.Command {
-	cmd := &cobra.Command{
+func newTableCmd() kit.Command {
+	return kit.Command{
 		Use:     "table",
 		Aliases: []string{"columnar", "athena"},
 		Short:   "Query the columnar Parquet index",
@@ -63,203 +64,172 @@ Examples:
   ccrawl table locations --domain example.com -o jsonl | ccrawl fetch -
   ccrawl table sql --tld gov --mime application/pdf --print
   ccrawl table query "SELECT url FROM ccindex LIMIT 10"`,
-	}
-	cmd.AddCommand(
-		newTableURLsCmd(),
-		newTableLocationsCmd(),
-		newTableCountCmd(),
-		newTableBreakdownCmd("langs", "content_languages"),
-		newTableBreakdownCmd("mimes", "content_mime_detected"),
-		newTableSQLCmd(),
-		newTableQueryCmd(),
-		newTableSchemaCmd(),
-	)
-	return cmd
-}
-
-func newTableURLsCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "urls",
-		Short: "List matching URLs from the columnar index",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Select = []string{"url", "fetch_status", "content_mime_detected", "content_languages"}
-			q.Limit = app.Limit
-			return runColumnar(app, c, q, tf, func(row map[string]any) error {
-				return app.Out.Emit(mapRow(row, "url", "fetch_status", "content_mime_detected", "content_languages"))
-			})
+		Sub: []kit.Command{
+			newTableURLsCmd(),
+			newTableLocationsCmd(),
+			newTableCountCmd(),
+			newTableBreakdownCmd("langs", "content_languages"),
+			newTableBreakdownCmd("mimes", "content_mime_detected"),
+			newTableSQLCmd(),
+			newTableQueryCmd(),
+			newTableSchemaCmd(),
 		},
 	}
-	addTableFlags(c, tf)
+}
+
+// tableCmd is a table subcommand whose run logic is selected by use. The shared
+// columnar filter flags live in tf; breakdown carries the column it groups by.
+type tableCmd struct {
+	use      string
+	tf       tableFlags
+	groupCol string
+}
+
+func newTableURLsCmd() kit.Command      { return (&tableCmd{use: "urls"}).command() }
+func newTableLocationsCmd() kit.Command { return (&tableCmd{use: "locations"}).command() }
+func newTableCountCmd() kit.Command     { return (&tableCmd{use: "count"}).command() }
+func newTableSQLCmd() kit.Command       { return (&tableCmd{use: "sql"}).command() }
+func newTableQueryCmd() kit.Command     { return (&tableCmd{use: "query"}).command() }
+func newTableSchemaCmd() kit.Command    { return (&tableCmd{use: "schema"}).command() }
+
+func newTableBreakdownCmd(name, col string) kit.Command {
+	return (&tableCmd{use: name, groupCol: col}).command()
+}
+
+func (t *tableCmd) command() kit.Command {
+	c := kit.Command{Use: t.use, Short: t.short(), Flags: t.tf.bind, Run: t.run}
+	switch t.use {
+	case "locations":
+		c.Long = "Output is the location JSONL that ccrawl fetch reads on stdin."
+	case "query":
+		c.Use = "query <sql>"
+		c.Long = "The token 'ccindex' is replaced with the read_parquet(...) source for the crawl."
+		c.Args = kit.ExactArgs(1)
+	}
 	return c
 }
 
-func newTableLocationsCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "locations",
-		Short: "Emit filename/offset/length records for matching captures",
-		Long:  "Output is the location JSONL that ccrawl fetch reads on stdin.",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Select = ccrawl.LocationColumns
-			q.Limit = app.Limit
-			return runColumnar(app, c, q, tf, func(row map[string]any) error {
-				loc := ccrawl.Location{
-					Filename: str(row["warc_filename"]),
-					Offset:   toInt64(row["warc_record_offset"]),
-					Length:   toInt64(row["warc_record_length"]),
-					URL:      str(row["url"]),
-				}
-				return app.Out.Emit(Row{
-					Cols:  []string{"filename", "offset", "length", "url"},
-					Vals:  []string{loc.Filename, itoa64(loc.Offset), itoa64(loc.Length), loc.URL},
-					Value: loc,
-				})
-			})
-		},
+func (t *tableCmd) short() string {
+	switch t.use {
+	case "urls":
+		return "List matching URLs from the columnar index"
+	case "locations":
+		return "Emit filename/offset/length records for matching captures"
+	case "count":
+		return "Count matching captures"
+	case "sql":
+		return "Build SQL from the filter flags (and print or run it)"
+	case "query":
+		return "Run raw SQL against the columnar index (ccindex view)"
+	case "schema":
+		return "Show the columns of the columnar index for a crawl"
+	default:
+		return "Breakdown of captures by " + t.groupCol
 	}
-	addTableFlags(c, tf)
-	return c
 }
 
-func newTableCountCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "count",
-		Short: "Count matching captures",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Select = []string{"count(*) AS n"}
-			return runColumnar(app, c, q, tf, func(row map[string]any) error {
-				return app.Out.Emit(Row{Cols: []string{"count"}, Vals: []string{str(row["n"])}, Value: row})
-			})
-		},
+func (t *tableCmd) run(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	id, err := app.Crawl(ctx)
+	if err != nil {
+		return err
 	}
-	addTableFlags(c, tf)
-	return c
+	switch t.use {
+	case "urls":
+		return t.runURLs(ctx, app, id)
+	case "locations":
+		return t.runLocations(ctx, app, id)
+	case "count":
+		return t.runCount(ctx, app, id)
+	case "sql":
+		q := t.tf.query(id)
+		q.Limit = app.Limit
+		_, _ = fmt.Fprintln(cmdOut, q.SQL(app.Cfg.Source))
+		return nil
+	case "query":
+		return t.runQuery(ctx, app, id, args[0])
+	case "schema":
+		return t.runSchema(ctx, app, id)
+	default:
+		return t.runBreakdown(ctx, app, id)
+	}
 }
 
-func newTableBreakdownCmd(name, col string) *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   name,
-		Short: "Breakdown of captures by " + col,
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Select = []string{col, "count(*) AS n"}
-			sql := q.SQL(app.Cfg.Source) + "\nGROUP BY " + col + "\nORDER BY n DESC"
-			if app.Limit > 0 {
-				sql += fmt.Sprintf("\nLIMIT %d", app.Limit)
-			}
-			return runColumnarSQL(app, c, sql, tf, func(row map[string]any) error {
-				return app.Out.Emit(Row{Cols: []string{col, "count"}, Vals: []string{str(row[col]), str(row["n"])}, Value: row})
-			})
-		},
-	}
-	addTableFlags(c, tf)
-	return c
+func (t *tableCmd) runURLs(ctx context.Context, app *App, id string) error {
+	q := t.tf.query(id)
+	q.Select = []string{"url", "fetch_status", "content_mime_detected", "content_languages"}
+	q.Limit = app.Limit
+	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
+		return app.Out.Emit(mapRow(row, "url", "fetch_status", "content_mime_detected", "content_languages"))
+	})
 }
 
-func newTableSQLCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "sql",
-		Short: "Build SQL from the filter flags (and print or run it)",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Limit = app.Limit
-			_, _ = fmt.Fprintln(cmdOut, q.SQL(app.Cfg.Source))
-			return nil
-		},
-	}
-	addTableFlags(c, tf)
-	return c
+func (t *tableCmd) runLocations(ctx context.Context, app *App, id string) error {
+	q := t.tf.query(id)
+	q.Select = ccrawl.LocationColumns
+	q.Limit = app.Limit
+	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
+		loc := ccrawl.Location{
+			Filename: str(row["warc_filename"]),
+			Offset:   toInt64(row["warc_record_offset"]),
+			Length:   toInt64(row["warc_record_length"]),
+			URL:      str(row["url"]),
+		}
+		return app.Out.Emit(Row{
+			Cols:  []string{"filename", "offset", "length", "url"},
+			Vals:  []string{loc.Filename, itoa64(loc.Offset), itoa64(loc.Length), loc.URL},
+			Value: loc,
+		})
+	})
 }
 
-func newTableQueryCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "query <sql>",
-		Short: "Run raw SQL against the columnar index (ccindex view)",
-		Long:  "The token 'ccindex' is replaced with the read_parquet(...) source for the crawl.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			src := ccrawl.ColumnarSource(id, tf.subset, app.Cfg.Source)
-			sql := replaceCCIndex(args[0], src)
-			return runColumnarSQL(app, c, sql, tf, func(row map[string]any) error {
-				return app.Out.Emit(genericRow(row))
-			})
-		},
-	}
-	addTableFlags(c, tf)
-	return c
+func (t *tableCmd) runCount(ctx context.Context, app *App, id string) error {
+	q := t.tf.query(id)
+	q.Select = []string{"count(*) AS n"}
+	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
+		return app.Out.Emit(Row{Cols: []string{"count"}, Vals: []string{str(row["n"])}, Value: row})
+	})
 }
 
-func newTableSchemaCmd() *cobra.Command {
-	tf := &tableFlags{}
-	c := &cobra.Command{
-		Use:   "schema",
-		Short: "Show the columns of the columnar index for a crawl",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			src := ccrawl.ColumnarSource(id, tf.subset, app.Cfg.Source)
-			// Wrap the DESCRIBE in a SELECT so it always renders as a normal result
-			// set. Older duckdb (1.5.1) prints a bare DESCRIBE with the box renderer
-			// even in -json mode, which yields no JSON rows; the subquery makes the
-			// output consistent across duckdb versions.
-			sql := fmt.Sprintf("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=1) LIMIT 1)", src)
-			return runColumnarSQL(app, c, sql, tf, func(row map[string]any) error {
-				return app.Out.Emit(Row{
-					Cols:  []string{"column", "type"},
-					Vals:  []string{str(row["column_name"]), str(row["column_type"])},
-					Value: row,
-				})
-			})
-		},
+func (t *tableCmd) runBreakdown(ctx context.Context, app *App, id string) error {
+	col := t.groupCol
+	q := t.tf.query(id)
+	q.Select = []string{col, "count(*) AS n"}
+	sql := q.SQL(app.Cfg.Source) + "\nGROUP BY " + col + "\nORDER BY n DESC"
+	if app.Limit > 0 {
+		sql += fmt.Sprintf("\nLIMIT %d", app.Limit)
 	}
-	addTableFlags(c, tf)
-	return c
+	return runColumnarSQL(ctx, app, sql, &t.tf, func(row map[string]any) error {
+		return app.Out.Emit(Row{Cols: []string{col, "count"}, Vals: []string{str(row[col]), str(row["n"])}, Value: row})
+	})
+}
+
+func (t *tableCmd) runQuery(ctx context.Context, app *App, id, sql string) error {
+	src := ccrawl.ColumnarSource(id, t.tf.subset, app.Cfg.Source)
+	return runColumnarSQL(ctx, app, replaceCCIndex(sql, src), &t.tf, func(row map[string]any) error {
+		return app.Out.Emit(genericRow(row))
+	})
+}
+
+func (t *tableCmd) runSchema(ctx context.Context, app *App, id string) error {
+	src := ccrawl.ColumnarSource(id, t.tf.subset, app.Cfg.Source)
+	// Wrap the DESCRIBE in a SELECT so it always renders as a normal result set.
+	// Older duckdb (1.5.1) prints a bare DESCRIBE with the box renderer even in
+	// -json mode, which yields no JSON rows; the subquery makes the output
+	// consistent across duckdb versions.
+	sql := fmt.Sprintf("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=1) LIMIT 1)", src)
+	return runColumnarSQL(ctx, app, sql, &t.tf, func(row map[string]any) error {
+		return app.Out.Emit(Row{
+			Cols:  []string{"column", "type"},
+			Vals:  []string{str(row["column_name"]), str(row["column_type"])},
+			Value: row,
+		})
+	})
 }
 
 // runColumnar renders the SQL from q and dispatches to the engine.
-func runColumnar(app *App, c *cobra.Command, q ccrawl.ColumnarQuery, tf *tableFlags, emit func(map[string]any) error) error {
-	return runColumnarSQL(app, c, q.SQL(app.Cfg.Source), tf, emit)
+func runColumnar(ctx context.Context, app *App, q ccrawl.ColumnarQuery, tf *tableFlags, emit func(map[string]any) error) error {
+	return runColumnarSQL(ctx, app, q.SQL(app.Cfg.Source), tf, emit)
 }
 
 // resolveGlobForDuckDB rewrites the quoted `*.parquet` glob in sql into a
@@ -282,7 +252,7 @@ func resolveGlobForDuckDB(ctx context.Context, app *App, tf *tableFlags, sql str
 	return strings.ReplaceAll(sql, glob, ccrawl.ParquetListLiteral(urls)), nil
 }
 
-func runColumnarSQL(app *App, c *cobra.Command, sql string, tf *tableFlags, emit func(map[string]any) error) error {
+func runColumnarSQL(ctx context.Context, app *App, sql string, tf *tableFlags, emit func(map[string]any) error) error {
 	engine := tf.engine
 	if tf.print || engine == "print" {
 		_, _ = fmt.Fprintln(cmdOut, sql)
@@ -293,16 +263,15 @@ func runColumnarSQL(app *App, c *cobra.Command, sql string, tf *tableFlags, emit
 		_, _ = fmt.Fprintln(cmdOut, sql)
 		return nil
 	}
-	// The printed SQL carries the `*.parquet` glob, which Athena and Spark
-	// expand themselves. duckdb cannot list the bucket, so for the duckdb run we
-	// swap the glob for the explicit file list from the crawl's manifest.
-	runSQL, err := resolveGlobForDuckDB(c.Context(), app, tf, sql)
+	// The printed SQL carries the `*.parquet` glob, which Athena and Spark expand
+	// themselves. duckdb cannot list the bucket, so for the duckdb run we swap the
+	// glob for the explicit file list from the crawl's manifest.
+	runSQL, err := resolveGlobForDuckDB(ctx, app, tf, sql)
 	if err != nil {
 		return err
 	}
-	sql = runSQL
 	n := 0
-	if err := ccrawl.RunColumnarDuckDB(c.Context(), sql, func(row map[string]any) error {
+	if err := ccrawl.RunColumnarDuckDB(ctx, runSQL, func(row map[string]any) error {
 		n++
 		return emit(row)
 	}); err != nil {

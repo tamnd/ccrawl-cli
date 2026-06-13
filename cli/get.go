@@ -1,21 +1,26 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newGetCmd() *cobra.Command {
-	var mode contentMode
-	var at string
-	var all bool
-	var outFile string
+// getCmd holds the flags for the get command.
+type getCmd struct {
+	mode    contentMode
+	at      string
+	all     bool
+	outFile string
+}
 
-	cmd := &cobra.Command{
+func newGetCmd() kit.Command {
+	g := &getCmd{}
+	return kit.Command{
 		Use:   "get <url>",
 		Short: "Fetch the content Common Crawl captured for a URL",
 		Long: `Resolve the latest capture of a URL and print what Common Crawl saw.
@@ -31,21 +36,24 @@ Examples:
   ccrawl get example.com --headers       the captured HTTP headers
   ccrawl get example.com --at 2023-06    the capture nearest a date
   ccrawl get example.com --all -o jsonl  every capture across crawls`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			app := appFromCtx(c.Context())
-			return runGet(app, c, args[0], mode, at, all, outFile)
-		},
+		Args:  kit.ExactArgs(1),
+		Flags: g.flags,
+		Run:   g.run,
 	}
-	addContentFlags(cmd, &mode)
-	cmd.Flags().StringVar(&at, "at", "", "pick the capture nearest this date")
-	cmd.Flags().BoolVar(&all, "all", false, "fetch every capture, not just the latest")
-	cmd.Flags().StringVarP(&outFile, "out", "O", "", "write content to a file")
-	return cmd
 }
 
-func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string, all bool, outFile string) (err error) {
-	ctx := c.Context()
+func (g *getCmd) flags(f *kit.FlagSet) {
+	g.mode.bind(f)
+	f.StringVar(&g.at, "at", "", "pick the capture nearest this date")
+	f.BoolVar(&g.all, "all", false, "fetch every capture, not just the latest")
+	f.StringVarP(&g.outFile, "out", "O", "", "write content to a file")
+}
+
+func (g *getCmd) run(ctx context.Context, args []string) error {
+	return runGet(ctx, appFromCtx(ctx), args[0], g.mode, g.at, g.all, g.outFile)
+}
+
+func runGet(ctx context.Context, app *App, url string, mode contentMode, at string, all bool, outFile string) (err error) {
 	crawls, err := app.AllCrawls(ctx)
 	if err != nil {
 		return err
@@ -120,8 +128,7 @@ func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string,
 }
 
 // fetchLatest resolves and fetches the newest WARC record for a URL.
-func fetchLatest(app *App, c *cobra.Command, url string) (ccrawl.WARCRecord, error) {
-	ctx := c.Context()
+func fetchLatest(ctx context.Context, app *App, url string) (ccrawl.WARCRecord, error) {
 	id, err := app.Crawl(ctx)
 	if err != nil {
 		return ccrawl.WARCRecord{}, err

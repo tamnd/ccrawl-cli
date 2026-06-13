@@ -1,14 +1,13 @@
 // Package cli builds the ccrawl command tree on top of the ccrawl library and
 // the any-cli/kit framework. The record-stream commands are kit operations
 // (declared once, exposed as CLI, HTTP, and MCP); the byte-fetch, columnar, and
-// interactive commands are escape-hatch cobra commands that share the same run
-// state through the context.
+// interactive commands are escape-hatch kit.Command commands that share the same
+// run state through the context.
 package cli
 
 import (
 	"context"
 
-	"github.com/spf13/pflag"
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
@@ -21,12 +20,20 @@ var (
 	Date    = "unknown"
 )
 
+// builder wires the ccrawl globals and defaults into a kit.App. Holding them on
+// a struct lets the WithDefaults/GlobalFlags/SetClient hooks be named methods
+// rather than closures, and gives the client factory access to the resolved
+// ccrawl defaults and the live global-flag values.
+type builder struct {
+	dom *domainGlobals
+	def ccrawl.Config
+}
+
 // NewApp assembles the kit application: identity, the ccrawl-specific global
 // flags, the client factory that builds the shared engine, the record-stream
 // operations, and the escape-hatch commands.
 func NewApp() *kit.App {
-	dom := &domainGlobals{}
-	def := ccrawl.DefaultConfig()
+	b := &builder{dom: &domainGlobals{}, def: ccrawl.DefaultConfig()}
 
 	app := kit.New(kit.Identity{
 		Binary:  "ccrawl",
@@ -45,35 +52,43 @@ Quick start:
   ccrawl table urls --tld gov -o url   bulk URLs from the columnar index`,
 		Site: "https://commoncrawl.org",
 		Repo: "https://github.com/tamnd/ccrawl-cli",
-	}, kit.WithDefaults(func(c *kit.Config) {
-		// Seed the framework baseline from the ccrawl defaults so an unset
-		// --rate/--retries/--timeout/--data-dir keeps ccrawl's own values.
-		c.DataDir = def.DataDir
-		c.CacheDir = def.CacheDir
-		c.Rate = def.Delay
-		c.Retries = def.Retries
-		c.Timeout = def.Timeout
-		c.Workers = def.Workers
-		c.UserAgent = def.UserAgent
-	}))
+	}, kit.WithDefaults(b.defaults))
 
-	// ccrawl-specific persistent flags, on top of the kit framework globals.
-	app.GlobalFlags(func(fs *pflag.FlagSet) {
-		fs.StringVarP(&dom.crawl, "crawl", "c", "latest", "crawl ID, year, or 'latest'/'all'")
-		fs.StringVar(&dom.source, "source", "https", "bulk data source: https|s3")
-		fs.IntVarP(&dom.workers, "workers", "j", def.Workers, "concurrency")
-		fs.BoolVar(&dom.library, "library", false, "read and write under the structured dataset library")
-		fs.StringVar(&dom.libraryDir, "library-dir", ccrawl.LibraryDir(), "root of the dataset library")
-		fs.BoolVarP(&dom.yes, "yes", "y", false, "assume yes to prompts")
-	})
-
-	app.SetClient(func(_ context.Context, c kit.Config) (any, error) {
-		return buildApp(c, dom), nil
-	})
+	app.GlobalFlags(b.globals)
+	app.SetClient(b.client)
 
 	registerOps(app)
 	registerEscapeHatches(app)
 	return app
+}
+
+// defaults seeds the framework baseline from the ccrawl defaults, so an unset
+// --rate/--retries/--timeout/--data-dir keeps ccrawl's own values.
+func (b *builder) defaults(c *kit.Config) {
+	c.DataDir = b.def.DataDir
+	c.CacheDir = b.def.CacheDir
+	c.Rate = b.def.Delay
+	c.Retries = b.def.Retries
+	c.Timeout = b.def.Timeout
+	c.Workers = b.def.Workers
+	c.UserAgent = b.def.UserAgent
+}
+
+// globals registers the ccrawl-specific persistent flags, on top of the kit
+// framework globals.
+func (b *builder) globals(f *kit.FlagSet) {
+	f.StringVarP(&b.dom.crawl, "crawl", "c", "latest", "crawl ID, year, or 'latest'/'all'")
+	f.StringVar(&b.dom.source, "source", "https", "bulk data source: https|s3")
+	f.IntVarP(&b.dom.workers, "workers", "j", b.def.Workers, "concurrency")
+	f.BoolVar(&b.dom.library, "library", false, "read and write under the structured dataset library")
+	f.StringVar(&b.dom.libraryDir, "library-dir", ccrawl.LibraryDir(), "root of the dataset library")
+	f.BoolVarP(&b.dom.yes, "yes", "y", false, "assume yes to prompts")
+}
+
+// client is the factory kit calls once per run to build the shared engine from
+// the resolved config and the ccrawl globals.
+func (b *builder) client(_ context.Context, c kit.Config) (any, error) {
+	return buildApp(c, b.dom), nil
 }
 
 // noResults and usageErr classify the two common command failures so kit maps

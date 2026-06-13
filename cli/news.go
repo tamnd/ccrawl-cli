@@ -1,12 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 	"golang.org/x/sync/errgroup"
 )
@@ -14,72 +15,91 @@ import (
 // newsEscapeHatches returns the news verbs that do not emit a record stream
 // (a bulk download and a streamed scan), so they attach under the news parent
 // next to the list operation. The list verb is a kit operation (registerNewsList).
-func newsEscapeHatches() []*cobra.Command {
-	return []*cobra.Command{newNewsDownloadCmd(), newNewsSearchCmd()}
+func newsEscapeHatches() []kit.Command {
+	return []kit.Command{newNewsDownloadCmd(), newNewsSearchCmd()}
 }
 
-func newNewsDownloadCmd() *cobra.Command {
-	var year, month int
-	var outDir string
-	c := &cobra.Command{
+// newsDownloadCmd holds the flags for the news download command.
+type newsDownloadCmd struct {
+	year, month int
+	outDir      string
+}
+
+func newNewsDownloadCmd() kit.Command {
+	n := &newsDownloadCmd{}
+	return kit.Command{
 		Use:   "download",
 		Short: "Download CC-NEWS WARC files",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			files, err := ccrawl.ListNewsFiles(c.Context(), app.HTTP, year, month)
-			if err != nil {
-				return err
-			}
-			var paths []string
-			for _, f := range files {
-				paths = append(paths, f.Path)
-			}
-			paths = filterPaths(paths, "", 0, app.Limit)
-			if len(paths) == 0 {
-				return noResults("no CC-NEWS files to download")
-			}
-			if outDir == "" {
-				outDir = app.Cfg.RawDir() + "/news"
-			}
-			var done int64
-			progress := func(r ccrawl.DownloadResult) {
-				n := atomic.AddInt64(&done, 1)
-				if r.Err != nil {
-					_, _ = fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
-					return
-				}
-				_, _ = fmt.Fprintf(cmdErr, "[%d/%d] %s (%s)\n", n, len(paths), r.LocalPath, humanBytes(r.Bytes))
-			}
-			return ccrawl.DownloadFiles(c.Context(), app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, true, progress)
-		},
+		Flags: n.flags,
+		Run:   n.run,
 	}
-	c.Flags().IntVar(&year, "year", 0, "year")
-	c.Flags().IntVar(&month, "month", 0, "month")
-	c.Flags().StringVar(&outDir, "out", "", "output directory")
-	return c
 }
 
-func newNewsSearchCmd() *cobra.Command {
-	var year, month int
-	c := &cobra.Command{
+func (n *newsDownloadCmd) flags(f *kit.FlagSet) {
+	f.IntVar(&n.year, "year", 0, "year")
+	f.IntVar(&n.month, "month", 0, "month")
+	f.StringVar(&n.outDir, "out", "", "output directory")
+}
+
+func (n *newsDownloadCmd) run(ctx context.Context, _ []string) error {
+	app := appFromCtx(ctx)
+	files, err := ccrawl.ListNewsFiles(ctx, app.HTTP, n.year, n.month)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	paths = filterPaths(paths, "", 0, app.Limit)
+	if len(paths) == 0 {
+		return noResults("no CC-NEWS files to download")
+	}
+	outDir := n.outDir
+	if outDir == "" {
+		outDir = app.Cfg.RawDir() + "/news"
+	}
+	var done int64
+	progress := func(r ccrawl.DownloadResult) {
+		i := atomic.AddInt64(&done, 1)
+		if r.Err != nil {
+			_, _ = fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", i, len(paths), r.Path, r.Err)
+			return
+		}
+		_, _ = fmt.Fprintf(cmdErr, "[%d/%d] %s (%s)\n", i, len(paths), r.LocalPath, humanBytes(r.Bytes))
+	}
+	return ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, true, progress)
+}
+
+// newsSearchCmd holds the flags for the news search command.
+type newsSearchCmd struct {
+	year, month int
+}
+
+func newNewsSearchCmd() kit.Command {
+	n := &newsSearchCmd{}
+	return kit.Command{
 		Use:   "search <host>",
 		Short: "Scan CC-NEWS WARCs for a host (streamed, no index)",
 		Long: `CC-NEWS has no URL index, so this streams the month's WARC files and keeps
 records whose target host matches. It is slower than an indexed search; --workers
 parallelises across files.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			app := appFromCtx(c.Context())
-			return runNewsSearch(app, c, args[0], year, month)
-		},
+		Args:  kit.ExactArgs(1),
+		Flags: n.flags,
+		Run:   n.run,
 	}
-	c.Flags().IntVar(&year, "year", 0, "year")
-	c.Flags().IntVar(&month, "month", 0, "month")
-	return c
 }
 
-func runNewsSearch(app *App, c *cobra.Command, host string, year, month int) error {
-	ctx := c.Context()
+func (n *newsSearchCmd) flags(f *kit.FlagSet) {
+	f.IntVar(&n.year, "year", 0, "year")
+	f.IntVar(&n.month, "month", 0, "month")
+}
+
+func (n *newsSearchCmd) run(ctx context.Context, args []string) error {
+	return runNewsSearch(ctx, appFromCtx(ctx), args[0], n.year, n.month)
+}
+
+func runNewsSearch(ctx context.Context, app *App, host string, year, month int) error {
 	host = strings.ToLower(host)
 	files, err := ccrawl.ListNewsFiles(ctx, app.HTTP, year, month)
 	if err != nil {

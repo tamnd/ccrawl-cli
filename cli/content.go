@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/render"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
@@ -17,8 +17,9 @@ type contentMode struct {
 	meta     bool
 }
 
-func addContentFlags(cmd *cobra.Command, m *contentMode) {
-	f := cmd.Flags()
+// bind registers the content-selection flags shared by get and fetch. It is a
+// method so a command can wire it as kit.Command.Flags without a closure.
+func (m *contentMode) bind(f *kit.FlagSet) {
 	f.BoolVar(&m.raw, "raw", false, "print the full raw WARC record")
 	f.BoolVar(&m.headers, "headers", false, "print only the captured HTTP response headers")
 	f.BoolVar(&m.body, "body", false, "print the response body (default)")

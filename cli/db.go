@@ -7,12 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newDBCmd() *cobra.Command {
-	cmd := &cobra.Command{
+func newDBCmd() kit.Command {
+	return kit.Command{
 		Use:   "db",
 		Short: "Build and query a local DuckDB database",
 		Long: `Materialise a slice of Common Crawl into a local DuckDB file you can query
@@ -26,14 +26,13 @@ Examples:
   ccrawl db sql "SELECT count(*) FROM captures"   query the local database
   ccrawl db shell                                 open an interactive duckdb session
   ccrawl db path                                  print the database path`,
+		Sub: []kit.Command{
+			newDBLoadCmd(),
+			newDBSQLCmd(),
+			newDBShellCmd(),
+			newDBPathCmd(),
+		},
 	}
-	cmd.AddCommand(
-		newDBLoadCmd(),
-		newDBSQLCmd(),
-		newDBShellCmd(),
-		newDBPathCmd(),
-	)
-	return cmd
 }
 
 func requireDuckDB() error {
@@ -43,100 +42,116 @@ func requireDuckDB() error {
 	return nil
 }
 
-func newDBLoadCmd() *cobra.Command {
-	tf := &tableFlags{}
-	var table string
-	c := &cobra.Command{
+// dbLoadCmd holds the columnar filter flags and the destination table name.
+type dbLoadCmd struct {
+	tf    tableFlags
+	table string
+}
+
+func newDBLoadCmd() kit.Command {
+	d := &dbLoadCmd{}
+	return kit.Command{
 		Use:   "load",
 		Short: "Load matching captures from the columnar index into a local table",
-		RunE: func(c *cobra.Command, _ []string) error {
-			if err := requireDuckDB(); err != nil {
-				return err
-			}
-			app := appFromCtx(c.Context())
-			id, err := app.Crawl(c.Context())
-			if err != nil {
-				return err
-			}
-			q := tf.query(id)
-			q.Select = ccrawl.DefaultColumnarColumns
-			q.Limit = app.Limit
-			if err := os.MkdirAll(filepath.Dir(app.Cfg.DBPath), 0o755); err != nil {
-				return err
-			}
-			stmt := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS\n%s", table, q.SQL(app.Cfg.Source))
-			if app.dryRun {
-				_, _ = fmt.Fprintln(cmdOut, stmt)
-				return nil
-			}
-			// Expand the bucket glob to the explicit file list duckdb can read.
-			stmt, err = resolveGlobForDuckDB(c.Context(), app, tf, stmt)
-			if err != nil {
-				return err
-			}
-			if err := runDuckDBFile(c.Context(), app.Cfg.DBPath, stmt); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmdErr, "loaded table %q into %s\n", table, app.Cfg.DBPath)
-			return runDuckDBStream(c.Context(), app, fmt.Sprintf("SELECT count(*) AS rows FROM %s", table), func(row map[string]any) error {
-				return app.Out.Emit(Row{Cols: []string{"table", "rows"}, Vals: []string{table, str(row["rows"])}, Value: row})
-			})
-		},
+		Write: true,
+		Flags: d.flags,
+		Run:   d.run,
 	}
-	addTableFlags(c, tf)
-	c.Flags().StringVar(&table, "table", "captures", "destination table name")
-	return c
 }
 
-func newDBSQLCmd() *cobra.Command {
-	c := &cobra.Command{
+func (d *dbLoadCmd) flags(f *kit.FlagSet) {
+	d.tf.bind(f)
+	f.StringVar(&d.table, "table", "captures", "destination table name")
+}
+
+func (d *dbLoadCmd) run(ctx context.Context, _ []string) error {
+	if err := requireDuckDB(); err != nil {
+		return err
+	}
+	app := appFromCtx(ctx)
+	id, err := app.Crawl(ctx)
+	if err != nil {
+		return err
+	}
+	q := d.tf.query(id)
+	q.Select = ccrawl.DefaultColumnarColumns
+	q.Limit = app.Limit
+	if err := os.MkdirAll(filepath.Dir(app.Cfg.DBPath), 0o755); err != nil {
+		return err
+	}
+	stmt := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS\n%s", d.table, q.SQL(app.Cfg.Source))
+	if app.dryRun {
+		_, _ = fmt.Fprintln(cmdOut, stmt)
+		return nil
+	}
+	// Expand the bucket glob to the explicit file list duckdb can read.
+	stmt, err = resolveGlobForDuckDB(ctx, app, &d.tf, stmt)
+	if err != nil {
+		return err
+	}
+	if err := runDuckDBFile(ctx, app.Cfg.DBPath, stmt); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmdErr, "loaded table %q into %s\n", d.table, app.Cfg.DBPath)
+	return runDuckDBStream(ctx, app, fmt.Sprintf("SELECT count(*) AS rows FROM %s", d.table), func(row map[string]any) error {
+		return app.Out.Emit(Row{Cols: []string{"table", "rows"}, Vals: []string{d.table, str(row["rows"])}, Value: row})
+	})
+}
+
+func newDBSQLCmd() kit.Command {
+	return kit.Command{
 		Use:   "sql <query>",
 		Short: "Run SQL against the local DuckDB database",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			if err := requireDuckDB(); err != nil {
-				return err
-			}
-			app := appFromCtx(c.Context())
-			if _, err := os.Stat(app.Cfg.DBPath); err != nil {
-				return noResults("no local database yet; run 'ccrawl db load' first")
-			}
-			return runDuckDBStream(c.Context(), app, args[0], func(row map[string]any) error {
-				return app.Out.Emit(genericRow(row))
-			})
-		},
+		Args:  kit.ExactArgs(1),
+		Run:   runDBSQL,
 	}
-	return c
 }
 
-func newDBShellCmd() *cobra.Command {
-	return &cobra.Command{
+func runDBSQL(ctx context.Context, args []string) error {
+	if err := requireDuckDB(); err != nil {
+		return err
+	}
+	app := appFromCtx(ctx)
+	if _, err := os.Stat(app.Cfg.DBPath); err != nil {
+		return noResults("no local database yet; run 'ccrawl db load' first")
+	}
+	return runDuckDBStream(ctx, app, args[0], func(row map[string]any) error {
+		return app.Out.Emit(genericRow(row))
+	})
+}
+
+func newDBShellCmd() kit.Command {
+	return kit.Command{
 		Use:   "shell",
 		Short: "Open an interactive duckdb session on the local database",
-		RunE: func(c *cobra.Command, _ []string) error {
-			if err := requireDuckDB(); err != nil {
-				return err
-			}
-			app := appFromCtx(c.Context())
-			cmd := exec.CommandContext(c.Context(), "duckdb", app.Cfg.DBPath)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		},
+		Run:   runDBShell,
 	}
 }
 
-func newDBPathCmd() *cobra.Command {
-	return &cobra.Command{
+func runDBShell(ctx context.Context, _ []string) error {
+	if err := requireDuckDB(); err != nil {
+		return err
+	}
+	app := appFromCtx(ctx)
+	cmd := exec.CommandContext(ctx, "duckdb", app.Cfg.DBPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func newDBPathCmd() kit.Command {
+	return kit.Command{
 		Use:   "path",
 		Short: "Print the local database path",
-		RunE: func(c *cobra.Command, _ []string) error {
-			app := appFromCtx(c.Context())
-			_, _ = fmt.Fprintln(cmdOut, app.Cfg.DBPath)
-			return nil
-		},
+		Run:   runDBPath,
 	}
+}
+
+func runDBPath(ctx context.Context, _ []string) error {
+	app := appFromCtx(ctx)
+	_, _ = fmt.Fprintln(cmdOut, app.Cfg.DBPath)
+	return nil
 }
 
 // runDuckDBFile runs a statement against a persistent duckdb file, discarding rows.

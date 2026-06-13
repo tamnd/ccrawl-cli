@@ -1,71 +1,74 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
 // crawlsEscapeHatches returns the crawls verbs that emit plain scalars rather
 // than record streams, so they attach under the crawls parent next to the list
 // operation. The list verb itself is a kit operation (see registerCrawlsList).
-func crawlsEscapeHatches() []*cobra.Command {
-	return []*cobra.Command{
+func crawlsEscapeHatches() []kit.Command {
+	return []kit.Command{
 		{
 			Use:   "latest",
 			Short: "Print the newest crawl ID",
-			RunE: func(c *cobra.Command, _ []string) error {
-				app := appFromCtx(c.Context())
-				crawls, err := ccrawl.ListCrawls(c.Context(), app.HTTP, app.Cache)
-				if err != nil {
-					return err
-				}
-				if len(crawls) == 0 {
-					return noResults("no crawls available")
-				}
-				_, _ = fmt.Fprintln(cmdOut, crawls[0].ID)
-				return nil
-			},
+			Run:   runCrawlsLatest,
 		},
 		{
 			Use:   "resolve <ref>",
 			Short: "Resolve a loose crawl reference to its canonical ID",
-			Args:  cobra.ExactArgs(1),
-			RunE: func(c *cobra.Command, args []string) error {
-				app := appFromCtx(c.Context())
-				id, err := ccrawl.ResolveCrawl(c.Context(), app.HTTP, app.Cache, args[0])
-				if err != nil {
-					return err
-				}
-				_, _ = fmt.Fprintln(cmdOut, id)
-				return nil
-			},
+			Args:  kit.ExactArgs(1),
+			Run:   runCrawlsResolve,
 		},
 		{
 			Use:   "info <id>",
 			Short: "Show details for a crawl (file counts per format)",
-			Args:  cobra.MaximumNArgs(1),
-			RunE: func(c *cobra.Command, args []string) error {
-				app := appFromCtx(c.Context())
-				return runCrawlsInfo(app, c, args)
-			},
+			Args:  kit.MaximumNArgs(1),
+			Run:   runCrawlsInfo,
 		},
 	}
 }
 
-func runCrawlsInfo(app *App, c *cobra.Command, args []string) error {
+func runCrawlsLatest(ctx context.Context, _ []string) error {
+	app := appFromCtx(ctx)
+	crawls, err := ccrawl.ListCrawls(ctx, app.HTTP, app.Cache)
+	if err != nil {
+		return err
+	}
+	if len(crawls) == 0 {
+		return noResults("no crawls available")
+	}
+	_, _ = fmt.Fprintln(cmdOut, crawls[0].ID)
+	return nil
+}
+
+func runCrawlsResolve(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	id, err := ccrawl.ResolveCrawl(ctx, app.HTTP, app.Cache, args[0])
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(cmdOut, id)
+	return nil
+}
+
+func runCrawlsInfo(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
 	ref := app.Cfg.CrawlID
 	if len(args) == 1 {
 		ref = args[0]
 	}
-	id, err := ccrawl.ResolveCrawl(c.Context(), app.HTTP, app.Cache, ref)
+	id, err := ccrawl.ResolveCrawl(ctx, app.HTTP, app.Cache, ref)
 	if err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(cmdOut, "Crawl: %s\n", id)
 	for _, kind := range []string{"warc", "wat", "wet", "robotstxt", "cc-index-table"} {
-		paths, err := ccrawl.FetchPaths(c.Context(), app.HTTP, app.Cache, id, kind)
+		paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, id, kind)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmdOut, "  %-16s (unavailable)\n", kind)
 			continue
