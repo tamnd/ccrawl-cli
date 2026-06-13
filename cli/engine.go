@@ -2,11 +2,18 @@ package cli
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"os"
 
 	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/render"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
+
+// Row is one output record: an ordered set of named columns plus the original
+// value rendered by json/jsonl and templates. It is kit's render.Record, so the
+// row builders feed straight into the shared renderer with no per-format code.
+type Row = render.Record
 
 // App carries the resolved configuration and shared clients for a command run.
 // kit builds one per run through the client factory registered in Root, then
@@ -16,8 +23,9 @@ type App struct {
 	Cfg        ccrawl.Config
 	HTTP       *ccrawl.HTTPClient
 	Cache      *ccrawl.Cache
-	Out        *Output
-	crawl      string // resolved crawl ID, lazily filled
+	Out        *render.Renderer
+	st         *kit.State // run state, for building a renderer over another writer
+	crawl      string     // resolved crawl ID, lazily filled
 	yes        bool
 	dryRun     bool
 	Limit      int
@@ -67,25 +75,30 @@ func buildApp(kc kit.Config, dom *domainGlobals) *App {
 	}
 }
 
-// appFromCtx returns the run's App for an escape-hatch command, with the Output
-// and limit stamped from the resolved run state so its rendering matches every
+// appFromCtx returns the run's App for an escape-hatch command, with the renderer
+// and limit stamped from the resolved run state so its output matches every
 // operation. Operations receive the same App by injection and ignore Out.
-func appFromCtx(ctx context.Context) (*App, error) {
-	st := kit.FromContext(ctx)
-	if st == nil {
-		return nil, fmt.Errorf("no run state on context")
-	}
-	c, err := st.Client(ctx)
+//
+// The client factory (buildApp) cannot fail, so a missing or mistyped client is a
+// wiring bug rather than a runtime condition; appFromCtx surfaces it as a panic
+// instead of threading an impossible error through every command.
+func appFromCtx(ctx context.Context) *App {
+	app := kit.MustClient[*App](ctx)
+	app.st = kit.FromContext(ctx)
+	app.Out = app.renderTo(os.Stdout)
+	app.Limit = app.st.Globals.Limit
+	return app
+}
+
+// renderTo builds a renderer over w using the run's resolved output settings. The
+// --template was validated when the run state was built, so a renderer over a
+// valid writer cannot fail here.
+func (a *App) renderTo(w io.Writer) *render.Renderer {
+	r, err := a.st.Renderer(w)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
-	app, ok := c.(*App)
-	if !ok || app == nil {
-		return nil, fmt.Errorf("run client is not a ccrawl app")
-	}
-	app.Out = newOutputFromState(st)
-	app.Limit = st.Globals.Limit
-	return app, nil
+	return r
 }
 
 // Library resolves the crawl ID and returns the dataset library rooted at the

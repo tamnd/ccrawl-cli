@@ -45,10 +45,7 @@ from the library and writes the output under <crawl>/<format>/<kind>/, beside
 the raw files.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			return runConvert(app, c, args[0], to, outPath, markdown)
 		},
 	}

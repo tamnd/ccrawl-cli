@@ -36,10 +36,7 @@ With --library the files land under <library>/<crawl>/<kind>/ instead of the
 data dir, building a curated corpus you can later parse and convert in place.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			return runDownload(app, c, args[0], outDir, segment, sample, flat)
 		},
 	}

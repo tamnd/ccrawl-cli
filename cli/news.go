@@ -25,10 +25,7 @@ func newNewsDownloadCmd() *cobra.Command {
 		Use:   "download",
 		Short: "Download CC-NEWS WARC files",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			files, err := ccrawl.ListNewsFiles(c.Context(), app.HTTP, year, month)
 			if err != nil {
 				return err
@@ -72,10 +69,7 @@ records whose target host matches. It is slower than an indexed search; --worker
 parallelises across files.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			return runNewsSearch(app, c, args[0], year, month)
 		},
 	}

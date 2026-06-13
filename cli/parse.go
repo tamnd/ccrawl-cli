@@ -49,10 +49,7 @@ every archive of that kind held in the library, streaming all records through
 one output so -n caps the whole run.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			return runParse(app, c, args[0], pf)
 		},
 	}

@@ -53,10 +53,7 @@ func newDBLoadCmd() *cobra.Command {
 			if err := requireDuckDB(); err != nil {
 				return err
 			}
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -100,10 +97,7 @@ func newDBSQLCmd() *cobra.Command {
 			if err := requireDuckDB(); err != nil {
 				return err
 			}
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			if _, err := os.Stat(app.Cfg.DBPath); err != nil {
 				return noResults("no local database yet; run 'ccrawl db load' first")
 			}
@@ -123,10 +117,7 @@ func newDBShellCmd() *cobra.Command {
 			if err := requireDuckDB(); err != nil {
 				return err
 			}
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			cmd := exec.CommandContext(c.Context(), "duckdb", app.Cfg.DBPath)
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
@@ -141,10 +132,7 @@ func newDBPathCmd() *cobra.Command {
 		Use:   "path",
 		Short: "Print the local database path",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			_, _ = fmt.Fprintln(cmdOut, app.Cfg.DBPath)
 			return nil
 		},

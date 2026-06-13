@@ -29,10 +29,7 @@ With --library this lists what you have downloaded locally for a kind rather tha
 the remote crawl manifest.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			if kinds {
 				_, _ = fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
 				return nil
@@ -58,7 +55,7 @@ func runPaths(app *App, c *cobra.Command, kind, segment string) error {
 		return err
 	}
 	limit := app.Limit
-	asURL := app.Out.format == "url"
+	asURL := app.Out.Format() == "url"
 	count := 0
 	err = ccrawl.StreamPaths(ctx, app.HTTP, id, kind, func(p string) error {
 		if segment != "" && !strings.Contains(p, segment) {

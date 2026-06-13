@@ -19,10 +19,7 @@ func newCacheCmd() *cobra.Command {
 			Use:   "dir",
 			Short: "Print the cache directory",
 			RunE: func(c *cobra.Command, _ []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				_, _ = fmt.Fprintln(cmdOut, app.Cache.Dir())
 				return nil
 			},
@@ -31,10 +28,7 @@ func newCacheCmd() *cobra.Command {
 			Use:   "info",
 			Short: "Show cache size and entry count",
 			RunE: func(c *cobra.Command, _ []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				n, size := cacheUsage(app.Cache.Dir())
 				if err := app.Out.Emit(Row{
 					Cols:  []string{"dir", "entries", "size"},
@@ -50,10 +44,7 @@ func newCacheCmd() *cobra.Command {
 			Use:   "clear",
 			Short: "Remove every cached entry",
 			RunE: func(c *cobra.Command, _ []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				if !confirm(app.yes, "clear the ccrawl cache?") {
 					return usageErr("cancelled")
 				}

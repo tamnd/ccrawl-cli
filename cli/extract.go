@@ -33,10 +33,7 @@ func extractSub(name, short string, mode contentMode) *cobra.Command {
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			if name == "title" {
 				return runExtractTitle(app, c, args[0])
 			}

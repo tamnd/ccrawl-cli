@@ -83,10 +83,7 @@ func newTableURLsCmd() *cobra.Command {
 		Use:   "urls",
 		Short: "List matching URLs from the columnar index",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -110,10 +107,7 @@ func newTableLocationsCmd() *cobra.Command {
 		Short: "Emit filename/offset/length records for matching captures",
 		Long:  "Output is the location JSONL that ccrawl fetch reads on stdin.",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -146,10 +140,7 @@ func newTableCountCmd() *cobra.Command {
 		Use:   "count",
 		Short: "Count matching captures",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -171,10 +162,7 @@ func newTableBreakdownCmd(name, col string) *cobra.Command {
 		Use:   name,
 		Short: "Breakdown of captures by " + col,
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -200,10 +188,7 @@ func newTableSQLCmd() *cobra.Command {
 		Use:   "sql",
 		Short: "Build SQL from the filter flags (and print or run it)",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -226,10 +211,7 @@ func newTableQueryCmd() *cobra.Command {
 		Long:  "The token 'ccindex' is replaced with the read_parquet(...) source for the crawl.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -251,10 +233,7 @@ func newTableSchemaCmd() *cobra.Command {
 		Use:   "schema",
 		Short: "Show the columns of the columnar index for a crawl",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err

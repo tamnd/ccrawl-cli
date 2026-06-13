@@ -34,10 +34,7 @@ Examples:
   ccrawl search example.com --locations | ccrawl fetch - --markdown
   ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			if file != "" {
 				return runFetchOne(app, c, ccrawl.Location{Filename: file, Offset: offset, Length: length}, mode)
 			}
@@ -72,7 +69,7 @@ func runFetchOne(app *App, c *cobra.Command, loc ccrawl.Location, mode contentMo
 
 func runFetchStdin(app *App, c *cobra.Command, mode contentMode, outDir string, asDir bool) error {
 	ctx := c.Context()
-	asDir = asDir || app.Out.format == "dir"
+	asDir = asDir || app.Out.Format() == "dir"
 
 	var locs []ccrawl.Location
 	if err := readLines(os.Stdin, func(line string) error {

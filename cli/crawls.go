@@ -16,10 +16,7 @@ func crawlsEscapeHatches() []*cobra.Command {
 			Use:   "latest",
 			Short: "Print the newest crawl ID",
 			RunE: func(c *cobra.Command, _ []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				crawls, err := ccrawl.ListCrawls(c.Context(), app.HTTP, app.Cache)
 				if err != nil {
 					return err
@@ -36,10 +33,7 @@ func crawlsEscapeHatches() []*cobra.Command {
 			Short: "Resolve a loose crawl reference to its canonical ID",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(c *cobra.Command, args []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				id, err := ccrawl.ResolveCrawl(c.Context(), app.HTTP, app.Cache, args[0])
 				if err != nil {
 					return err
@@ -53,10 +47,7 @@ func crawlsEscapeHatches() []*cobra.Command {
 			Short: "Show details for a crawl (file counts per format)",
 			Args:  cobra.MaximumNArgs(1),
 			RunE: func(c *cobra.Command, args []string) error {
-				app, err := appFromCtx(c.Context())
-				if err != nil {
-					return err
-				}
+				app := appFromCtx(c.Context())
 				return runCrawlsInfo(app, c, args)
 			},
 		},

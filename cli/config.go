@@ -15,10 +15,7 @@ func newConfigCmd() *cobra.Command {
 		Use:   "show",
 		Short: "Print the effective configuration",
 		RunE: func(c *cobra.Command, _ []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			cfg := app.Cfg
 			rows := [][2]string{
 				{"crawl", cfg.CrawlID},

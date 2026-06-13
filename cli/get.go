@@ -33,10 +33,7 @@ Examples:
   ccrawl get example.com --all -o jsonl  every capture across crawls`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
-			app, err := appFromCtx(c.Context())
-			if err != nil {
-				return err
-			}
+			app := appFromCtx(c.Context())
 			return runGet(app, c, args[0], mode, at, all, outFile)
 		},
 	}
@@ -97,7 +94,7 @@ func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string,
 				err = cerr
 			}
 		}()
-		out = &Output{w: f, format: app.Out.format}
+		out = app.renderTo(f)
 	}
 
 	for _, rec := range chosen {
