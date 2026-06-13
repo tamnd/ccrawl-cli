@@ -36,11 +36,13 @@ func newNewsListCmd(app *App) *cobra.Command {
 				if app.Limit > 0 && n >= app.Limit {
 					break
 				}
-				app.Out.Emit(Row{
+				if err := app.Out.Emit(Row{
 					Cols:  []string{"year", "month", "path"},
 					Vals:  []string{itoa(f.Year), itoa(f.Mon), f.Path},
 					Value: f,
-				})
+				}); err != nil {
+					return err
+				}
 				n++
 			}
 			if n == 0 {
@@ -80,10 +82,10 @@ func newNewsDownloadCmd(app *App) *cobra.Command {
 			progress := func(r ccrawl.DownloadResult) {
 				n := atomic.AddInt64(&done, 1)
 				if r.Err != nil {
-					fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
+					_, _ = fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
 					return
 				}
-				fmt.Fprintf(cmdErr, "[%d/%d] %s (%s)\n", n, len(paths), r.LocalPath, humanBytes(r.Bytes))
+				_, _ = fmt.Fprintf(cmdErr, "[%d/%d] %s (%s)\n", n, len(paths), r.LocalPath, humanBytes(r.Bytes))
 			}
 			return ccrawl.DownloadFiles(c.Context(), app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, true, progress)
 		},
@@ -133,7 +135,7 @@ func runNewsSearch(app *App, c *cobra.Command, host string, year, month int) err
 			if err != nil {
 				return nil
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			return ccrawl.IterateWARC(resp.Body, func(rec ccrawl.WARCRecord) error {
 				if rec.Header.Type != "response" {
 					return nil
@@ -153,7 +155,9 @@ func runNewsSearch(app *App, c *cobra.Command, host string, year, month int) err
 		})
 	}
 	gerr := g.Wait()
-	app.Out.Flush()
+	if ferr := app.Out.Flush(); ferr != nil && gerr == nil {
+		gerr = ferr
+	}
 	if gerr != nil && gerr != errStopNews {
 		return gerr
 	}

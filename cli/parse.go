@@ -220,7 +220,7 @@ func openInput(path string) (io.Reader, string, func(), error) {
 	if err != nil {
 		return nil, "", nil, err
 	}
-	closeFn := func() { f.Close() }
+	closeFn := func() { _ = f.Close() }
 	return f, path, closeFn, nil
 }
 

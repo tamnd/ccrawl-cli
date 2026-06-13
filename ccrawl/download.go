@@ -78,7 +78,7 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 	if err != nil {
 		return DownloadResult{Path: ccPath, Err: fmt.Errorf("GET %s: %w", url, err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return DownloadResult{Path: ccPath, Err: fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)}
 	}
@@ -89,13 +89,15 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 		return DownloadResult{Path: ccPath, Err: err}
 	}
 	n, err := io.Copy(f, resp.Body)
-	f.Close()
+	if cerr := f.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
 	if err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return DownloadResult{Path: ccPath, Err: fmt.Errorf("write %s: %w", local, err)}
 	}
 	if err := os.Rename(tmp, local); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return DownloadResult{Path: ccPath, Err: err}
 	}
 	return DownloadResult{Path: ccPath, LocalPath: local, Bytes: n}
@@ -109,7 +111,7 @@ func FetchWARCRecord(ctx context.Context, h *HTTPClient, filename string, offset
 	if err != nil {
 		return WARCRecord{}, fmt.Errorf("range GET: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out WARCRecord
 	found := false

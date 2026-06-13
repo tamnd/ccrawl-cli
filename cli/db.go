@@ -65,7 +65,7 @@ func newDBLoadCmd(app *App) *cobra.Command {
 			}
 			stmt := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS\n%s", table, q.SQL(app.Cfg.Source))
 			if app.dryRun {
-				fmt.Fprintln(cmdOut, stmt)
+				_, _ = fmt.Fprintln(cmdOut, stmt)
 				return nil
 			}
 			// Expand the bucket glob to the explicit file list duckdb can read.
@@ -76,7 +76,7 @@ func newDBLoadCmd(app *App) *cobra.Command {
 			if err := runDuckDBFile(c.Context(), app.Cfg.DBPath, stmt); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmdErr, "loaded table %q into %s\n", table, app.Cfg.DBPath)
+			_, _ = fmt.Fprintf(cmdErr, "loaded table %q into %s\n", table, app.Cfg.DBPath)
 			return runDuckDBStream(c.Context(), app, fmt.Sprintf("SELECT count(*) AS rows FROM %s", table), func(row map[string]any) error {
 				return app.Out.Emit(Row{Cols: []string{"table", "rows"}, Vals: []string{table, str(row["rows"])}, Value: row})
 			})
@@ -129,7 +129,7 @@ func newDBPathCmd(app *App) *cobra.Command {
 		Use:   "path",
 		Short: "Print the local database path",
 		RunE: func(c *cobra.Command, _ []string) error {
-			fmt.Fprintln(cmdOut, app.Cfg.DBPath)
+			_, _ = fmt.Fprintln(cmdOut, app.Cfg.DBPath)
 			return nil
 		},
 	}

@@ -10,9 +10,9 @@ func renderRows(format Format, fields []string, rows ...Row) string {
 	var buf bytes.Buffer
 	o := &Output{w: &buf, format: format, fields: fields}
 	for _, r := range rows {
-		o.Emit(r)
+		_ = o.Emit(r)
 	}
-	o.Flush()
+	_ = o.Flush()
 	return buf.String()
 }
 

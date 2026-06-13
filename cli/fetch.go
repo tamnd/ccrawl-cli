@@ -113,7 +113,7 @@ func runFetchStdin(app *App, c *cobra.Command, mode contentMode, outDir string, 
 		if err := g.Wait(); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmdErr, "wrote %d files to %s\n", n, outDir)
+		_, _ = fmt.Fprintf(cmdErr, "wrote %d files to %s\n", n, outDir)
 		return nil
 	}
 
@@ -121,7 +121,7 @@ func runFetchStdin(app *App, c *cobra.Command, mode contentMode, outDir string, 
 	for _, loc := range locs {
 		rec, err := ccrawl.FetchWARCRecord(ctx, app.HTTP, loc.Filename, loc.Offset, loc.Length)
 		if err != nil {
-			fmt.Fprintln(cmdErr, "warn: "+err.Error())
+			_, _ = fmt.Fprintln(cmdErr, "warn: "+err.Error())
 			continue
 		}
 		if err := mode.render(app.Out, rec); err != nil {

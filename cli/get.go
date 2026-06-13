@@ -43,7 +43,7 @@ Examples:
 	return cmd
 }
 
-func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string, all bool, outFile string) error {
+func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string, all bool, outFile string) (err error) {
 	ctx := c.Context()
 	crawls, err := app.AllCrawls(ctx)
 	if err != nil {
@@ -84,11 +84,15 @@ func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string,
 	// Redirect output to a file if requested.
 	out := app.Out
 	if outFile != "" {
-		f, err := os.Create(outFile)
-		if err != nil {
-			return err
+		f, ferr := os.Create(outFile)
+		if ferr != nil {
+			return ferr
 		}
-		defer f.Close()
+		defer func() {
+			if cerr := f.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}()
 		out = &Output{w: f, format: app.Out.format}
 	}
 
@@ -109,7 +113,7 @@ func runGet(app *App, c *cobra.Command, url string, mode contentMode, at string,
 		return out.Flush()
 	}
 	if outFile != "" {
-		fmt.Fprintln(cmdErr, "wrote "+outFile)
+		_, _ = fmt.Fprintln(cmdErr, "wrote "+outFile)
 	}
 	return nil
 }

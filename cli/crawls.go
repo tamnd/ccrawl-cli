@@ -31,7 +31,7 @@ func newCrawlsCmd(app *App) *cobra.Command {
 				if len(crawls) == 0 {
 					return noResults("no crawls available")
 				}
-				fmt.Fprintln(cmdOut, crawls[0].ID)
+				_, _ = fmt.Fprintln(cmdOut, crawls[0].ID)
 				return nil
 			},
 		},
@@ -44,7 +44,7 @@ func newCrawlsCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintln(cmdOut, id)
+				_, _ = fmt.Fprintln(cmdOut, id)
 				return nil
 			},
 		},
@@ -83,14 +83,14 @@ func runCrawlsInfo(app *App, c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmdOut, "Crawl: %s\n", id)
+	_, _ = fmt.Fprintf(cmdOut, "Crawl: %s\n", id)
 	for _, kind := range []string{"warc", "wat", "wet", "robotstxt", "cc-index-table"} {
 		paths, err := ccrawl.FetchPaths(c.Context(), app.HTTP, app.Cache, id, kind)
 		if err != nil {
-			fmt.Fprintf(cmdOut, "  %-16s (unavailable)\n", kind)
+			_, _ = fmt.Fprintf(cmdOut, "  %-16s (unavailable)\n", kind)
 			continue
 		}
-		fmt.Fprintf(cmdOut, "  %-16s %d files\n", kind, len(paths))
+		_, _ = fmt.Fprintf(cmdOut, "  %-16s %d files\n", kind, len(paths))
 	}
 	return nil
 }

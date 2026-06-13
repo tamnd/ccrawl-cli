@@ -60,7 +60,9 @@ Examples:
 				return err
 			}
 			for _, r := range ranks {
-				app.Out.Emit(rankRow(r))
+				if err := app.Out.Emit(rankRow(r)); err != nil {
+					return err
+				}
 			}
 			return app.Out.Flush()
 		},

@@ -69,12 +69,12 @@ func (q ColumnarQuery) SQL(src Source) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "SELECT %s\nFROM read_parquet('%s', hive_partitioning=1)", strings.Join(cols, ", "), src2)
+	_, _ = fmt.Fprintf(&b, "SELECT %s\nFROM read_parquet('%s', hive_partitioning=1)", strings.Join(cols, ", "), src2)
 	if len(where) > 0 {
 		b.WriteString("\nWHERE " + strings.Join(where, "\n  AND "))
 	}
 	if q.Limit > 0 {
-		fmt.Fprintf(&b, "\nLIMIT %d", q.Limit)
+		_, _ = fmt.Fprintf(&b, "\nLIMIT %d", q.Limit)
 	}
 	return b.String()
 }

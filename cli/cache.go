@@ -19,7 +19,7 @@ func newCacheCmd(app *App) *cobra.Command {
 			Use:   "dir",
 			Short: "Print the cache directory",
 			RunE: func(c *cobra.Command, _ []string) error {
-				fmt.Fprintln(cmdOut, app.Cache.Dir())
+				_, _ = fmt.Fprintln(cmdOut, app.Cache.Dir())
 				return nil
 			},
 		},
@@ -49,7 +49,7 @@ func newCacheCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(cmdErr, "removed %d cached entries\n", n)
+				_, _ = fmt.Fprintf(cmdErr, "removed %d cached entries\n", n)
 				return nil
 			},
 		},

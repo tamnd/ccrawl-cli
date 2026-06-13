@@ -190,7 +190,7 @@ func newTableSQLCmd(app *App) *cobra.Command {
 			}
 			q := tf.query(id)
 			q.Limit = app.Limit
-			fmt.Fprintln(cmdOut, q.SQL(app.Cfg.Source))
+			_, _ = fmt.Fprintln(cmdOut, q.SQL(app.Cfg.Source))
 			return nil
 		},
 	}
@@ -278,17 +278,13 @@ func resolveGlobForDuckDB(ctx context.Context, app *App, tf *tableFlags, sql str
 func runColumnarSQL(app *App, c *cobra.Command, sql string, tf *tableFlags, emit func(map[string]any) error) error {
 	engine := tf.engine
 	if tf.print || engine == "print" {
-		fmt.Fprintln(cmdOut, sql)
+		_, _ = fmt.Fprintln(cmdOut, sql)
 		return nil
 	}
-	if engine == "auto" {
-		if ccrawl.DuckDBAvailable() {
-			engine = "duckdb"
-		} else {
-			fmt.Fprintln(cmdErr, "no duckdb binary found; printing SQL (install duckdb or use --engine duckdb)")
-			fmt.Fprintln(cmdOut, sql)
-			return nil
-		}
+	if engine == "auto" && !ccrawl.DuckDBAvailable() {
+		_, _ = fmt.Fprintln(cmdErr, "no duckdb binary found; printing SQL (install duckdb or use --engine duckdb)")
+		_, _ = fmt.Fprintln(cmdOut, sql)
+		return nil
 	}
 	// The printed SQL carries the `*.parquet` glob, which Athena and Spark
 	// expand themselves. duckdb cannot list the bucket, so for the duckdb run we

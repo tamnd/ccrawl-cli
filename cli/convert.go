@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,16 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
+
+// closeWith closes c and returns the first non-nil of the existing error or the
+// close error, so a write failure is never masked by a successful close and a
+// close failure is never silently dropped.
+func closeWith(c io.Closer, err error) error {
+	if cerr := c.Close(); cerr != nil && err == nil {
+		return cerr
+	}
+	return err
+}
 
 func newConvertCmd(app *App) *cobra.Command {
 	var to string
@@ -66,13 +77,15 @@ func runConvert(app *App, c *cobra.Command, input, to, outPath string, markdown 
 			if dir == "" {
 				dir = "."
 			}
-			os.MkdirAll(dir, 0o755)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
 			out = filepath.Join(dir, base+"."+to)
 		}
 		if err := convertOne(app, c, f, out, to, markdown); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmdErr, "wrote "+out)
+		_, _ = fmt.Fprintln(cmdErr, "wrote "+out)
 	}
 	return nil
 }
@@ -92,12 +105,16 @@ func convertOne(app *App, c *cobra.Command, in, out, to string, markdown bool) e
 	return convertParquet(r, format, id, out, markdown)
 }
 
-func convertJSONL(r interface{ Read([]byte) (int, error) }, format, id, out string) error {
+func convertJSONL(r interface{ Read([]byte) (int, error) }, format, id, out string) (err error) {
 	f, err := os.Create(out)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	enc := json.NewEncoder(f)
 	switch format {
 	case "wat":
@@ -122,21 +139,20 @@ func convertParquet(r interface{ Read([]byte) (int, error) }, format, id, out st
 		if err != nil {
 			return err
 		}
-		defer w.Close()
-		return ccrawl.IterateWET(r, id, func(rec ccrawl.WETRecord) error {
+		werr := ccrawl.IterateWET(r, id, func(rec ccrawl.WETRecord) error {
 			return w.Write(ccrawl.WETParquetRow{
 				RecordID: rec.RecordID, CrawlID: rec.CrawlID, URL: rec.URL,
 				Date: rec.Date, ContentLanguage: rec.ContentLanguage,
 				TextLength: int32(len([]rune(rec.Text))), Text: rec.Text,
 			})
 		})
+		return closeWith(w, werr)
 	case "wat":
 		w, err := ccrawl.NewParquetWriter[ccrawl.WATParquetRow](out)
 		if err != nil {
 			return err
 		}
-		defer w.Close()
-		return ccrawl.IterateWAT(r, id, func(rec ccrawl.WATRecord) error {
+		werr := ccrawl.IterateWAT(r, id, func(rec ccrawl.WATRecord) error {
 			links, _ := json.Marshal(rec.Links)
 			metas, _ := json.Marshal(rec.Metas)
 			return w.Write(ccrawl.WATParquetRow{
@@ -145,13 +161,13 @@ func convertParquet(r interface{ Read([]byte) (int, error) }, format, id, out st
 				LinksCount: int32(rec.LinksCount), Links: string(links), Metas: string(metas),
 			})
 		})
+		return closeWith(w, werr)
 	default:
 		w, err := ccrawl.NewParquetWriter[ccrawl.WARCParquetRow](out)
 		if err != nil {
 			return err
 		}
-		defer w.Close()
-		return ccrawl.IterateWARC(r, func(rec ccrawl.WARCRecord) error {
+		werr := ccrawl.IterateWARC(r, func(rec ccrawl.WARCRecord) error {
 			h := rec.Header
 			row := ccrawl.WARCParquetRow{
 				RecordID: h.RecordID, CrawlID: id, WARCType: h.Type, TargetURI: h.TargetURI,
@@ -167,5 +183,6 @@ func convertParquet(r interface{ Read([]byte) (int, error) }, format, id, out st
 			}
 			return w.Write(row)
 		})
+		return closeWith(w, werr)
 	}
 }

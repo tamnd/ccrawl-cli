@@ -29,18 +29,22 @@ Examples:
 			for _, kind := range kinds {
 				paths, err := ccrawl.FetchPaths(c.Context(), app.HTTP, app.Cache, id, kind)
 				if err != nil {
-					app.Out.Emit(Row{
+					if err := app.Out.Emit(Row{
 						Cols:  []string{"crawl", "kind", "files"},
 						Vals:  []string{id, kind, "n/a"},
 						Value: map[string]any{"crawl": id, "kind": kind, "files": nil},
-					})
+					}); err != nil {
+						return err
+					}
 					continue
 				}
-				app.Out.Emit(Row{
+				if err := app.Out.Emit(Row{
 					Cols:  []string{"crawl", "kind", "files"},
 					Vals:  []string{id, kind, itoa(len(paths))},
 					Value: map[string]any{"crawl": id, "kind": kind, "files": len(paths)},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 			return app.Out.Flush()
 		},

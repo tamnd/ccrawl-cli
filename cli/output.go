@@ -128,11 +128,13 @@ func (o *Output) emitTable(cols, vals []string) error {
 		o.tw = tabwriter.NewWriter(o.w, 0, 0, 2, ' ', 0)
 	}
 	if !o.headerDone && !o.noHeader {
-		fmt.Fprintln(o.tw, strings.Join(upperAll(cols), "\t"))
+		if _, err := fmt.Fprintln(o.tw, strings.Join(upperAll(cols), "\t")); err != nil {
+			return err
+		}
 		o.headerDone = true
 	}
-	fmt.Fprintln(o.tw, strings.Join(vals, "\t"))
-	return nil
+	_, err := fmt.Fprintln(o.tw, strings.Join(vals, "\t"))
+	return err
 }
 
 func (o *Output) emitCSV(cols, vals []string) error {
@@ -162,12 +164,16 @@ func (o *Output) emitJSONL(v any) error {
 
 func (o *Output) emitJSON(v any) error {
 	if !o.jsonOpen {
-		fmt.Fprint(o.w, "[")
+		if _, err := fmt.Fprint(o.w, "["); err != nil {
+			return err
+		}
 		o.jsonOpen = true
 		o.jsonFirst = true
 	}
 	if !o.jsonFirst {
-		fmt.Fprint(o.w, ",")
+		if _, err := fmt.Fprint(o.w, ","); err != nil {
+			return err
+		}
 	}
 	o.jsonFirst = false
 	b, err := json.Marshal(v)
