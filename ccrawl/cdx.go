@@ -135,7 +135,7 @@ func cdxPage(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, pag
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 1<<20), 8<<20)

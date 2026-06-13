@@ -26,7 +26,7 @@ Examples:
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			if kinds {
-				fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
+				_, _ = fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
 				return nil
 			}
 			if len(args) == 0 {
@@ -54,9 +54,13 @@ func runPaths(app *App, c *cobra.Command, kind, segment string) error {
 			return nil
 		}
 		if asURL {
-			fmt.Fprintln(cmdOut, ccrawl.FileURL(p, app.Cfg.Source))
+			if _, err := fmt.Fprintln(cmdOut, ccrawl.FileURL(p, app.Cfg.Source)); err != nil {
+				return err
+			}
 		} else {
-			fmt.Fprintln(cmdOut, p)
+			if _, err := fmt.Fprintln(cmdOut, p); err != nil {
+				return err
+			}
 		}
 		count++
 		if limit > 0 && count >= limit {

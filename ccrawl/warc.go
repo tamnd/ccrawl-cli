@@ -34,7 +34,7 @@ func IterateWARC(r io.Reader, fn func(WARCRecord) error) error {
 	if err != nil {
 		return fmt.Errorf("open gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	gz.Multistream(false)
 
 	for {

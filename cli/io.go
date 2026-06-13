@@ -28,10 +28,10 @@ func confirm(assumeYes bool, prompt string) bool {
 	}
 	if !stderrTTY() {
 		// Non-interactive without --yes: refuse the potentially costly action.
-		fmt.Fprintln(cmdErr, prompt+" (refusing without --yes)")
+		_, _ = fmt.Fprintln(cmdErr, prompt+" (refusing without --yes)")
 		return false
 	}
-	fmt.Fprint(cmdErr, prompt+" [y/N] ")
+	_, _ = fmt.Fprint(cmdErr, prompt+" [y/N] ")
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
 		return false

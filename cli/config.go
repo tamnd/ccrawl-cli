@@ -33,11 +33,13 @@ func newConfigCmd(app *App) *cobra.Command {
 				{"duckdb", boolWord(ccrawl.DuckDBAvailable())},
 			}
 			for _, r := range rows {
-				app.Out.Emit(Row{
+				if err := app.Out.Emit(Row{
 					Cols:  []string{"key", "value"},
 					Vals:  []string{r[0], r[1]},
 					Value: map[string]any{"key": r[0], "value": r[1]},
-				})
+				}); err != nil {
+					return err
+				}
 			}
 			return app.Out.Flush()
 		},

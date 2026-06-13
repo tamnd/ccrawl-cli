@@ -31,7 +31,7 @@ func rankTableServer(t *testing.T) (*httptest.Server, *HTTPClient) {
 	}
 	body := gzbuf.Bytes()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 	return srv, NewHTTPClient(DefaultConfig())

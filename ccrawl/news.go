@@ -66,7 +66,7 @@ func fetchNewsPaths(ctx context.Context, h *HTTPClient, monthPath string) ([]New
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
@@ -74,7 +74,7 @@ func fetchNewsPaths(ctx context.Context, h *HTTPClient, monthPath string) ([]New
 	if err != nil {
 		return nil, err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	var files []NewsFile
 	sc := bufio.NewScanner(gz)

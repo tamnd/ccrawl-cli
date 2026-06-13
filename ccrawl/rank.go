@@ -40,7 +40,7 @@ func RankLookup(ctx context.Context, h *HTTPClient, url, hostOrDomain string) (R
 	if err != nil {
 		return Rank{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return Rank{}, fmt.Errorf("rank table HTTP %d (%s)", resp.StatusCode, url)
 	}
@@ -48,7 +48,7 @@ func RankLookup(ctx context.Context, h *HTTPClient, url, hostOrDomain string) (R
 	if err != nil {
 		return Rank{}, err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	sc := bufio.NewScanner(gz)
 	sc.Buffer(make([]byte, 1<<20), 8<<20)
@@ -79,7 +79,7 @@ func RankTop(ctx context.Context, h *HTTPClient, url, tld string, n int) ([]Rank
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("rank table HTTP %d (%s)", resp.StatusCode, url)
 	}
@@ -87,7 +87,7 @@ func RankTop(ctx context.Context, h *HTTPClient, url, tld string, n int) ([]Rank
 	if err != nil {
 		return nil, err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	suffix := ""
 	if tld != "" {

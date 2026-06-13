@@ -72,9 +72,9 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 
 	if app.dryRun {
 		for _, p := range paths {
-			fmt.Fprintln(cmdOut, ccrawl.FileURL(p, app.Cfg.Source))
+			_, _ = fmt.Fprintln(cmdOut, ccrawl.FileURL(p, app.Cfg.Source))
 		}
-		fmt.Fprintf(cmdErr, "%d files would be downloaded to %s\n", len(paths), outDir)
+		_, _ = fmt.Fprintf(cmdErr, "%d files would be downloaded to %s\n", len(paths), outDir)
 		return nil
 	}
 	if len(paths) > 20 && !confirm(app.yes, fmt.Sprintf("Download %d files to %s?", len(paths), outDir)) {
@@ -87,7 +87,7 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 		n := atomic.AddInt64(&done, 1)
 		atomic.AddInt64(&bytes, r.Bytes)
 		if r.Err != nil {
-			fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
+			_, _ = fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
 			return
 		}
 		state := "ok"
@@ -95,12 +95,12 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 			state = "skip"
 		}
 		if stderrTTY() || !r.Skipped {
-			fmt.Fprintf(cmdErr, "[%d/%d] %-4s %s (%s)\n", n, len(paths), state, r.LocalPath, humanBytes(r.Bytes))
+			_, _ = fmt.Fprintf(cmdErr, "[%d/%d] %-4s %s (%s)\n", n, len(paths), state, r.LocalPath, humanBytes(r.Bytes))
 		}
 	}
 
 	err := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
-	fmt.Fprintf(cmdErr, "downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
+	_, _ = fmt.Fprintf(cmdErr, "downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
 	if err != nil {
 		return codedError{err, 4}
 	}

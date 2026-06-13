@@ -109,7 +109,7 @@ func StreamPaths(ctx context.Context, h *HTTPClient, crawlID, kind string, fn fu
 	if err != nil {
 		return fmt.Errorf("fetch %s paths: %w", kind, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("fetch %s.paths.gz: HTTP %d (does crawl %s have this kind?)", kind, resp.StatusCode, crawlID)
 	}
@@ -117,7 +117,7 @@ func StreamPaths(ctx context.Context, h *HTTPClient, crawlID, kind string, fn fu
 	if err != nil {
 		return fmt.Errorf("decompress %s paths: %w", kind, err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	sc := bufio.NewScanner(gz)
 	sc.Buffer(make([]byte, 1<<20), 8<<20)

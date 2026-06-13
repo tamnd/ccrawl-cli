@@ -89,7 +89,7 @@ func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
@@ -128,7 +128,7 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			continue
 		}
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			last = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 			continue
 		}

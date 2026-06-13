@@ -188,7 +188,7 @@ func (a *App) AllCrawls(ctx context.Context) ([]string, error) {
 // Execute runs the root command, mapping errors to exit codes.
 func Execute(ctx context.Context, cmd *cobra.Command) int {
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "ccrawl: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "ccrawl: "+err.Error())
 		if ec, ok := err.(exitCoder); ok {
 			return ec.ExitCode()
 		}

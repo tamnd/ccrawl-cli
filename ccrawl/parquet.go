@@ -89,7 +89,7 @@ func (p *ParquetWriter[T]) Rows() int64 { return p.n }
 // Close flushes and closes the file.
 func (p *ParquetWriter[T]) Close() error {
 	if err := p.w.Close(); err != nil {
-		p.f.Close()
+		_ = p.f.Close()
 		return err
 	}
 	return p.f.Close()
