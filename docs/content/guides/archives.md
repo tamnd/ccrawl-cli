@@ -77,6 +77,47 @@ Add `--markdown` to convert HTML response bodies to Markdown as they are
 written. Parquet output makes a crawl slice queryable in DuckDB, Athena, or
 Spark without any further plumbing.
 
+## Building a dataset library
+
+For volume work you want the files in one tidy, browsable place rather than
+scattered across ad-hoc `--out` dirs. The `--library` flag gives the archive
+files a home and extends the same four commands to list, download, and process
+them in place. The library lives under `~/notes/ccrawl` by default; override it
+with `--library-dir` or `CCRAWL_LIBRARY`. It is a separate tree from the data
+dir, so clearing scratch state never touches the corpus you keep.
+
+```bash
+ccrawl download wet -n 20 --library -c 2024-51    # pull 20 WET files into the library
+ccrawl paths    wet --library -c 2024-51          # list the WET files you have locally
+ccrawl parse    wet --library --lang eng -o jsonl # decode every local WET file, eng only
+ccrawl convert  wet --library --to parquet        # write parquet beside the raw files
+```
+
+In library mode the argument is a kind, not a file. Raw archives land under
+`<crawl>/<kind>/` and processed output under `<crawl>/<format>/<kind>/`, so a
+directory listing is the index:
+
+```
+~/notes/ccrawl/CC-MAIN-2024-51/
+  wet/                 raw WET archives
+  parquet/wet/         the same files as Parquet
+  jsonl/wet/           and as JSONL
+```
+
+A few things worth knowing:
+
+- `download` skips files already present, so re-running only fetches what is
+  missing and the corpus grows incrementally.
+- `paths --library` lists what you have on disk for a kind, the local mirror of
+  the remote manifest.
+- `parse --library` streams every archive of a kind through one output, so a
+  global `-n` caps the whole run rather than each file.
+- `convert --library` picks the destination subtree from `--to`
+  (`parquet`/`jsonl`); pass `-O/--out` to send it elsewhere.
+
+`ccrawl config show` prints the active `library_dir` so you can confirm where a
+run reads and writes.
+
 ## Counting files
 
 `ccrawl stats` shows the shape of a crawl: how many files of each kind it ships.

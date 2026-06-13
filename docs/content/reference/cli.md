@@ -79,7 +79,9 @@ ccrawl download <kind|-> [flags]
 
 Kinds: `warc`, `wat`, `wet`, `robotstxt`, `non200responses`, `cc-index`,
 `cc-index-table`. Use `-` to read paths on stdin. `--out` sets the directory,
-`--flat` drops the source tree, `-j/--workers` sets concurrency.
+`--flat` drops the source tree, `-j/--workers` sets concurrency. `--library`
+files the archives under `<library>/<crawl>/<kind>/` instead of the data dir
+(see [bulk and archives](/guides/archives/)).
 
 ## paths
 
@@ -89,6 +91,8 @@ ccrawl paths <kind> [flags]
 
 Kinds: `warc`, `wat`, `wet`, `robotstxt`, `non200responses`, `cc-index`,
 `cc-index-table`, `segment`. `--kinds` lists them. `-o url` prints full URLs.
+`--library` lists the files of a kind already in the library instead of the
+remote manifest.
 
 ## parse
 
@@ -98,7 +102,8 @@ ccrawl parse <file|-> [flags]
 
 Force the format with `--format` (`warc|wat|wet`). Filters: `--type`,
 `--status`, `--mime`, `--lang`, `--url`. Content: `--links`, `--text`,
-`--markdown`, `--meta`.
+`--markdown`, `--meta`. With `--library` the argument is a kind and `parse`
+decodes every local archive of that kind through one output.
 
 ## extract
 
@@ -164,7 +169,9 @@ ccrawl convert <file|dir> [flags]
 ```
 
 `--to parquet|jsonl` (default `parquet`). `-O/--out` sets the output file or
-directory. `--markdown` converts HTML bodies on the way.
+directory. `--markdown` converts HTML bodies on the way. With `--library` the
+argument is a kind: `convert` reads every local archive of that kind and writes
+the output under `<crawl>/<format>/<kind>/`.
 
 ## Meta
 
@@ -191,4 +198,6 @@ for the full list and their defaults.
 | `--source` | Bulk data source: `https` or `s3` |
 | `--rate` | Minimum delay between requests |
 | `--no-cache` | Bypass the on-disk cache |
+| `--library` | Read and write under the dataset library |
+| `--library-dir` | Library root (default `~/notes/ccrawl`) |
 | `--data-dir` | Root data directory |
