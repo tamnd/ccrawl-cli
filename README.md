@@ -130,6 +130,34 @@ Scan CC-NEWS for a publisher (CC-NEWS has no index, so this streams the month):
 ccrawl news search bbc.co.uk --year 2026 --month 5 -n 50
 ```
 
+## Building a dataset library
+
+For bulk work you want the archive files in one tidy place you can come back to,
+not scattered across ad-hoc download dirs. The `--library` flag gives the data
+files a home and extends the commands you already know to list, download, and
+process them in place. Everything lands under `~/notes/ccrawl` by default
+(`CCRAWL_LIBRARY` or `--library-dir` to move it), keyed by crawl and kind:
+
+```sh
+ccrawl download wet -n 20 --library -c 2024-51   # pull 20 WET files into the library
+ccrawl paths    wet --library -c 2024-51         # list the WET files you have locally
+ccrawl parse    wet --library --lang eng -o jsonl # decode every local WET file, eng only
+ccrawl convert  wet --library --to parquet        # write parquet beside the raw files
+```
+
+Raw archives go to `<crawl>/<kind>/`, processed output to `<crawl>/<format>/<kind>/`,
+so a directory listing tells you exactly what you have:
+
+```
+~/notes/ccrawl/CC-MAIN-2024-51/
+  wet/                 raw WET archives
+  parquet/wet/         the same files as Parquet
+```
+
+Re-running `download` only fetches what is missing, so the corpus grows
+incrementally. The library is separate from the data dir, so clearing scratch
+state never touches it.
+
 ## Output formats
 
 Every list command renders through the same formatter. Pick a format with `-o`,
@@ -184,8 +212,10 @@ ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --text
 
 ccrawl keeps all of its state under one tree, `~/data/ccrawl` by default: the
 cache, downloaded archives, converted Parquet, and the local DuckDB file. Point
-it somewhere else with `CCRAWL_DATA_DIR`. See the resolved paths and settings any
-time:
+it somewhere else with `CCRAWL_DATA_DIR`. The curated dataset library is a
+separate tree, `~/notes/ccrawl` by default (`CCRAWL_LIBRARY` or `--library-dir`),
+so scratch state and the corpus you keep never mix. See the resolved paths and
+settings any time:
 
 ```sh
 ccrawl config show
