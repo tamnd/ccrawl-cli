@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
@@ -249,6 +251,26 @@ func runColumnar(app *App, c *cobra.Command, q ccrawl.ColumnarQuery, tf *tableFl
 	return runColumnarSQL(app, c, q.SQL(app.Cfg.Source), tf, emit)
 }
 
+// resolveGlobForDuckDB rewrites the quoted `*.parquet` glob in sql into a
+// read_parquet list literal of real file URLs so a local duckdb run works
+// without bucket listing. If sql does not contain the glob (custom SQL that
+// names files directly) it is returned unchanged.
+func resolveGlobForDuckDB(ctx context.Context, app *App, tf *tableFlags, sql string) (string, error) {
+	id, err := app.Crawl(ctx)
+	if err != nil {
+		return "", err
+	}
+	glob := "'" + ccrawl.ColumnarSource(id, tf.subset, app.Cfg.Source) + "'"
+	if !strings.Contains(sql, glob) {
+		return sql, nil
+	}
+	urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, id, tf.subset, app.Cfg.Source)
+	if err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(sql, glob, ccrawl.ParquetListLiteral(urls)), nil
+}
+
 func runColumnarSQL(app *App, c *cobra.Command, sql string, tf *tableFlags, emit func(map[string]any) error) error {
 	engine := tf.engine
 	if tf.print || engine == "print" {
@@ -264,6 +286,14 @@ func runColumnarSQL(app *App, c *cobra.Command, sql string, tf *tableFlags, emit
 			return nil
 		}
 	}
+	// The printed SQL carries the `*.parquet` glob, which Athena and Spark
+	// expand themselves. duckdb cannot list the bucket, so for the duckdb run we
+	// swap the glob for the explicit file list from the crawl's manifest.
+	runSQL, err := resolveGlobForDuckDB(c.Context(), app, tf, sql)
+	if err != nil {
+		return err
+	}
+	sql = runSQL
 	n := 0
 	if err := ccrawl.RunColumnarDuckDB(c.Context(), sql, func(row map[string]any) error {
 		n++

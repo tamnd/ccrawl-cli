@@ -68,6 +68,11 @@ func newDBLoadCmd(app *App) *cobra.Command {
 				fmt.Fprintln(cmdOut, stmt)
 				return nil
 			}
+			// Expand the bucket glob to the explicit file list duckdb can read.
+			stmt, err = resolveGlobForDuckDB(c.Context(), app, tf, stmt)
+			if err != nil {
+				return err
+			}
 			if err := runDuckDBFile(c.Context(), app.Cfg.DBPath, stmt); err != nil {
 				return err
 			}
@@ -132,7 +137,7 @@ func newDBPathCmd(app *App) *cobra.Command {
 
 // runDuckDBFile runs a statement against a persistent duckdb file, discarding rows.
 func runDuckDBFile(ctx context.Context, dbPath, sql string) error {
-	full := "INSTALL httpfs; LOAD httpfs; SET enable_progress_bar=false;\n" + sql + ";"
+	full := ccrawl.DuckDBPrelude + "\n" + sql + ";"
 	cmd := exec.CommandContext(ctx, "duckdb", dbPath, "-c", full)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
