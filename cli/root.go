@@ -20,38 +20,42 @@ var (
 
 // App carries the resolved configuration and shared clients for a command run.
 type App struct {
-	Cfg     ccrawl.Config
-	HTTP    *ccrawl.HTTPClient
-	Cache   *ccrawl.Cache
-	Out     *Output
-	crawl   string // resolved crawl ID, lazily filled
-	noCache bool
-	yes     bool
-	dryRun  bool
-	Limit   int
-	Workers int
+	Cfg        ccrawl.Config
+	HTTP       *ccrawl.HTTPClient
+	Cache      *ccrawl.Cache
+	Out        *Output
+	crawl      string // resolved crawl ID, lazily filled
+	noCache    bool
+	yes        bool
+	dryRun     bool
+	Limit      int
+	Workers    int
+	UseLibrary bool
+	LibraryDir string
 }
 
 // globalFlags holds the persistent flag values before they are folded into Cfg.
 type globalFlags struct {
-	crawl    string
-	output   string
-	fields   string
-	limit    int
-	dataDir  string
-	workers  int
-	source   string
-	rate     time.Duration
-	retries  int
-	timeout  time.Duration
-	quiet    bool
-	verbose  int
-	color    string
-	noCache  bool
-	yes      bool
-	dryRun   bool
-	noHeader bool
-	template string
+	crawl      string
+	output     string
+	fields     string
+	limit      int
+	dataDir    string
+	workers    int
+	source     string
+	rate       time.Duration
+	retries    int
+	timeout    time.Duration
+	quiet      bool
+	verbose    int
+	color      string
+	noCache    bool
+	yes        bool
+	dryRun     bool
+	noHeader   bool
+	template   string
+	library    bool
+	libraryDir string
 }
 
 // Root builds the root command and its whole subtree.
@@ -100,6 +104,8 @@ Quick start:
 	pf.BoolVar(&g.dryRun, "dry-run", false, "print actions without performing them")
 	pf.BoolVar(&g.noHeader, "no-header", false, "omit the header row in table/csv output")
 	pf.StringVar(&g.template, "template", "", "Go text/template applied per row")
+	pf.BoolVar(&g.library, "library", false, "read and write under the structured dataset library")
+	pf.StringVar(&g.libraryDir, "library-dir", ccrawl.LibraryDir(), "root of the dataset library")
 
 	root.AddCommand(
 		newCrawlsCmd(app),
@@ -146,8 +152,20 @@ func (a *App) init(g *globalFlags) error {
 	a.noCache = g.noCache
 	a.yes = g.yes
 	a.dryRun = g.dryRun
+	a.UseLibrary = g.library
+	a.LibraryDir = g.libraryDir
 	a.Out = newOutput(g)
 	return nil
+}
+
+// Library resolves the crawl ID and returns the dataset library rooted at the
+// configured library dir for that crawl.
+func (a *App) Library(ctx context.Context) (ccrawl.Library, error) {
+	id, err := a.Crawl(ctx)
+	if err != nil {
+		return ccrawl.Library{}, err
+	}
+	return ccrawl.NewLibrary(a.LibraryDir, id), nil
 }
 
 // Crawl resolves the crawl reference once and caches the canonical ID.
