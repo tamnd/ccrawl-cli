@@ -6,10 +6,11 @@ import (
 	"sync/atomic"
 
 	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newDownloadCmd(app *App) *cobra.Command {
+func newDownloadCmd() *cobra.Command {
 	var outDir string
 	var segment string
 	var sample float64
@@ -35,6 +36,10 @@ With --library the files land under <library>/<crawl>/<kind>/ instead of the
 data dir, building a curated corpus you can later parse and convert in place.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			return runDownload(app, c, args[0], outDir, segment, sample, flat)
 		},
 	}
@@ -114,7 +119,7 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 	err := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
 	_, _ = fmt.Fprintf(cmdErr, "downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
 	if err != nil {
-		return codedError{err, 4}
+		return errs.Wrap(errs.KindNetwork, err, "download failed")
 	}
 	return nil
 }

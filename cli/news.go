@@ -11,58 +11,24 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func newNewsCmd(app *App) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "news",
-		Short: "Work with the CC-NEWS dataset",
-		Long:  "List, download, and scan the continuous CC-NEWS crawl (no index, organised by month).",
-	}
-	cmd.AddCommand(newNewsListCmd(app), newNewsDownloadCmd(app), newNewsSearchCmd(app))
-	return cmd
+// newsEscapeHatches returns the news verbs that do not emit a record stream
+// (a bulk download and a streamed scan), so they attach under the news parent
+// next to the list operation. The list verb is a kit operation (registerNewsList).
+func newsEscapeHatches() []*cobra.Command {
+	return []*cobra.Command{newNewsDownloadCmd(), newNewsSearchCmd()}
 }
 
-func newNewsListCmd(app *App) *cobra.Command {
-	var year, month int
-	c := &cobra.Command{
-		Use:   "list",
-		Short: "List CC-NEWS WARC files for a month",
-		RunE: func(c *cobra.Command, _ []string) error {
-			files, err := ccrawl.ListNewsFiles(c.Context(), app.HTTP, year, month)
-			if err != nil {
-				return err
-			}
-			n := 0
-			for _, f := range files {
-				if app.Limit > 0 && n >= app.Limit {
-					break
-				}
-				if err := app.Out.Emit(Row{
-					Cols:  []string{"year", "month", "path"},
-					Vals:  []string{itoa(f.Year), itoa(f.Mon), f.Path},
-					Value: f,
-				}); err != nil {
-					return err
-				}
-				n++
-			}
-			if n == 0 {
-				return noResults("no CC-NEWS files found")
-			}
-			return app.Out.Flush()
-		},
-	}
-	c.Flags().IntVar(&year, "year", 0, "year (0 = all)")
-	c.Flags().IntVar(&month, "month", 0, "month (0 = all months of the year)")
-	return c
-}
-
-func newNewsDownloadCmd(app *App) *cobra.Command {
+func newNewsDownloadCmd() *cobra.Command {
 	var year, month int
 	var outDir string
 	c := &cobra.Command{
 		Use:   "download",
 		Short: "Download CC-NEWS WARC files",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			files, err := ccrawl.ListNewsFiles(c.Context(), app.HTTP, year, month)
 			if err != nil {
 				return err
@@ -96,7 +62,7 @@ func newNewsDownloadCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newNewsSearchCmd(app *App) *cobra.Command {
+func newNewsSearchCmd() *cobra.Command {
 	var year, month int
 	c := &cobra.Command{
 		Use:   "search <host>",
@@ -106,6 +72,10 @@ records whose target host matches. It is slower than an indexed search; --worker
 parallelises across files.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			return runNewsSearch(app, c, args[0], year, month)
 		},
 	}

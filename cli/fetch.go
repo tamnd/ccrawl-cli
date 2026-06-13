@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func newFetchCmd(app *App) *cobra.Command {
+func newFetchCmd() *cobra.Command {
 	var mode contentMode
 	var file string
 	var offset, length int64
@@ -34,6 +34,10 @@ Examples:
   ccrawl search example.com --locations | ccrawl fetch - --markdown
   ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			if file != "" {
 				return runFetchOne(app, c, ccrawl.Location{Filename: file, Offset: offset, Length: length}, mode)
 			}

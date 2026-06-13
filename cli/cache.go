@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCacheCmd(app *App) *cobra.Command {
+func newCacheCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
 		Short: "Inspect and clear the on-disk cache",
@@ -19,6 +19,10 @@ func newCacheCmd(app *App) *cobra.Command {
 			Use:   "dir",
 			Short: "Print the cache directory",
 			RunE: func(c *cobra.Command, _ []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
 				_, _ = fmt.Fprintln(cmdOut, app.Cache.Dir())
 				return nil
 			},
@@ -27,6 +31,10 @@ func newCacheCmd(app *App) *cobra.Command {
 			Use:   "info",
 			Short: "Show cache size and entry count",
 			RunE: func(c *cobra.Command, _ []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
 				n, size := cacheUsage(app.Cache.Dir())
 				if err := app.Out.Emit(Row{
 					Cols:  []string{"dir", "entries", "size"},
@@ -42,6 +50,10 @@ func newCacheCmd(app *App) *cobra.Command {
 			Use:   "clear",
 			Short: "Remove every cached entry",
 			RunE: func(c *cobra.Command, _ []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
 				if !confirm(app.yes, "clear the ccrawl cache?") {
 					return usageErr("cancelled")
 				}

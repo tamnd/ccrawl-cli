@@ -11,7 +11,7 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newDBCmd(app *App) *cobra.Command {
+func newDBCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
 		Short: "Build and query a local DuckDB database",
@@ -28,10 +28,10 @@ Examples:
   ccrawl db path                                  print the database path`,
 	}
 	cmd.AddCommand(
-		newDBLoadCmd(app),
-		newDBSQLCmd(app),
-		newDBShellCmd(app),
-		newDBPathCmd(app),
+		newDBLoadCmd(),
+		newDBSQLCmd(),
+		newDBShellCmd(),
+		newDBPathCmd(),
 	)
 	return cmd
 }
@@ -43,7 +43,7 @@ func requireDuckDB() error {
 	return nil
 }
 
-func newDBLoadCmd(app *App) *cobra.Command {
+func newDBLoadCmd() *cobra.Command {
 	tf := &tableFlags{}
 	var table string
 	c := &cobra.Command{
@@ -51,6 +51,10 @@ func newDBLoadCmd(app *App) *cobra.Command {
 		Short: "Load matching captures from the columnar index into a local table",
 		RunE: func(c *cobra.Command, _ []string) error {
 			if err := requireDuckDB(); err != nil {
+				return err
+			}
+			app, err := appFromCtx(c.Context())
+			if err != nil {
 				return err
 			}
 			id, err := app.Crawl(c.Context())
@@ -87,13 +91,17 @@ func newDBLoadCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newDBSQLCmd(app *App) *cobra.Command {
+func newDBSQLCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "sql <query>",
 		Short: "Run SQL against the local DuckDB database",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			if err := requireDuckDB(); err != nil {
+				return err
+			}
+			app, err := appFromCtx(c.Context())
+			if err != nil {
 				return err
 			}
 			if _, err := os.Stat(app.Cfg.DBPath); err != nil {
@@ -107,12 +115,16 @@ func newDBSQLCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newDBShellCmd(app *App) *cobra.Command {
+func newDBShellCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "shell",
 		Short: "Open an interactive duckdb session on the local database",
 		RunE: func(c *cobra.Command, _ []string) error {
 			if err := requireDuckDB(); err != nil {
+				return err
+			}
+			app, err := appFromCtx(c.Context())
+			if err != nil {
 				return err
 			}
 			cmd := exec.CommandContext(c.Context(), "duckdb", app.Cfg.DBPath)
@@ -124,11 +136,15 @@ func newDBShellCmd(app *App) *cobra.Command {
 	}
 }
 
-func newDBPathCmd(app *App) *cobra.Command {
+func newDBPathCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "path",
 		Short: "Print the local database path",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			_, _ = fmt.Fprintln(cmdOut, app.Cfg.DBPath)
 			return nil
 		},

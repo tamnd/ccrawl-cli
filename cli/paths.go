@@ -8,7 +8,7 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newPathsCmd(app *App) *cobra.Command {
+func newPathsCmd() *cobra.Command {
 	var segment string
 	var kinds bool
 
@@ -29,6 +29,10 @@ With --library this lists what you have downloaded locally for a kind rather tha
 the remote crawl manifest.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			if kinds {
 				_, _ = fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
 				return nil

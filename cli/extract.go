@@ -5,7 +5,7 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newExtractCmd(app *App) *cobra.Command {
+func newExtractCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "extract",
 		Short: "Extract text, links, title, or Markdown from a captured page",
@@ -18,21 +18,25 @@ Examples:
   ccrawl extract markdown example.com -O out.md`,
 	}
 	cmd.AddCommand(
-		extractSub(app, "text", "Readable plain text", contentMode{text: true}),
-		extractSub(app, "markdown", "HTML converted to Markdown", contentMode{markdown: true}),
-		extractSub(app, "links", "Outbound links", contentMode{links: true}),
-		extractSub(app, "title", "Page title", contentMode{}),
+		extractSub("text", "Readable plain text", contentMode{text: true}),
+		extractSub("markdown", "HTML converted to Markdown", contentMode{markdown: true}),
+		extractSub("links", "Outbound links", contentMode{links: true}),
+		extractSub("title", "Page title", contentMode{}),
 	)
 	return cmd
 }
 
-func extractSub(app *App, name, short string, mode contentMode) *cobra.Command {
+func extractSub(name, short string, mode contentMode) *cobra.Command {
 	var outFile string
 	c := &cobra.Command{
 		Use:   name + " <url>",
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			if name == "title" {
 				return runExtractTitle(app, c, args[0])
 			}

@@ -9,7 +9,7 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newGetCmd(app *App) *cobra.Command {
+func newGetCmd() *cobra.Command {
 	var mode contentMode
 	var at string
 	var all bool
@@ -33,6 +33,10 @@ Examples:
   ccrawl get example.com --all -o jsonl  every capture across crawls`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			return runGet(app, c, args[0], mode, at, all, outFile)
 		},
 	}

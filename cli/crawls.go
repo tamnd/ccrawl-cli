@@ -7,23 +7,19 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newCrawlsCmd(app *App) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "crawls",
-		Short: "Discover Common Crawl collections",
-		Long:  "List, resolve, and inspect the monthly Common Crawl collections.",
-		RunE:  func(c *cobra.Command, _ []string) error { return runCrawlsList(app, c) },
-	}
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "list",
-			Short: "List every available crawl",
-			RunE:  func(c *cobra.Command, _ []string) error { return runCrawlsList(app, c) },
-		},
-		&cobra.Command{
+// crawlsEscapeHatches returns the crawls verbs that emit plain scalars rather
+// than record streams, so they attach under the crawls parent next to the list
+// operation. The list verb itself is a kit operation (see registerCrawlsList).
+func crawlsEscapeHatches() []*cobra.Command {
+	return []*cobra.Command{
+		{
 			Use:   "latest",
 			Short: "Print the newest crawl ID",
 			RunE: func(c *cobra.Command, _ []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
 				crawls, err := ccrawl.ListCrawls(c.Context(), app.HTTP, app.Cache)
 				if err != nil {
 					return err
@@ -35,11 +31,15 @@ func newCrawlsCmd(app *App) *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
+		{
 			Use:   "resolve <ref>",
 			Short: "Resolve a loose crawl reference to its canonical ID",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(c *cobra.Command, args []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
 				id, err := ccrawl.ResolveCrawl(c.Context(), app.HTTP, app.Cache, args[0])
 				if err != nil {
 					return err
@@ -48,30 +48,19 @@ func newCrawlsCmd(app *App) *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
+		{
 			Use:   "info <id>",
 			Short: "Show details for a crawl (file counts per format)",
 			Args:  cobra.MaximumNArgs(1),
-			RunE:  func(c *cobra.Command, args []string) error { return runCrawlsInfo(app, c, args) },
+			RunE: func(c *cobra.Command, args []string) error {
+				app, err := appFromCtx(c.Context())
+				if err != nil {
+					return err
+				}
+				return runCrawlsInfo(app, c, args)
+			},
 		},
-	)
-	return cmd
-}
-
-func runCrawlsList(app *App, c *cobra.Command) error {
-	crawls, err := ccrawl.ListCrawls(c.Context(), app.HTTP, app.Cache)
-	if err != nil {
-		return err
 	}
-	for i, cr := range crawls {
-		if app.Limit > 0 && i >= app.Limit {
-			break
-		}
-		if err := app.Out.Emit(crawlRow(cr)); err != nil {
-			return err
-		}
-	}
-	return app.Out.Flush()
 }
 
 func runCrawlsInfo(app *App, c *cobra.Command, args []string) error {

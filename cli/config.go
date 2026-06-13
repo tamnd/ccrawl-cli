@@ -5,7 +5,7 @@ import (
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newConfigCmd(app *App) *cobra.Command {
+func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show resolved configuration and data paths",
@@ -15,6 +15,10 @@ func newConfigCmd(app *App) *cobra.Command {
 		Use:   "show",
 		Short: "Print the effective configuration",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			cfg := app.Cfg
 			rows := [][2]string{
 				{"crawl", cfg.CrawlID},

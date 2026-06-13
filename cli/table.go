@@ -45,7 +45,7 @@ func addTableFlags(cmd *cobra.Command, tf *tableFlags) {
 	f.BoolVar(&tf.print, "print", false, "print the SQL and exit")
 }
 
-func newTableCmd(app *App) *cobra.Command {
+func newTableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "table",
 		Aliases: []string{"columnar", "athena"},
@@ -65,24 +65,28 @@ Examples:
   ccrawl table query "SELECT url FROM ccindex LIMIT 10"`,
 	}
 	cmd.AddCommand(
-		newTableURLsCmd(app),
-		newTableLocationsCmd(app),
-		newTableCountCmd(app),
-		newTableBreakdownCmd(app, "langs", "content_languages"),
-		newTableBreakdownCmd(app, "mimes", "content_mime_detected"),
-		newTableSQLCmd(app),
-		newTableQueryCmd(app),
-		newTableSchemaCmd(app),
+		newTableURLsCmd(),
+		newTableLocationsCmd(),
+		newTableCountCmd(),
+		newTableBreakdownCmd("langs", "content_languages"),
+		newTableBreakdownCmd("mimes", "content_mime_detected"),
+		newTableSQLCmd(),
+		newTableQueryCmd(),
+		newTableSchemaCmd(),
 	)
 	return cmd
 }
 
-func newTableURLsCmd(app *App) *cobra.Command {
+func newTableURLsCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "urls",
 		Short: "List matching URLs from the columnar index",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -99,13 +103,17 @@ func newTableURLsCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newTableLocationsCmd(app *App) *cobra.Command {
+func newTableLocationsCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "locations",
 		Short: "Emit filename/offset/length records for matching captures",
 		Long:  "Output is the location JSONL that ccrawl fetch reads on stdin.",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -132,12 +140,16 @@ func newTableLocationsCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newTableCountCmd(app *App) *cobra.Command {
+func newTableCountCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "count",
 		Short: "Count matching captures",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -153,12 +165,16 @@ func newTableCountCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newTableBreakdownCmd(app *App, name, col string) *cobra.Command {
+func newTableBreakdownCmd(name, col string) *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   name,
 		Short: "Breakdown of captures by " + col,
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -178,12 +194,16 @@ func newTableBreakdownCmd(app *App, name, col string) *cobra.Command {
 	return c
 }
 
-func newTableSQLCmd(app *App) *cobra.Command {
+func newTableSQLCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "sql",
 		Short: "Build SQL from the filter flags (and print or run it)",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -198,7 +218,7 @@ func newTableSQLCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newTableQueryCmd(app *App) *cobra.Command {
+func newTableQueryCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "query <sql>",
@@ -206,6 +226,10 @@ func newTableQueryCmd(app *App) *cobra.Command {
 		Long:  "The token 'ccindex' is replaced with the read_parquet(...) source for the crawl.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err
@@ -221,12 +245,16 @@ func newTableQueryCmd(app *App) *cobra.Command {
 	return c
 }
 
-func newTableSchemaCmd(app *App) *cobra.Command {
+func newTableSchemaCmd() *cobra.Command {
 	tf := &tableFlags{}
 	c := &cobra.Command{
 		Use:   "schema",
 		Short: "Show the columns of the columnar index for a crawl",
 		RunE: func(c *cobra.Command, _ []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			id, err := app.Crawl(c.Context())
 			if err != nil {
 				return err

@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"text/template"
 
-	"github.com/mattn/go-isatty"
+	"github.com/tamnd/any-cli/kit"
 )
 
 // Format is an output encoding.
@@ -52,23 +52,24 @@ type Output struct {
 	jsonOpen   bool
 }
 
-func newOutput(g *globalFlags) *Output {
-	o := &Output{w: os.Stdout, noHeader: g.noHeader}
-	o.format = resolveFormat(g.output)
-	if g.fields != "" {
-		o.fields = splitComma(g.fields)
-	}
-	if g.template != "" {
-		o.template = template.Must(template.New("row").Parse(g.template + "\n"))
+// newOutputFromState builds an Output from kit's resolved per-run output
+// settings, so an escape-hatch command renders exactly like a kit operation:
+// same --output format, --fields projection, --no-header, and --template.
+func newOutputFromState(st *kit.State) *Output {
+	o := &Output{w: os.Stdout, noHeader: st.Output.NoHeader}
+	o.format = resolveFormat(st.Output.Format, st.Output.IsTTY)
+	o.fields = st.Output.Fields
+	if st.Output.Template != "" {
+		o.template = template.Must(template.New("row").Parse(st.Output.Template + "\n"))
 		o.format = FormatRaw
 	}
 	return o
 }
 
-func resolveFormat(s string) Format {
+func resolveFormat(s string, isTTY bool) Format {
 	switch Format(s) {
 	case FormatAuto, "":
-		if isatty.IsTerminal(os.Stdout.Fd()) {
+		if isTTY {
 			return FormatTable
 		}
 		return FormatJSONL

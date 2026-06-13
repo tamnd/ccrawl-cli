@@ -27,7 +27,7 @@ type parseFlags struct {
 	meta     bool
 }
 
-func newParseCmd(app *App) *cobra.Command {
+func newParseCmd() *cobra.Command {
 	pf := &parseFlags{}
 	cmd := &cobra.Command{
 		Use:   "parse <file|->",
@@ -49,6 +49,10 @@ every archive of that kind held in the library, streaming all records through
 one output so -n caps the whole run.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
+			app, err := appFromCtx(c.Context())
+			if err != nil {
+				return err
+			}
 			return runParse(app, c, args[0], pf)
 		},
 	}
