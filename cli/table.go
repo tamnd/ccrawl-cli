@@ -232,7 +232,11 @@ func newTableSchemaCmd(app *App) *cobra.Command {
 				return err
 			}
 			src := ccrawl.ColumnarSource(id, tf.subset, app.Cfg.Source)
-			sql := fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=1) LIMIT 1", src)
+			// Wrap the DESCRIBE in a SELECT so it always renders as a normal result
+			// set. Older duckdb (1.5.1) prints a bare DESCRIBE with the box renderer
+			// even in -json mode, which yields no JSON rows; the subquery makes the
+			// output consistent across duckdb versions.
+			sql := fmt.Sprintf("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=1) LIMIT 1)", src)
 			return runColumnarSQL(app, c, sql, tf, func(row map[string]any) error {
 				return app.Out.Emit(Row{
 					Cols:  []string{"column", "type"},
