@@ -24,6 +24,7 @@ func newConfigCmd(app *App) *cobra.Command {
 				{"config_dir", ccrawl.ConfigDir()},
 				{"raw_dir", cfg.RawDir()},
 				{"parquet_dir", cfg.ParquetDir()},
+				{"library_dir", app.LibraryDir},
 				{"db_path", cfg.DBPath},
 				{"workers", itoa(cfg.Workers)},
 				{"rate", cfg.Delay.String()},

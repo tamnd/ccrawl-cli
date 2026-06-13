@@ -22,7 +22,11 @@ Kinds: warc, wat, wet, robotstxt, non200responses, cc-index, cc-index-table, seg
 Examples:
   ccrawl paths warc -c 2026-17               every WARC path for the crawl
   ccrawl paths wet -n 1 | ccrawl download -  download the first WET file
-  ccrawl paths warc -o url                   full https URLs`,
+  ccrawl paths warc -o url                   full https URLs
+  ccrawl paths wet --library                 the WET files already in the library
+
+With --library this lists what you have downloaded locally for a kind rather than
+the remote crawl manifest.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			if kinds {
@@ -42,6 +46,9 @@ Examples:
 
 func runPaths(app *App, c *cobra.Command, kind, segment string) error {
 	ctx := c.Context()
+	if app.UseLibrary {
+		return listLibraryPaths(app, c, kind, segment)
+	}
 	id, err := app.Crawl(ctx)
 	if err != nil {
 		return err
@@ -78,3 +85,34 @@ func runPaths(app *App, c *cobra.Command, kind, segment string) error {
 }
 
 var errStopPaths = fmt.Errorf("stop")
+
+// listLibraryPaths lists the archive files of a kind already downloaded into the
+// library, so paths --library tells you what you have locally rather than what
+// the remote crawl offers. Honours --segment (substring match) and -n.
+func listLibraryPaths(app *App, c *cobra.Command, kind, segment string) error {
+	lib, err := app.Library(c.Context())
+	if err != nil {
+		return err
+	}
+	files, err := libraryFiles(lib.RawDir(kind))
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, f := range files {
+		if segment != "" && !strings.Contains(f, segment) {
+			continue
+		}
+		if _, err := fmt.Fprintln(cmdOut, f); err != nil {
+			return err
+		}
+		count++
+		if app.Limit > 0 && count >= app.Limit {
+			break
+		}
+	}
+	if count == 0 {
+		return noResults("no files in library for kind " + kind + " (download them first)")
+	}
+	return nil
+}

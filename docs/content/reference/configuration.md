@@ -29,11 +29,28 @@ db_path      ~/data/ccrawl/ccrawl.duckdb
 Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with
 `--data-dir`.
 
+## The dataset library
+
+The `--library` flag (see [bulk and archives](/guides/archives/)) reads and
+writes a curated corpus of archive files in a tree of its own, separate from the
+data dir so scratch state and the files you keep never mix. It defaults to
+`~/notes/ccrawl` and reports as `library_dir` in `ccrawl config show`:
+
+```
+library_dir  ~/notes/ccrawl
+```
+
+Move it with `CCRAWL_LIBRARY` or per-command with `--library-dir`. Inside it,
+raw archives live under `<crawl>/<kind>/` and processed output under
+`<crawl>/<format>/<kind>/`.
+
 ## Environment variables
 
 | Variable | Used for |
 |---|---|
 | `CCRAWL_DATA_DIR` | Root data directory (overrides the default `~/data/ccrawl`) |
+| `CCRAWL_LIBRARY` | Dataset library root (overrides the default `~/notes/ccrawl`) |
+| `CCRAWL_CACHE_DIR` | Cache directory (overrides the default under the data dir) |
 
 ## Global flags
 
@@ -49,6 +66,8 @@ Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with
 | `--timeout` | `2m` | Per-request timeout |
 | `--no-cache` | off | Bypass the on-disk cache for this run |
 | `--data-dir` | `~/data/ccrawl` | Root data directory |
+| `--library` | off | Read and write under the dataset library |
+| `--library-dir` | `~/notes/ccrawl` | Dataset library root |
 | `--fields` | all | Comma-separated columns to show |
 | `--template` | none | Go text/template applied per row |
 | `--no-header` | off | Omit the header row in table/csv output |

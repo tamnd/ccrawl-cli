@@ -37,7 +37,12 @@ inline with --markdown.
 Examples:
   ccrawl convert file.warc.wet.gz --to jsonl
   ccrawl convert file.warc.gz --to parquet -O out.parquet --markdown
-  ccrawl convert ./warc/ --to parquet --out ./parquet`,
+  ccrawl convert ./warc/ --to parquet --out ./parquet
+  ccrawl convert wet --library --to parquet   process the library's WET files
+
+With --library the argument is a kind: ccrawl reads every archive of that kind
+from the library and writes the output under <crawl>/<format>/<kind>/, beside
+the raw files.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			return runConvert(app, c, args[0], to, outPath, markdown)
@@ -50,6 +55,20 @@ Examples:
 }
 
 func runConvert(app *App, c *cobra.Command, input, to, outPath string, markdown bool) error {
+	if app.UseLibrary {
+		// In library mode the argument is a kind: read every archive of that kind
+		// from the library and write the processed output back into the library
+		// under <crawl>/<format>/<kind>/, beside the raw files.
+		lib, err := app.Library(c.Context())
+		if err != nil {
+			return err
+		}
+		kind := input
+		input = lib.RawDir(kind)
+		if outPath == "" {
+			outPath = lib.ProcessedDir(to, kind)
+		}
+	}
 	info, err := os.Stat(input)
 	if err != nil {
 		return err

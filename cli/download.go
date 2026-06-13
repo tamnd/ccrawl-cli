@@ -28,7 +28,11 @@ Examples:
   ccrawl download warc -n 5                first 5 WARC files of the latest crawl
   ccrawl download wet --segment 1700.../   one segment's WET files
   ccrawl paths warc -n 100 | ccrawl download -
-  ccrawl download cc-index-table -c 2024-51  the columnar Parquet shards`,
+  ccrawl download cc-index-table -c 2024-51  the columnar Parquet shards
+  ccrawl download wet -n 10 --library        file into the dataset library tree
+
+With --library the files land under <library>/<crawl>/<kind>/ instead of the
+data dir, building a curated corpus you can later parse and convert in place.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			return runDownload(app, c, args[0], outDir, segment, sample, flat)
@@ -45,6 +49,9 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 	ctx := c.Context()
 	if outDir == "" {
 		outDir = app.Cfg.RawDir()
+	}
+	if app.UseLibrary && kind == "-" {
+		return usageErr("--library needs a kind so files can be filed under <library>/<crawl>/<kind>/")
 	}
 
 	var paths []string
@@ -65,6 +72,11 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 			return err
 		}
 		paths = filterPaths(all, segment, sample, app.Limit)
+		if app.UseLibrary {
+			// Land the archives in the curated library tree, flat under the kind.
+			outDir = ccrawl.NewLibrary(app.LibraryDir, id).RawDir(kind)
+			flat = true
+		}
 	}
 	if len(paths) == 0 {
 		return noResults("nothing to download")
