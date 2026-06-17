@@ -86,4 +86,10 @@ You have the core loop. From here:
 - [Finding pages](/guides/finding-pages/) goes deep on the index and filters.
 - [Fetching content](/guides/fetching-content/) covers `get`, `fetch`, and the byte-range model.
 - [The columnar index](/guides/columnar-index/) answers dataset-wide questions with SQL.
+- [Host graph and enrichment](/guides/host-graph/) explores the 262M-host web graph.
+- [Building a recrawl engine](/guides/recrawl-engine/) seeds, fetches, and stores live pages.
+- [Recrawl scheduling](/guides/scheduling/) prioritizes URLs by rank and change rate.
+- [Building a search index](/guides/search-index/) builds a local BM25 index and queries it.
+- [Content signals](/guides/content-signals/) extracts text, quality scores, and outlinks.
+- [API server](/guides/api-server/) serves your local index over HTTP.
 - The [CLI reference](/reference/cli/) lists every command and flag.
