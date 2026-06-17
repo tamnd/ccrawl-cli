@@ -83,11 +83,9 @@ func eq(col, val string) string { return fmt.Sprintf("%s = '%s'", col, sqlEscape
 func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 // DuckDBPrelude is prepended to every statement ccrawl sends to the duckdb
-// binary. httpfs reads remote Parquet over HTTPS or S3; the progress bar is
-// noise on a pipe; and allow_asterisks_in_http_paths is required because the
-// columnar index is addressed with a glob (subset=warc/*.parquet) over HTTP,
-// which duckdb refuses by default.
-const DuckDBPrelude = "INSTALL httpfs; LOAD httpfs; SET enable_progress_bar=false; SET allow_asterisks_in_http_paths=true;"
+// binary. httpfs reads remote Parquet over HTTPS; the progress bar is noise
+// on a pipe.
+const DuckDBPrelude = "INSTALL httpfs; LOAD httpfs; SET enable_progress_bar=false;"
 
 // DuckDBAvailable reports whether a duckdb binary is on PATH.
 func DuckDBAvailable() bool {
