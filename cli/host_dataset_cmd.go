@@ -45,15 +45,16 @@ unattended:
 }
 
 type hostDatasetCmd struct {
-	graph   string
-	workDir string
-	outDir  string
-	prefix  string
-	noCDX   bool
-	upload  bool
-	hfRepo  string
-	skipCDX bool
+	graph    string
+	workDir  string
+	outDir   string
+	prefix   string
+	noCDX    bool
+	upload   bool
+	hfRepo   string
+	skipCDX  bool
 	skipRank bool
+	seqMode  bool
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -66,6 +67,7 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&d.hfRepo, "hf-repo", "open-index/cc-host-dataset", "HuggingFace dataset repository")
 	f.BoolVar(&d.skipCDX, "skip-cdx-prep", false, "skip CDX phase (assume cdx-*.jsonl.gz already present)")
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz already present)")
+	f.BoolVar(&d.seqMode, "seq", false, "download Parquet files sequentially instead of streaming via httpfs (avoids S3 rate limits, needs ~600 MB temp disk per prefix)")
 }
 
 func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
@@ -93,27 +95,42 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	// ── Phase 1: CDX prep ────────────────────────────────────────────────────
-	// cdx-{prefix}.jsonl.gz files are the per-prefix markers; SaveCDXSplitByPrefix
-	// skips any file that already exists, so re-running is always safe.
+	// cdx-{prefix}.jsonl.gz files are the per-prefix markers. Both modes skip
+	// any file that already exists, so re-running is always safe.
 	if !d.noCDX && !d.skipCDX {
 		if !ccrawl.DuckDBAvailable() {
 			return fmt.Errorf("phase 1 requires duckdb on PATH; use --no-cdx to skip")
 		}
-		{
-			cdxPrefixes := ccrawl.DatasetPrefixes
-			if d.prefix != "" {
-				cdxPrefixes = []string{d.prefix}
+		cdxPrefixes := ccrawl.DatasetPrefixes
+		if d.prefix != "" {
+			cdxPrefixes = []string{d.prefix}
+		}
+		urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, crawlID, "warc", app.Cfg.Source)
+		if err != nil {
+			return fmt.Errorf("phase 1 parquet URLs: %w", err)
+		}
+
+		if d.seqMode {
+			// Sequential download mode: one file at a time, Go-level accumulation.
+			// Avoids S3 rate limiting; needs ~600 MB temp disk per prefix.
+			logf("phase 1: CDX prep (seq) — %d prefix(es), %d files each", len(cdxPrefixes), len(urls))
+			t0 := time.Now()
+			for _, prefix := range cdxPrefixes {
+				logf("  CDX prefix %q — downloading %d files sequentially", prefix, len(urls))
+				if err := ccrawl.SaveCDXSeqByPrefix(ctx, app.HTTP, urls, prefix, d.workDir, func(fileN int, hosts int64) {
+					logf("  CDX prefix %q: file %d/%d done, %d unique hosts", prefix, fileN, len(urls), hosts)
+				}); err != nil {
+					return fmt.Errorf("phase 1 CDX prep (seq) prefix %q: %w", prefix, err)
+				}
 			}
+			logf("phase 1 done in %s", time.Since(t0).Round(time.Second))
+		} else {
+			// httpfs mode: DuckDB streams all URLs via HTTP in one query per prefix.
 			logf("phase 1: CDX prep — %d prefix(es) via DuckDB (~184 GB Parquet total, ~1/26 per prefix)", len(cdxPrefixes))
 			t0 := time.Now()
-			urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, crawlID, "warc", app.Cfg.Source)
-			if err != nil {
-				return fmt.Errorf("phase 1 parquet URLs: %w", err)
-			}
 			var counts map[string]int64
 			counts, err = ccrawl.SaveCDXSplitByPrefix(ctx, urls, crawlID, d.workDir, cdxPrefixes, func(prefix string, total int64) {
 				logf("  CDX prefix %q done (%d total rows so far)", prefix, total)
-				_ = counts // reference to avoid unused warning before assignment
 			})
 			if err != nil {
 				return fmt.Errorf("phase 1 CDX prep: %w", err)
