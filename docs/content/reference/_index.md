@@ -5,7 +5,4 @@ description: "Every command, flag, output format, and setting, plus a troublesho
 weight: 30
 ---
 
-The complete surface, for when you know what you want and just need the exact
-spelling: the [CLI](/reference/cli/) command tree and flags,
-[configuration](/reference/configuration/) and environment,
-[output formats](/reference/output/), and [troubleshooting](/reference/troubleshooting/).
+The complete surface, for when you know what you want and just need the exact spelling: the [CLI](/reference/cli/) command tree and flags, [configuration](/reference/configuration/) and environment, [output formats](/reference/output/), and [troubleshooting](/reference/troubleshooting/).
