@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
 )
+
+// errStop is a sentinel returned from callbacks to halt streaming early.
+var errStop = errors.New("stop")
 
 func itoa(n int) string { return strconv.Itoa(n) }
 

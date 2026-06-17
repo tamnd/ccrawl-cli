@@ -19,6 +19,11 @@ func registerOps(app *kit.App) {
 	registerRank(app)
 	registerStats(app)
 	registerHost(app)
+	registerContentV2(app)
+	registerIndex(app)
+	registerSched(app)
+	registerCrawl(app)
+	registerServe(app)
 }
 
 // searchIn is the URL-index query. Out is any because search has three shapes:
@@ -43,7 +48,7 @@ func registerSearch(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
 		Name:    "search",
 		Group:   "read",
-		Aliases: []string{"index", "cdx"},
+		Aliases: []string{"cdx"},
 		Summary: "Query the URL index for captures of a URL",
 		Long: `Search the Common Crawl URL index (CDX) for captures.
 
