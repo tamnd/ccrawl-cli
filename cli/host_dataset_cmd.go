@@ -144,23 +144,37 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	// ── Phase 2: Rank split ───────────────────────────────────────────────────
+	// Download the rank table (3-8 GB gzipped TSV) to disk first, then split.
+	// Downloading to disk with curl's --continue-at means interrupted downloads
+	// resume from where they left off rather than restarting from zero.
 	if !d.skipRank {
 		markerPath := filepath.Join(d.workDir, "rank.done")
+		rankCachePath := filepath.Join(d.workDir, "rank-table.tsv.gz")
 		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
-			logf("phase 2: rank split — streaming rank table (%s)", g.HostRankURL())
+			// Step 2a: download with resume support.
+			logf("phase 2a: downloading rank table to %s (resumes if interrupted)", rankCachePath)
 			t0 := time.Now()
-			counts, err := ccrawl.SplitRankByPrefix(ctx, app.HTTP, g.HostRankURL(), d.workDir, func(total int64) {
+			if err := ccrawl.DownloadRankTable(ctx, g.HostRankURL(), rankCachePath); err != nil {
+				return fmt.Errorf("phase 2a rank download: %w", err)
+			}
+			logf("phase 2a done in %s", time.Since(t0).Round(time.Second))
+
+			// Step 2b: split from local file.
+			logf("phase 2b: rank split from local file")
+			t0 = time.Now()
+			counts, err := ccrawl.SplitRankFromFile(ctx, rankCachePath, d.workDir, func(total int64) {
 				logf("  rank rows written: %d M", total/1_000_000)
 			})
 			if err != nil {
-				return fmt.Errorf("phase 2 rank split: %w", err)
+				return fmt.Errorf("phase 2b rank split: %w", err)
 			}
 			var total int64
 			for _, c := range counts {
 				total += c
 			}
-			logf("phase 2 done: %d rank rows in %s", total, time.Since(t0).Round(time.Second))
+			logf("phase 2b done: %d rank rows in %s", total, time.Since(t0).Round(time.Second))
 			_ = os.WriteFile(markerPath, []byte(fmt.Sprintf("rows=%d graph=%s\n", total, g.ID)), 0o644)
+			// Keep the local cache — it's needed if shards are re-built later.
 		} else {
 			logf("phase 2: rank split already done (marker found), skipping")
 		}

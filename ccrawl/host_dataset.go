@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -225,21 +226,82 @@ func SaveCDXSplitByPrefix(ctx context.Context, parquetURLs []string, crawlID, wo
 	return counts, nil
 }
 
-// SplitRankByPrefix downloads the rank table once and writes one gzipped TSV
-// file per prefix into workDir (rank-a.tsv.gz ... rank-misc.tsv.gz).
+// DownloadRankTable downloads the full rank table (gzipped TSV, 3-8 GB) to
+// rankCachePath in workDir using curl with HTTP range resume (--continue-at -).
+// If the file is already complete (i.e. curl exits 0 without needing to
+// download anything), this is a no-op beyond the curl HEAD check.
+// Uses curl so that interrupted downloads can be resumed without re-reading
+// from the beginning — essential for multi-GB files over unstable connections.
+func DownloadRankTable(ctx context.Context, rankURL, localPath string) error {
+	args := []string{
+		"-L",           // follow redirects
+		"-C", "-",      // resume from byte offset already downloaded
+		"-o", localPath,
+		"--retry", "5",
+		"--retry-delay", "30",
+		rankURL,
+	}
+	cmd := exec.CommandContext(ctx, "curl", args...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run()
+}
+
+// SplitRankFromFile reads the rank table from a local gzipped TSV file and
+// writes one per-prefix gzipped TSV into workDir. Suitable for use after
+// DownloadRankTable completes. Call signature identical to SplitRankByURL.
+func SplitRankFromFile(ctx context.Context, localPath, workDir string, progress func(total int64)) (map[string]int64, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("open rank table: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("gunzip rank table: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	return splitRankStream(ctx, gz, workDir, progress)
+}
+
+// SplitRankByPrefix downloads the rank table once via HTTP and writes one
+// gzipped TSV file per prefix into workDir (rank-a.tsv.gz ... rank-misc.tsv.gz).
 // Each line: harmonic_pos\tharmonic_val\tpagerank_pos\tpagerank_val\thost
+// For large rank tables that may fail mid-stream, prefer DownloadRankTable +
+// SplitRankFromFile which supports HTTP range resume via curl.
 func SplitRankByPrefix(ctx context.Context, h *HTTPClient, rankURL, workDir string, progress func(total int64)) (map[string]int64, error) {
+	resp, err := h.GetDownload(ctx, rankURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("rank table HTTP %d (%s)", resp.StatusCode, rankURL)
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = gz.Close() }()
+
+	return splitRankStream(ctx, gz, workDir, progress)
+}
+
+// splitRankStream is the shared rank-split logic: reads gzipped TSV lines from
+// r and fans each row out to the appropriate per-prefix gzipped TSV in workDir.
+func splitRankStream(ctx context.Context, r io.Reader, workDir string, progress func(total int64)) (map[string]int64, error) {
 	pw := newPrefixWriters(workDir, "rank", ".tsv.gz")
 	counts := make(map[string]int64)
 	var total int64
 
-	err := RankStream(ctx, h, rankURL, "", func(r Rank) error {
-		prefix := datasetPrefix(r.Key)
+	err := streamRankTSV(ctx, r, func(rank Rank) error {
+		prefix := datasetPrefix(rank.Key)
 		w, err := pw.get(prefix)
 		if err != nil {
 			return err
 		}
-		line := fmt.Sprintf("%d\t%g\t%d\t%g\t%s\n", r.HarmonicPos, r.HarmonicVal, r.PageRankPos, r.PageRankVal, r.Key)
+		line := fmt.Sprintf("%d\t%g\t%d\t%g\t%s\n", rank.HarmonicPos, rank.HarmonicVal, rank.PageRankPos, rank.PageRankVal, rank.Key)
 		if _, err := io.WriteString(w, line); err != nil {
 			return err
 		}
@@ -255,6 +317,30 @@ func SplitRankByPrefix(ctx context.Context, h *HTTPClient, rankURL, workDir stri
 		return nil, err
 	}
 	return counts, nil
+}
+
+// streamRankTSV parses the CC harmonic-rank gzipped TSV from r and calls fn
+// for each rank entry. The TSV format is documented in parseRank.
+func streamRankTSV(ctx context.Context, r io.Reader, fn func(Rank) error) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 1<<20), 8<<20)
+	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		line := sc.Text()
+		if rankComment(line) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) <= hostRevField {
+			continue
+		}
+		if err := fn(parseRank(fields)); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
 }
 
 // LoadCDXPrefix reads the CDX prefix file for the given prefix from workDir
