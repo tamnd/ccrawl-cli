@@ -73,8 +73,8 @@ func DiffCDXSQL(urlsA, urlsB []string, crawlA, crawlB string) string {
 	return `SELECT
     a.url_host_name AS host,
     COUNT(*) AS total_urls,
-    SUM(CASE WHEN a.url_digest != b.url_digest THEN 1 ELSE 0 END) AS changed_urls,
-    ROUND(SUM(CASE WHEN a.url_digest != b.url_digest THEN 1 ELSE 0 END)::double / NULLIF(COUNT(*), 0), 4) AS change_rate
+    SUM(CASE WHEN a.content_digest != b.content_digest THEN 1 ELSE 0 END) AS changed_urls,
+    ROUND(SUM(CASE WHEN a.content_digest != b.content_digest THEN 1 ELSE 0 END)::double / NULLIF(COUNT(*), 0), 4) AS change_rate
 FROM read_parquet(` + srcA + `, hive_partitioning=1) a
 JOIN read_parquet(` + srcB + `, hive_partitioning=1) b
     ON a.url = b.url

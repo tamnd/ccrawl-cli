@@ -89,20 +89,34 @@ func (f *Frontier) Len() int {
 
 // Pop removes and returns the highest-priority URL that is eligible to crawl
 // now (host delay has elapsed). Returns false if no eligible URL exists.
+//
+// To avoid starvation when the top-priority host is in its politeness window,
+// Pop scans up to scanLimit candidates before giving up. Skipped (ineligible)
+// entries are temporarily held and re-pushed so the heap remains consistent.
 func (f *Frontier) Pop(now int64) (FrontierEntry, bool) {
+	const scanLimit = 16
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for f.heap.Len() > 0 {
-		e := f.heap[0]
+
+	delayNanos := int64(f.delay)
+	var skipped []FrontierEntry
+
+	for f.heap.Len() > 0 && len(skipped) < scanLimit {
+		e := heap.Pop(&f.heap).(FrontierEntry)
 		lastAt := f.hostAt[e.Host]
-		minAt := lastAt + int64(f.delay.Seconds())
+		minAt := lastAt + delayNanos/int64(time.Second) // delay in seconds
 		if now >= minAt && now >= e.NextAt {
-			heap.Pop(&f.heap)
+			for _, s := range skipped {
+				heap.Push(&f.heap, s)
+			}
 			f.hostAt[e.Host] = now
 			return e, true
 		}
-		// nothing eligible
-		break
+		skipped = append(skipped, e)
+	}
+	// restore skipped entries
+	for _, s := range skipped {
+		heap.Push(&f.heap, s)
 	}
 	return FrontierEntry{}, false
 }
@@ -273,11 +287,20 @@ var DefaultCrawlConfig = CrawlConfig{
 	Timeout:     120 * time.Second,
 }
 
+// sharedTransport is a package-level transport so all CrawlURL calls share a
+// connection pool (keep-alives reused across requests to the same host).
+var sharedTransport = &http.Transport{
+	MaxIdleConns:        200,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // CrawlURL fetches a single URL and returns a CrawlResult. It does not consult
 // the robots.txt cache; the caller must do that before calling CrawlURL.
 func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult, error) {
 	client := &http.Client{
-		Timeout: cfg.Timeout,
+		Transport: sharedTransport,
+		Timeout:   cfg.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= cfg.MaxRedirect {
 				return http.ErrUseLastResponse

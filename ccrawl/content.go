@@ -1,6 +1,7 @@
 package ccrawl
 
 import (
+	"bytes"
 	"hash/fnv"
 	"math"
 	"regexp"
@@ -34,7 +35,7 @@ type QualityResult struct {
 // ExtractContent parses HTML bytes and returns a TextResult with clean text,
 // title, description, canonical URL, and inferred language.
 func ExtractContent(htmlBytes []byte) TextResult {
-	doc, err := html.Parse(strings.NewReader(string(htmlBytes)))
+	doc, err := html.Parse(bytes.NewReader(htmlBytes))
 	if err != nil {
 		return TextResult{}
 	}
@@ -50,7 +51,7 @@ func ExtractContent(htmlBytes []byte) TextResult {
 // HTMLCanonicalURL returns the best canonical URL from HTML headers (in priority
 // order): link[rel=canonical], og:url. Returns "" if none found.
 func HTMLCanonicalURL(htmlBytes []byte) string {
-	doc, err := html.Parse(strings.NewReader(string(htmlBytes)))
+	doc, err := html.Parse(bytes.NewReader(htmlBytes))
 	if err != nil {
 		return ""
 	}

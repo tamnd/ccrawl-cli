@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
@@ -20,10 +25,11 @@ func registerIndex(app *kit.App) {
 // ── index build ───────────────────────────────────────────────────────────────
 
 type indexBuildIn struct {
-	App    *App   `kit:"inject"`
-	Dir    string `kit:"flag" help:"directory to write the index into"`
-	Input  string `kit:"flag" help:"JSONL file of ForwardDoc records to index (or WET file URL)"`
-	URLs   string `kit:"flag,name=urls" help:"comma-separated WET file URLs to index"`
+	App     *App   `kit:"inject"`
+	Dir     string `kit:"flag" help:"directory to write the index into"`
+	Input   string `kit:"flag" help:"JSONL file of ForwardDoc records to index (or WET file URL)"`
+	URLs    string `kit:"flag,name=urls" help:"comma-separated WET file URLs to index"`
+	Workers int    `kit:"flag" help:"parallel fetch workers (default 8)"`
 }
 
 // IndexBuildResult reports the outcome of building an index.
@@ -61,16 +67,20 @@ Examples:
 		}
 		defer func() { _ = fw.Close() }()
 
-		var docsAdded int
+		workers := in.Workers
+		if workers <= 0 {
+			workers = 8
+		}
 
-		addURL := func(rawURL string) error {
-			rawURL = strings.TrimSpace(rawURL)
-			if rawURL == "" {
-				return nil
-			}
+		type fetchResult struct {
+			doc    ccrawl.ForwardDoc
+			tokens []string
+		}
+
+		fetchOne := func(rawURL string) (fetchResult, error) {
 			res, err := ccrawl.CrawlURL(ctx, rawURL, ccrawl.DefaultCrawlConfig)
 			if err != nil {
-				return err // non-fatal: caller decides
+				return fetchResult{}, err
 			}
 			tr := ccrawl.ExtractContent(res.Body)
 			canonURL := res.FinalURL
@@ -79,32 +89,70 @@ Examples:
 			}
 			docID := ccrawl.DocumentID(canonURL)
 			tokens := ccrawl.Tokenize(tr.Title + " " + tr.Body)
-			b.Add(docID, tokens)
-
 			snippet := tr.Body
 			if len(snippet) > 500 {
-				snippet = snippet[:500]
-			}
-			_ = fw.Write(ccrawl.ForwardDoc{
-				DocID:   docID,
-				URL:     res.FinalURL,
-				CanonURL: canonURL,
-				Host:    hostFromURL(res.FinalURL),
-				Title:   tr.Title,
-				Language: tr.Language,
-				WordCount: tr.WordCount,
-				Snippet: snippet,
-			})
-			docsAdded++
-			return nil
-		}
-
-		if in.URLs != "" {
-			for _, u := range strings.Split(in.URLs, ",") {
-				if err := addURL(u); err != nil {
-					fmt.Fprintf(os.Stderr, "warn: %s: %v\n", u, err)
+				rs := []rune(snippet)
+				if len(rs) > 500 {
+					snippet = string(rs[:500])
 				}
 			}
+			return fetchResult{
+				tokens: tokens,
+				doc: ccrawl.ForwardDoc{
+					DocID:     docID,
+					URL:       res.FinalURL,
+					CanonURL:  canonURL,
+					Host:      hostFromURL(res.FinalURL),
+					Title:     tr.Title,
+					Language:  tr.Language,
+					WordCount: tr.WordCount,
+					Snippet:   snippet,
+				},
+			}, nil
+		}
+
+		var docsAdded int
+
+		if in.URLs != "" {
+			var nonEmpty []string
+			for u := range strings.SplitSeq(in.URLs, ",") {
+				if u = strings.TrimSpace(u); u != "" {
+					nonEmpty = append(nonEmpty, u)
+				}
+			}
+
+			// Fan out N workers; drain results in one goroutine (no lock needed).
+			resCh := make(chan fetchResult, workers*2)
+			var drainWg sync.WaitGroup
+			drainWg.Go(func() {
+				for r := range resCh {
+					b.Add(r.doc.DocID, r.tokens)
+					_ = fw.Write(r.doc)
+					docsAdded++
+				}
+			})
+
+			eg, egCtx := errgroup.WithContext(ctx)
+			sem := make(chan struct{}, workers)
+			for _, u := range nonEmpty {
+				sem <- struct{}{}
+				eg.Go(func() error {
+					defer func() { <-sem }()
+					r, err := fetchOne(u)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warn: %s: %v\n", u, err)
+						return nil
+					}
+					select {
+					case resCh <- r:
+					case <-egCtx.Done():
+					}
+					return nil
+				})
+			}
+			_ = eg.Wait()
+			close(resCh)
+			drainWg.Wait()
 		}
 
 		if err := b.Flush(); err != nil {
@@ -201,74 +249,26 @@ func hostFromURL(rawURL string) string {
 
 func loadForwardIndex(path string) map[uint64]ccrawl.ForwardDoc {
 	m := make(map[uint64]ccrawl.ForwardDoc)
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return m
 	}
-	// Each line is a JSON object; parse minimal fields
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
 			continue
 		}
 		var fd ccrawl.ForwardDoc
-		// simple scan for known fields
-		fd.URL = jsonStringField(line, "url")
-		fd.Title = jsonStringField(line, "title")
-		fd.Snippet = jsonStringField(line, "snippet")
-		var docID uint64
-		fmt.Sscan(jsonStringField(line, "doc_id"), &docID)
-		if docID == 0 {
+		if err := json.Unmarshal(line, &fd); err != nil {
 			continue
 		}
-		fd.DocID = docID
-		m[docID] = fd
+		if fd.DocID == 0 {
+			continue
+		}
+		m[fd.DocID] = fd
 	}
 	return m
-}
-
-// jsonStringField extracts a JSON string field by name from a flat JSON object.
-// This is a best-effort parser for the forward index lines, not a full JSON parser.
-func jsonStringField(line, key string) string {
-	needle := `"` + key + `":`
-	idx := strings.Index(line, needle)
-	if idx < 0 {
-		return ""
-	}
-	rest := strings.TrimSpace(line[idx+len(needle):])
-	if rest == "" {
-		return ""
-	}
-	if rest[0] == '"' {
-		// string value
-		rest = rest[1:]
-		var val strings.Builder
-		for i := 0; i < len(rest); i++ {
-			if rest[i] == '\\' && i+1 < len(rest) {
-				i++
-				switch rest[i] {
-				case '"':
-					val.WriteByte('"')
-				case '\\':
-					val.WriteByte('\\')
-				case 'n':
-					val.WriteByte('\n')
-				default:
-					val.WriteByte(rest[i])
-				}
-				continue
-			}
-			if rest[i] == '"' {
-				break
-			}
-			val.WriteByte(rest[i])
-		}
-		return val.String()
-	}
-	// numeric value
-	end := strings.IndexAny(rest, ",}")
-	if end < 0 {
-		return rest
-	}
-	return strings.TrimSpace(rest[:end])
 }

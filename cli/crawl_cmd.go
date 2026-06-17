@@ -41,12 +41,12 @@ func registerCrawlSeed(app *kit.App) {
 		Parent: "crawl",
 		Summary: "Generate crawl seed URLs from the web-graph host rank table",
 		Long: `Stream the top hosts from the CC web-graph rank table and emit one seed URL
-per host (https://{host}/) as a SeedRecord. Use --min-tier to restrict to
+per host (https://{host}/) as a SeedRecord. Use --max-tier to restrict to
 high-priority hosts.
 
 Examples:
   ccrawl crawl seed --graph cc-main-2026-mar-apr-may -n 100 -o table
-  ccrawl crawl seed --graph cc-main-2026-mar-apr-may --min-tier 2 -n 1000000 -o jsonl > seeds.jsonl`,
+  ccrawl crawl seed --graph cc-main-2026-mar-apr-may --max-tier 2 -n 1000000 -o jsonl > seeds.jsonl`,
 	}, func(ctx context.Context, in crawlSeedIn, emit func(SeedRecord) error) error {
 		g, err := resolveGraph(ctx, in.App, in.Graph)
 		if err != nil {

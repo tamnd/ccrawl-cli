@@ -3,12 +3,14 @@ package ccrawl
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -74,18 +76,21 @@ func BM25IDF(N, df int) float64 {
 }
 
 // BM25TF computes the BM25 TF component.
-func BM25TF(tf int, dl, avgDL int, p BM25Params) float64 {
+func BM25TF(tf, dl int, avgDL float64, p BM25Params) float64 {
 	tfF := float64(tf)
-	ratio := float64(dl) / float64(max(1, avgDL))
+	ratio := float64(dl) / math.Max(1.0, avgDL)
 	return (tfF * (p.K1 + 1)) / (tfF + p.K1*(1-p.B+p.B*ratio))
 }
 
 // ── inverted index ────────────────────────────────────────────────────────────
 
-// PostingEntry is one (doc_id, term_freq) pair in a posting list.
+// PostingEntry is one (doc_id, term_freq, doc_len) triple in a posting list.
+// DL is the document token length, stored per-posting so BM25 length
+// normalization uses the actual document length rather than the corpus average.
 type PostingEntry struct {
 	DocID uint64
 	TF    uint32
+	DL    uint32 // document token length at index time
 }
 
 // InvertedIndexBuilder accumulates (term → postings) in memory and writes the
@@ -111,18 +116,20 @@ func NewInvertedIndexBuilder(dir string) (*InvertedIndexBuilder, error) {
 	}, nil
 }
 
-// Add indexes a single document.
+// Add indexes a single document. DL (the document token length) is stored
+// in each PostingEntry so BM25 scoring can use per-document length normalization.
 func (b *InvertedIndexBuilder) Add(docID uint64, tokens []string) {
 	b.N++
-	b.totalLen += len(tokens)
+	dl := uint32(len(tokens))
+	b.totalLen += int(dl)
 
 	// count term frequencies in this doc
-	tf := make(map[string]int)
+	tf := make(map[string]int, len(tokens)/2)
 	for _, tok := range tokens {
 		tf[tok]++
 	}
 	for term, freq := range tf {
-		b.postings[term] = append(b.postings[term], PostingEntry{DocID: docID, TF: uint32(freq)})
+		b.postings[term] = append(b.postings[term], PostingEntry{DocID: docID, TF: uint32(freq), DL: dl})
 		b.docFreq[term]++
 	}
 }
@@ -158,10 +165,14 @@ func (b *InvertedIndexBuilder) Flush() error {
 	pw := bufio.NewWriter(pf)
 	var postOffset int64
 
-	avgDL := 1
+	avgDL := 1.0
 	if b.N > 0 {
-		avgDL = b.totalLen / b.N
+		avgDL = float64(b.totalLen) / float64(b.N)
 	}
+
+	// countingWriter tracks how many bytes have been written to pw so we can
+	// compute postOffset in a single pass (avoids iterating each posting twice).
+	bytesWritten := int64(0)
 
 	for _, term := range terms {
 		posts := b.postings[term]
@@ -177,25 +188,20 @@ func (b *InvertedIndexBuilder) Flush() error {
 			return err
 		}
 
-		// write posting list: [count:varint] [delta:varint tf:varint] ...
-		startOff := postOffset
-		_ = startOff
-
+		// write posting list: [count:varint] [delta:varint tf:varint dl:varint] ...
+		// Track bytes written in a single pass to compute postOffset.
 		writeVarInt(pw, uint64(len(posts)))
+		bytesWritten += int64(varIntSize(uint64(len(posts))))
 		var prev uint64
 		for _, p := range posts {
 			delta := p.DocID - prev
 			prev = p.DocID
 			writeVarInt(pw, delta)
 			writeVarInt(pw, uint64(p.TF))
+			writeVarInt(pw, uint64(p.DL))
+			bytesWritten += int64(varIntSize(delta) + varIntSize(uint64(p.TF)) + varIntSize(uint64(p.DL)))
 		}
-		postOffset += int64(varIntSize(uint64(len(posts))))
-		prev = 0
-		for _, p := range posts {
-			delta := p.DocID - prev
-			prev = p.DocID
-			postOffset += int64(varIntSize(delta) + varIntSize(uint64(p.TF)))
-		}
+		postOffset = bytesWritten
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -210,7 +216,7 @@ func (b *InvertedIndexBuilder) Flush() error {
 		return err
 	}
 	defer sf.Close()
-	_, err = fmt.Fprintf(sf, "%d\t%d\n", b.N, avgDL)
+	_, err = fmt.Fprintf(sf, "%d\t%.4f\n", b.N, avgDL)
 	return err
 }
 
@@ -221,7 +227,7 @@ type IndexReader struct {
 	dir     string
 	terms   map[string]termEntry // populated by loadTerms()
 	N       int
-	AvgDL   int
+	AvgDL   float64
 	postF   *os.File
 }
 
@@ -273,18 +279,15 @@ func (r *IndexReader) loadTerms() error {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB — handles long terms
 	for sc.Scan() {
-		line := sc.Text()
-		parts := strings.Split(line, "\t")
+		parts := strings.SplitN(sc.Text(), "\t", 4)
 		if len(parts) != 4 {
 			continue
 		}
-		var offset int64
-		var df int
-		var idf float64
-		_, _ = fmt.Sscan(parts[1], &offset)
-		_, _ = fmt.Sscan(parts[2], &df)
-		_, _ = fmt.Sscan(parts[3], &idf)
+		offset, _ := strconv.ParseInt(parts[1], 10, 64)
+		df, _ := strconv.Atoi(parts[2])
+		idf, _ := strconv.ParseFloat(parts[3], 64)
 		r.terms[parts[0]] = termEntry{offset: offset, df: df, idf: idf}
 	}
 	return sc.Err()
@@ -309,11 +312,12 @@ func (r *IndexReader) Lookup(term string) ([]PostingEntry, float64, bool) {
 	for i := range posts {
 		delta, e1 := readVarInt(br)
 		tf, e2 := readVarInt(br)
-		if e1 != nil || e2 != nil {
+		dl, e3 := readVarInt(br)
+		if e1 != nil || e2 != nil || e3 != nil {
 			break
 		}
 		prev += delta
-		posts[i] = PostingEntry{DocID: prev, TF: uint32(tf)}
+		posts[i] = PostingEntry{DocID: prev, TF: uint32(tf), DL: uint32(dl)}
 	}
 	return posts, te.idf, true
 }
@@ -335,7 +339,7 @@ func (r *IndexReader) Search(tokens []string, k int) []ScoredDoc {
 			continue
 		}
 		for _, pe := range posts {
-			tf := BM25TF(int(pe.TF), r.AvgDL, r.AvgDL, p)
+			tf := BM25TF(int(pe.TF), int(pe.DL), r.AvgDL, p)
 			scores[pe.DocID] += idf * tf
 		}
 	}
@@ -419,9 +423,12 @@ func NewForwardIndexWriter(path string) (*ForwardIndexWriter, error) {
 
 // Write appends one ForwardDoc to the index.
 func (fw *ForwardIndexWriter) Write(d ForwardDoc) error {
-	line := fmt.Sprintf(`{"doc_id":%d,"url":%q,"canon_url":%q,"host":%q,"title":%q,"language":%q,"word_count":%d,"snippet":%q}`,
-		d.DocID, d.URL, d.CanonURL, d.Host, d.Title, d.Language, d.WordCount, d.Snippet)
-	_, err := fmt.Fprintln(fw.w, line)
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	_, err = fw.w.Write(b)
 	return err
 }
 

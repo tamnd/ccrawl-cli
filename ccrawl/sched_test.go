@@ -73,7 +73,7 @@ func TestDiffCDXSQL(t *testing.T) {
 		t.Fatal("empty SQL")
 	}
 	for _, want := range []string{
-		"url_host_name", "url_digest", "change_rate",
+		"url_host_name", "content_digest", "change_rate",
 		"CC-MAIN-2026-17", "CC-MAIN-2026-21",
 	} {
 		if !strings.Contains(sql, want) {
