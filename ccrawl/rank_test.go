@@ -69,6 +69,42 @@ func TestRankTopTLDFilter(t *testing.T) {
 	}
 }
 
+func TestRankStream(t *testing.T) {
+	srv, h := rankTableServer(t)
+	var got []Rank
+	err := RankStream(context.Background(), h, srv.URL, "", func(r Rank) error {
+		got = append(got, r)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("want 4 rows, got %d", len(got))
+	}
+	if got[0].Key != "googleapis.com" {
+		t.Errorf("first Key = %q, want googleapis.com", got[0].Key)
+	}
+	if got[3].Key != "nih.gov" {
+		t.Errorf("last Key = %q, want nih.gov", got[3].Key)
+	}
+}
+
+func TestRankStreamTLDFilter(t *testing.T) {
+	srv, h := rankTableServer(t)
+	var got []Rank
+	err := RankStream(context.Background(), h, srv.URL, "gov", func(r Rank) error {
+		got = append(got, r)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "nih.gov" {
+		t.Fatalf("tld=gov stream = %+v, want one row nih.gov", got)
+	}
+}
+
 func TestRankLookup(t *testing.T) {
 	srv, h := rankTableServer(t)
 	got, err := RankLookup(context.Background(), h, srv.URL, "google.com")

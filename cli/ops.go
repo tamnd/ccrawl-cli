@@ -18,6 +18,7 @@ func registerOps(app *kit.App) {
 	registerNewsList(app)
 	registerRank(app)
 	registerStats(app)
+	registerHost(app)
 }
 
 // searchIn is the URL-index query. Out is any because search has three shapes:
@@ -173,8 +174,14 @@ type rankLookupIn struct {
 type rankTopIn struct {
 	App   *App   `kit:"inject"`
 	Table string `kit:"flag" help:"URL of a gzipped rank table"`
-	TLD   string `kit:"flag" help:"restrict to a TLD"`
+	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
 	Limit int    `kit:"flag,inherit" name:"limit"`
+}
+
+type rankAllIn struct {
+	App   *App   `kit:"inject"`
+	Table string `kit:"flag" help:"URL of a gzipped rank table"`
+	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
 }
 
 func registerRank(app *kit.App) {
@@ -222,6 +229,25 @@ func registerRank(app *kit.App) {
 			}
 		}
 		return nil
+	})
+
+	kit.Handle(app, kit.OpMeta{
+		Name: "all", Parent: "rank",
+		Summary: "Stream every host from a rank table",
+		Long: `Stream all hosts from a Common Crawl web-graph rank table.
+
+The table is sorted by harmonic centrality (most central first). Use --tld to
+restrict output to a single top-level domain, and --limit to cap the row count.
+
+Examples:
+  ccrawl rank all --table https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2024-10/host/cc-main-2024-10-host-rank.txt.gz
+  ccrawl rank all --table <url> --tld com -n 1000
+  ccrawl rank all --table <url> -o jsonl > hosts.jsonl`,
+	}, func(ctx context.Context, in rankAllIn, emit func(ccrawl.Rank) error) error {
+		if in.Table == "" {
+			return usageErr("--table is required (URL of a gzipped rank table)")
+		}
+		return ccrawl.RankStream(ctx, in.App.HTTP, in.Table, in.TLD, emit)
 	})
 }
 
