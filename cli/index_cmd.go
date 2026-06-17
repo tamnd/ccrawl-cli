@@ -113,7 +113,7 @@ Examples:
 		return emit(IndexBuildResult{
 			IndexDir:  in.Dir,
 			DocsAdded: docsAdded,
-			Terms:     b.N, // reuse N as proxy (actual unique terms counted in Flush)
+			Terms:     b.TermCount,
 		})
 	})
 }

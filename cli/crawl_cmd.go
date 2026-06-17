@@ -21,10 +21,10 @@ func registerCrawl(app *kit.App) {
 // ── crawl seed ────────────────────────────────────────────────────────────────
 
 type crawlSeedIn struct {
-	App        *App   `kit:"inject"`
-	Graph      string `kit:"flag" help:"web-graph release ID (default: latest)"`
-	MaxSeeds   int    `kit:"flag,name=max-seeds" help:"max hosts to seed (default 10000000)"`
-	MinTier    int    `kit:"flag,name=min-tier" help:"only emit hosts at or above this tier (1–5)"`
+	App      *App   `kit:"inject"`
+	Graph    string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	MaxSeeds int    `kit:"flag,name=max-seeds" help:"max hosts to seed (default 10000000)"`
+	MaxTier  int    `kit:"flag,name=max-tier" help:"skip hosts at tiers higher than this (1=top 100K only, 5=all)"`
 }
 
 // SeedRecord is one crawl seed URL derived from the host rank table.
@@ -56,18 +56,20 @@ Examples:
 		if maxSeeds <= 0 {
 			maxSeeds = 10_000_000
 		}
-		minTier := in.MinTier
-		if minTier <= 0 {
-			minTier = 1
+		maxTier := in.MaxTier
+		if maxTier <= 0 || maxTier > 5 {
+			maxTier = 5 // emit all tiers by default
 		}
 		count := 0
 		return ccrawl.RankStream(ctx, in.App.HTTP, g.HostRankURL(), "", func(r ccrawl.Rank) error {
 			if count >= maxSeeds {
 				return errStop
 			}
-			tier := ccrawl.CrawlTier(r.HarmonicPos, 0.5) // default change rate
-			if tier > minTier {
-				return nil // skip lower-priority hosts
+			// Use change_rate=0.5 as conservative default for tier assignment.
+			// Tier 1 requires change_rate>0.8, so most hosts land in tier 2–5.
+			tier := ccrawl.CrawlTier(r.HarmonicPos, 0.5)
+			if tier > maxTier {
+				return nil // skip hosts below the requested tier ceiling
 			}
 			count++
 			return emit(SeedRecord{

@@ -91,11 +91,12 @@ type PostingEntry struct {
 // InvertedIndexBuilder accumulates (term → postings) in memory and writes the
 // index to disk when Flush() is called.
 type InvertedIndexBuilder struct {
-	dir      string
-	postings map[string][]PostingEntry // term → posting list
-	docFreq  map[string]int            // df per term
-	N        int                       // total docs indexed
-	totalLen int                       // sum of doc lengths (for avgdl)
+	dir       string
+	postings  map[string][]PostingEntry // term → posting list
+	docFreq   map[string]int            // df per term
+	N         int                       // total docs indexed
+	totalLen  int                       // sum of doc lengths (for avgdl)
+	TermCount int                       // unique term count (set by Flush)
 }
 
 // NewInvertedIndexBuilder creates a builder that writes to dir.
@@ -128,6 +129,7 @@ func (b *InvertedIndexBuilder) Add(docID uint64, tokens []string) {
 
 // Flush writes the inverted index to disk in shard_NNN/ directories.
 func (b *InvertedIndexBuilder) Flush() error {
+	b.TermCount = len(b.postings)
 	// sort terms
 	terms := make([]string, 0, len(b.postings))
 	for t := range b.postings {

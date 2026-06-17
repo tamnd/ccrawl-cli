@@ -30,9 +30,9 @@ type ServeResult struct {
 
 func registerServeAPI(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "serve",
+		Name:   "api",
 		Single: true,
-		Summary: "Start the ccrawl HTTP API server (v2)",
+		Summary: "Start the ccrawl v2 REST API server",
 		Long: `Start the ccrawl v2 HTTP API server. Exposes:
 
   GET /v2/host/{host}         enriched host profile
@@ -40,12 +40,12 @@ func registerServeAPI(app *kit.App) {
   GET /v2/search?q=&k=        full-text search (requires --index-dir)
   GET /v2/health              health check
 
-The host store is populated from the web-graph rank table. For full enrichment
-use 'ccrawl host enrich' first and point --db at the output.
+The host store is populated from the web-graph rank table on startup.
+For full enrichment run 'ccrawl host enrich' first.
 
 Examples:
-  ccrawl serve --addr :8080
-  ccrawl serve --addr :8080 --index-dir /data/idx`,
+  ccrawl api --addr :8080
+  ccrawl api --addr :8080 --index-dir /data/idx`,
 	}, func(ctx context.Context, in serveIn, emit func(ServeResult) error) error {
 		addr := in.Addr
 		if addr == "" {
