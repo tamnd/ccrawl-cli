@@ -45,20 +45,17 @@ unattended:
 }
 
 type hostDatasetCmd struct {
-	graph         string
-	workDir       string
-	outDir        string
-	prefix        string
-	noCDX         bool
-	upload        bool
-	hfRepo        string
-	skipCDX       bool
-	skipRank      bool
-	seqMode       bool
-	cdxBatch      int
-	cdxParallel   int
-	duckdbThreads int
-	memoryLimit   string
+	graph       string
+	workDir     string
+	outDir      string
+	prefix      string
+	noCDX       bool
+	upload      bool
+	hfRepo      string
+	skipCDX     bool
+	skipCDXAgg  bool
+	skipRank    bool
+	cdxWorkers  int
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -69,13 +66,10 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&d.noCDX, "no-cdx", false, "skip CDX enrichment (rank signals only)")
 	f.BoolVar(&d.upload, "upload", false, "upload each shard to HuggingFace after building")
 	f.StringVar(&d.hfRepo, "hf-repo", "open-index/cc-host-dataset", "HuggingFace dataset repository")
-	f.BoolVar(&d.skipCDX, "skip-cdx-prep", false, "skip CDX phase (assume cdx-*.jsonl.gz already present)")
-	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz already present)")
-	f.BoolVar(&d.seqMode, "seq", false, "download Parquet files sequentially instead of streaming via httpfs (avoids S3 rate limits, needs ~600 MB temp disk per prefix)")
-	f.IntVar(&d.cdxBatch, "cdx-batch", 1, "prefixes per DuckDB query (1=safe/slow, 3-4=fast on high-RAM machines; each extra prefix adds ~600 MB to the DuckDB hash table)")
-	f.IntVar(&d.cdxParallel, "cdx-parallel", 1, "concurrent DuckDB queries (multiply by cdx-batch×600 MB + 1.5 GB to get peak DuckDB RAM)")
-	f.IntVar(&d.duckdbThreads, "duckdb-threads", 2, "DuckDB SET threads= value per query (2 avoids S3 rate limits; raise on fast networks)")
-	f.StringVar(&d.memoryLimit, "memory-limit", "2GB", "DuckDB SET memory_limit= per query; raise when cdx-batch > 1 (e.g. 3.5GB for batch=3)")
+	f.BoolVar(&d.skipCDX, "skip-cdx-raw", false, "skip CDX raw extract phase (assume cdx-raw-*.jsonl.gz present)")
+	f.BoolVar(&d.skipCDXAgg, "skip-cdx-agg", false, "skip CDX aggregate phase (assume cdx-agg-*.jsonl.gz present)")
+	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz present)")
+	f.IntVar(&d.cdxWorkers, "cdx-workers", 8, "concurrent CDX Parquet download workers (lower if CC returns 429/403)")
 }
 
 func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
@@ -102,61 +96,41 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{time.Since(runStart).Round(time.Second)}, args...)...)
 	}
 
-	// ── Phase 1: CDX prep ────────────────────────────────────────────────────
-	// cdx-{prefix}.jsonl.gz files are the per-prefix markers. Both modes skip
-	// any file that already exists, so re-running is always safe.
+	// ── Phase 4: CDX raw extract ─────────────────────────────────────────────
+	// Downloads all 302 CDX Parquet files with N parallel workers, reads each
+	// with parquet-go (no DuckDB, no GROUP BY), and fans each row to its
+	// per-prefix cdx-raw-{prefix}.jsonl.gz file in one pass. No aggregation.
+	cdxPrefixes := ccrawl.DatasetPrefixes
+	if d.prefix != "" {
+		cdxPrefixes = []string{d.prefix}
+	}
 	if !d.noCDX && !d.skipCDX {
-		if !ccrawl.DuckDBAvailable() {
-			return fmt.Errorf("phase 1 requires duckdb on PATH; use --no-cdx to skip")
-		}
-		cdxPrefixes := ccrawl.DatasetPrefixes
-		if d.prefix != "" {
-			cdxPrefixes = []string{d.prefix}
-		}
 		urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, crawlID, "warc", app.Cfg.Source)
 		if err != nil {
-			return fmt.Errorf("phase 1 parquet URLs: %w", err)
+			return fmt.Errorf("CDX parquet URLs: %w", err)
 		}
+		logf("phase 4: CDX raw extract — %d files, %d workers", len(urls), d.cdxWorkers)
+		t0 := time.Now()
+		if err := ccrawl.ExtractCDXRaw(ctx, app.HTTP, urls, d.workDir, d.cdxWorkers, func(fileN int, rows int64) {
+			logf("  CDX file %d/%d done (%d rows total)", fileN, len(urls), rows)
+		}); err != nil {
+			return fmt.Errorf("phase 4 CDX raw: %w", err)
+		}
+		logf("phase 4 done in %s", time.Since(t0).Round(time.Second))
+	}
 
-		if d.seqMode {
-			// Sequential download mode: one file at a time, Go-level accumulation.
-			// Avoids S3 rate limiting; needs ~600 MB temp disk per prefix.
-			logf("phase 1: CDX prep (seq) — %d prefix(es), %d files each", len(cdxPrefixes), len(urls))
-			t0 := time.Now()
-			for _, prefix := range cdxPrefixes {
-				logf("  CDX prefix %q — downloading %d files sequentially", prefix, len(urls))
-				if err := ccrawl.SaveCDXSeqByPrefix(ctx, app.HTTP, urls, prefix, d.workDir, func(fileN int, hosts int64) {
-					logf("  CDX prefix %q: file %d/%d done, %d unique hosts", prefix, fileN, len(urls), hosts)
-				}); err != nil {
-					return fmt.Errorf("phase 1 CDX prep (seq) prefix %q: %w", prefix, err)
-				}
-			}
-			logf("phase 1 done in %s", time.Since(t0).Round(time.Second))
-		} else {
-			// httpfs mode: DuckDB streams all URLs via HTTP.
-			// cdx-batch>1 scans each 184 GB corpus once per N prefixes instead of N times.
-			// cdx-parallel>1 runs multiple DuckDB queries concurrently.
-			opts := ccrawl.CDXBatchOptions{
-				BatchSize:     d.cdxBatch,
-				Parallel:      d.cdxParallel,
-				DuckDBThreads: d.duckdbThreads,
-				MemoryLimit:   d.memoryLimit,
-			}
-			logf("phase 1: CDX prep — %d prefix(es), batch=%d parallel=%d threads=%d mem=%s",
-				len(cdxPrefixes), opts.BatchSize, opts.Parallel, opts.DuckDBThreads, opts.MemoryLimit)
-			t0 := time.Now()
-			counts, err := ccrawl.SaveCDXBatchByPrefix(ctx, urls, crawlID, d.workDir, cdxPrefixes, opts, func(prefix string, n int64) {
-				logf("  CDX prefix %q done (%d rows)", prefix, n)
-			})
-			if err != nil {
-				return fmt.Errorf("phase 1 CDX prep: %w", err)
-			}
-			var total int64
-			for _, c := range counts {
-				total += c
-			}
-			logf("phase 1 done: %d CDX rows in %s", total, time.Since(t0).Round(time.Second))
+	// ── Phase 5: CDX aggregate ────────────────────────────────────────────────
+	// Reads each cdx-raw-{prefix}.jsonl.gz locally and groups by host in Go.
+	// One row per unique host, written to cdx-agg-{prefix}.jsonl.gz.
+	if !d.noCDX && !d.skipCDXAgg {
+		logf("phase 5: CDX aggregate — %d prefixes", len(cdxPrefixes))
+		t0 := time.Now()
+		if err := ccrawl.AggregateCDXRaw(ctx, d.workDir, cdxPrefixes, 1, func(prefix string, hosts int64) {
+			logf("  CDX agg prefix %q done (%d hosts)", prefix, hosts)
+		}); err != nil {
+			return fmt.Errorf("phase 5 CDX agg: %w", err)
 		}
+		logf("phase 5 done in %s", time.Since(t0).Round(time.Second))
 	}
 
 	// ── Phase 2: Rank split ───────────────────────────────────────────────────

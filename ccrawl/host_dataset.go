@@ -476,10 +476,14 @@ func streamRankTSV(ctx context.Context, r io.Reader, fn func(Rank) error) error 
 	return sc.Err()
 }
 
-// LoadCDXPrefix reads the CDX prefix file for the given prefix from workDir
-// and calls fn for each HostCDXStats row.
+// LoadCDXPrefix reads the CDX aggregate file for the given prefix from workDir.
+// It prefers cdx-agg-{prefix}.jsonl.gz (new pipeline) and falls back to
+// cdx-{prefix}.jsonl.gz (old DuckDB pipeline) for backwards compatibility.
 func LoadCDXPrefix(workDir, prefix string, fn func(HostCDXStats) error) error {
-	path := fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, prefix)
+	path := fmt.Sprintf("%s/cdx-agg-%s.jsonl.gz", workDir, prefix)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		path = fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, prefix)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
