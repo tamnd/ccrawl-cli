@@ -56,7 +56,7 @@ Run it on a machine with a fast connection, or pipe to a file and query locally.
 
 ## CDX statistics per host
 
-`host cdx` runs a DuckDB `GROUP BY url_host_name` over the columnar Parquet index and returns per-host URL counts, HTTP status breakdown, top MIME type, language, first/last seen crawl, and total bytes:
+`host cdx` queries the columnar Parquet index and returns per-host URL counts, HTTP status breakdown, top MIME type, language, first/last seen crawl, and total bytes:
 
 ```bash
 ccrawl host cdx --filter golang.org -o json     # one host
@@ -66,6 +66,55 @@ ccrawl host cdx -n 100 -o jsonl                 # top 100 hosts by URL count
 Without `--filter` this scans ~184 GB of Parquet.
 It requires `duckdb` on your `PATH`.
 The query runs directly against the public S3 Parquet index, so no local download is needed.
+
+## Building the full host dataset
+
+`host dataset` builds a complete, pre-joined host dataset covering all 262 million hosts Common Crawl has ever seen.
+The output is partitioned Parquet shards — one per alphabet prefix plus `0` and `misc` — ready to upload to HuggingFace or query locally.
+
+```bash
+ccrawl host dataset \
+  --work-dir /data/cc-work \
+  --out-dir  /data/cc-shards
+```
+
+The pipeline runs four phases in sequence:
+
+| Phase | What happens | Typical time (server) |
+|---|---|---|
+| CDX raw extract | Downloads ~184 GB of Parquet across 302 files with 8 parallel workers, fans each row to a per-prefix `.jsonl.gz` file | ~2–3 h |
+| CDX aggregate | Groups raw rows by host using a local Go pass; no network I/O | ~15–30 min |
+| Rank split | Streams the rank table (~2.8 GB) and fans it to 28 per-prefix `.tsv.gz` files | ~10 min |
+| Shard build | Joins CDX + rank for each prefix and writes `hosts-{x}.parquet` | ~8 min |
+
+Every phase writes a `.done` marker so the run resumes cleanly if interrupted:
+
+```bash
+# resume after a crash or power cut — already-done phases are skipped
+ccrawl host dataset --work-dir /data/cc-work --out-dir /data/cc-shards
+```
+
+Tune the CDX worker count to your connection's bandwidth (default 8 is safe; raise to 16 on a fast server):
+
+```bash
+ccrawl host dataset --cdx-workers 16 --work-dir /data/cc-work --out-dir /data/cc-shards
+```
+
+Upload each shard to HuggingFace as it finishes and delete the local copy:
+
+```bash
+ccrawl host dataset \
+  --work-dir /data/cc-work \
+  --out-dir  /data/cc-shards \
+  --upload \
+  --hf-repo  your-org/cc-host-dataset
+```
+
+Process a single prefix first to measure throughput on your machine before running all 28:
+
+```bash
+ccrawl host dataset --prefix a --work-dir /data/cc-work --out-dir /data/cc-shards
+```
 
 ## Full enrichment pipeline
 

@@ -208,6 +208,7 @@ All subcommands accept `--graph <release-id>` to pin a specific web-graph releas
 | `host degrees` | Compute in-degree and out-degree from edge files (~7.7 GB) |
 | `host cdx` | Aggregate CDX statistics per host via DuckDB |
 | `host enrich` | Full enrichment pipeline: rank + degrees + CDX |
+| `host dataset` | Build all 262M hosts as partitioned Parquet shards |
 
 ### host top
 
@@ -267,6 +268,31 @@ ccrawl host enrich --degrees --cdx -o jsonl > enriched.jsonl
 | `--graph` | Web-graph release ID (default: latest) |
 | `--degrees` | Phase 3: compute in/out-degree from edge files (~7.7 GB) |
 | `--cdx` | Phase 4: aggregate CDX statistics via DuckDB (~184 GB) |
+
+### host dataset
+
+Builds a complete host dataset from scratch: ~184 GB of CDX Parquet + the rank table, joined and written as 28 per-prefix Parquet shards.
+Uses pure-Go parallel download (no DuckDB dependency) with per-phase resume markers.
+
+```sh
+ccrawl host dataset --work-dir /data/cc-work --out-dir /data/cc-shards
+ccrawl host dataset --prefix a --work-dir /data/cc-work --out-dir /data/cc-shards
+ccrawl host dataset --upload --hf-repo your-org/cc-host-dataset --work-dir /data --out-dir /data/shards
+```
+
+| Flag | Meaning |
+|---|---|
+| `--work-dir` | Directory for intermediate per-prefix files (default: `~/.ccrawl/dataset`) |
+| `--out-dir` | Directory for output Parquet shards (default: `.`) |
+| `--prefix` | Process only this prefix (a–z, 0, misc); empty = all 28 |
+| `--cdx-workers` | Concurrent CDX Parquet download workers (default 8) |
+| `--cdx-limit` | Stop after N CDX files; 0 = all (benchmarking only) |
+| `--skip-cdx-raw` | Skip CDX extract phase (assume `cdx-raw-*.jsonl.gz` present) |
+| `--skip-cdx-agg` | Skip CDX aggregate phase (assume `cdx-agg-*.jsonl.gz` present) |
+| `--skip-rank-split` | Skip rank-split phase (assume `rank-*.tsv.gz` present) |
+| `--upload` | Upload each shard to HuggingFace after building |
+| `--hf-repo` | HuggingFace dataset repository (default: `open-index/cc-host-dataset`) |
+| `--graph` | Web-graph release ID (default: latest) |
 
 ---
 
