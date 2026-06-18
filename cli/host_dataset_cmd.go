@@ -56,6 +56,7 @@ type hostDatasetCmd struct {
 	skipCDXAgg  bool
 	skipRank    bool
 	cdxWorkers  int
+	cdxLimit    int
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -70,6 +71,7 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&d.skipCDXAgg, "skip-cdx-agg", false, "skip CDX aggregate phase (assume cdx-agg-*.jsonl.gz present)")
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz present)")
 	f.IntVar(&d.cdxWorkers, "cdx-workers", 8, "concurrent CDX Parquet download workers (lower if CC returns 429/403)")
+	f.IntVar(&d.cdxLimit, "cdx-limit", 0, "stop after N CDX files (0=all; for benchmarking only)")
 }
 
 func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
@@ -111,7 +113,7 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		}
 		logf("phase 4: CDX raw extract — %d files, %d workers", len(urls), d.cdxWorkers)
 		t0 := time.Now()
-		if err := ccrawl.ExtractCDXRaw(ctx, app.HTTP, urls, d.workDir, d.cdxWorkers, func(fileN int, rows int64) {
+		if err := ccrawl.ExtractCDXRaw(ctx, app.HTTP, urls, d.workDir, d.cdxWorkers, d.cdxLimit, func(fileN int, rows int64) {
 			logf("  CDX file %d/%d done (%d rows total)", fileN, len(urls), rows)
 		}); err != nil {
 			return fmt.Errorf("phase 4 CDX raw: %w", err)

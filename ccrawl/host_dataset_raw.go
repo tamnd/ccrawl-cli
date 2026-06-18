@@ -10,21 +10,21 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
-
 	"github.com/parquet-go/parquet-go"
 )
 
 // CDXRawRow is the projected schema for CC CDX Parquet files.
 // parquet-go reads only these 8 columns, skipping the other ~22 in the file.
+// FetchTime is a string to avoid timestamp conversion overhead; parquet-go
+// encodes the INT64 microsecond timestamp directly into its string representation.
 type CDXRawRow struct {
-	URLHostName             string    `parquet:"url_host_name"`
-	URLHostRegisteredDomain string    `parquet:"url_host_registered_domain"`
-	FetchStatus             int32     `parquet:"fetch_status"`
-	ContentMIMEDetected     string    `parquet:"content_mime_detected"`
-	ContentLanguages        string    `parquet:"content_languages"`
-	FetchTime               time.Time `parquet:"fetch_time"`
-	WARCRecordLength        int64     `parquet:"warc_record_length"`
+	URLHostName             string `parquet:"url_host_name"`
+	URLHostRegisteredDomain string `parquet:"url_host_registered_domain"`
+	FetchStatus             int32  `parquet:"fetch_status"`
+	ContentMIMEDetected     string `parquet:"content_mime_detected"`
+	ContentLanguages        string `parquet:"content_languages"`
+	FetchTime               string `parquet:"fetch_time"`
+	WARCRecordLength        int64  `parquet:"warc_record_length"`
 }
 
 // CDXRawOutputRow is written to cdx-raw-{prefix}.jsonl.gz.
@@ -45,9 +45,10 @@ type CDXRawOutputRow struct {
 //
 // No aggregation is performed. Each URL capture becomes one output row.
 // Prefixes whose cdx-raw-{prefix}.done marker already exists are skipped.
+// limit, if > 0, stops after that many files (useful for benchmarking).
 //
 // progress is called after each source file is fully processed.
-func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, workDir string, workers int, progress func(fileN int, totalRows int64)) error {
+func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, workDir string, workers, limit int, progress func(fileN int, totalRows int64)) error {
 	if workers <= 0 {
 		workers = 8
 	}
@@ -77,7 +78,7 @@ func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, wor
 			}
 			return fmt.Errorf("create raw CDX file for prefix %q: %w", p, err)
 		}
-		gz := gzip.NewWriter(f)
+		gz, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
 		writers[p] = &cdxPrefixWriter{f: f, gz: gz, enc: json.NewEncoder(gz), tmp: tmp}
 	}
 
@@ -89,6 +90,9 @@ func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, wor
 
 	for i, url := range parquetURLs {
 		if ctx.Err() != nil {
+			break
+		}
+		if limit > 0 && i >= limit {
 			break
 		}
 		sem <- struct{}{}
@@ -151,8 +155,21 @@ func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, wor
 // parquet-go, and fans each row to the appropriate prefix writer.
 func extractOneParquetFile(ctx context.Context, h *HTTPClient, fileURL string, fileIdx int, workDir string, writers map[string]*cdxPrefixWriter) (int64, error) {
 	tmpPath := fmt.Sprintf("%s/.cdx-dl-%04d.parquet", workDir, fileIdx)
-	if err := DownloadToFile(ctx, h, fileURL, tmpPath); err != nil {
-		return 0, fmt.Errorf("download: %w", err)
+	// Retry download up to 3 times — CC returns HTTP/2 INTERNAL_ERROR intermittently.
+	var dlErr error
+	for attempt := range 3 {
+		_ = os.Remove(tmpPath)
+		dlErr = DownloadToFile(ctx, h, fileURL, tmpPath)
+		if dlErr == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		_ = attempt
+	}
+	if dlErr != nil {
+		return 0, fmt.Errorf("download: %w", dlErr)
 	}
 	defer func() { _ = os.Remove(tmpPath) }()
 
@@ -171,9 +188,7 @@ func extractOneParquetFile(ctx context.Context, h *HTTPClient, fileURL string, f
 			Lang:  row.ContentLanguages,
 			Bytes: row.WARCRecordLength,
 		}
-		if !row.FetchTime.IsZero() {
-			out.TS = row.FetchTime.Format("2006-01-02")
-		}
+		out.TS = row.FetchTime
 		pw.mu.Lock()
 		err := pw.enc.Encode(out)
 		if err == nil {
@@ -219,7 +234,7 @@ func streamParquetCDX(path string, emit func(CDXRawRow) error) error {
 	reader := parquet.NewGenericReader[CDXRawRow](pf)
 	defer func() { _ = reader.Close() }()
 
-	buf := make([]CDXRawRow, 1024)
+	buf := make([]CDXRawRow, 4096)
 	for {
 		n, err := reader.Read(buf)
 		for i := range buf[:n] {
