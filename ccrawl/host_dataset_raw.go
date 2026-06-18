@@ -14,29 +14,55 @@ import (
 )
 
 // CDXRawRow is the projected schema for CC CDX Parquet files.
-// parquet-go reads only these 8 columns, skipping the other ~22 in the file.
-// FetchTime is a string to avoid timestamp conversion overhead; parquet-go
-// encodes the INT64 microsecond timestamp directly into its string representation.
+// parquet-go reads only the declared columns, skipping the remaining ~9 in the file.
+// All timestamp fields are read as strings to avoid conversion overhead.
 type CDXRawRow struct {
+	URL                     string `parquet:"url"`
+	URLSurtKey              string `parquet:"url_surtkey"`
 	URLHostName             string `parquet:"url_host_name"`
 	URLHostRegisteredDomain string `parquet:"url_host_registered_domain"`
+	URLHostTLD              string `parquet:"url_host_tld"`
+	URLProtocol             string `parquet:"url_protocol"`
 	FetchStatus             int32  `parquet:"fetch_status"`
-	ContentMIMEDetected     string `parquet:"content_mime_detected"`
-	ContentLanguages        string `parquet:"content_languages"`
+	FetchRedirect           string `parquet:"fetch_redirect"`
 	FetchTime               string `parquet:"fetch_time"`
+	Digest                  string `parquet:"digest"`
+	ContentMIMEType         string `parquet:"content_mime_type"`
+	ContentMIMEDetected     string `parquet:"content_mime_detected"`
+	ContentCharset          string `parquet:"content_charset"`
+	ContentLanguages        string `parquet:"content_languages"`
+	ContentTruncated        string `parquet:"content_truncated"`
+	WARCFilename            string `parquet:"warc_filename"`
+	WARCRecordOffset        int64  `parquet:"warc_record_offset"`
 	WARCRecordLength        int64  `parquet:"warc_record_length"`
+	RobotsTXTForceGet       bool   `parquet:"robotstxt_forceget"`
+	Crawl                   string `parquet:"crawl"`
 }
 
 // CDXRawOutputRow is written to cdx-raw-{prefix}.jsonl.gz.
-// Short field names reduce storage.
+// Short field names reduce storage size.
+// All fields map 1:1 to CDX Parquet columns — no aggregation.
 type CDXRawOutputRow struct {
-	Host  string `json:"host"`
-	RD    string `json:"rd,omitempty"`
-	ST    int32  `json:"st"`
-	MIME  string `json:"mime,omitempty"`
-	Lang  string `json:"lang,omitempty"`
-	TS    string `json:"ts,omitempty"`
-	Bytes int64  `json:"bytes,omitempty"`
+	Host     string `json:"host"`
+	RD       string `json:"rd,omitempty"`
+	TLD      string `json:"tld,omitempty"`
+	Proto    string `json:"proto,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Surt     string `json:"surt,omitempty"`
+	ST       int32  `json:"st"`
+	Redir    string `json:"redir,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+	MIME     string `json:"mime,omitempty"`
+	MIMEDecl string `json:"mime_d,omitempty"`
+	Charset  string `json:"charset,omitempty"`
+	Lang     string `json:"lang,omitempty"`
+	Trunc    string `json:"trunc,omitempty"`
+	TS       string `json:"ts,omitempty"`
+	Bytes    int64  `json:"bytes,omitempty"`
+	WARCFile string `json:"warc_f,omitempty"`
+	WARCOff  int64  `json:"warc_o,omitempty"`
+	RobotsOK bool   `json:"robots_ok,omitempty"`
+	Crawl    string `json:"crawl,omitempty"`
 }
 
 // ExtractCDXRaw downloads each of parquetURLs with up to workers goroutines,
@@ -181,14 +207,27 @@ func extractOneParquetFile(ctx context.Context, h *HTTPClient, fileURL string, f
 			return nil // prefix already done
 		}
 		out := CDXRawOutputRow{
-			Host:  row.URLHostName,
-			RD:    row.URLHostRegisteredDomain,
-			ST:    row.FetchStatus,
-			MIME:  row.ContentMIMEDetected,
-			Lang:  row.ContentLanguages,
-			Bytes: row.WARCRecordLength,
+			Host:     row.URLHostName,
+			RD:       row.URLHostRegisteredDomain,
+			TLD:      row.URLHostTLD,
+			Proto:    row.URLProtocol,
+			URL:      row.URL,
+			Surt:     row.URLSurtKey,
+			ST:       row.FetchStatus,
+			Redir:    row.FetchRedirect,
+			Digest:   row.Digest,
+			MIME:     row.ContentMIMEDetected,
+			MIMEDecl: row.ContentMIMEType,
+			Charset:  row.ContentCharset,
+			Lang:     row.ContentLanguages,
+			Trunc:    row.ContentTruncated,
+			TS:       row.FetchTime,
+			Bytes:    row.WARCRecordLength,
+			WARCFile: row.WARCFilename,
+			WARCOff:  row.WARCRecordOffset,
+			RobotsOK: row.RobotsTXTForceGet,
+			Crawl:    row.Crawl,
 		}
-		out.TS = row.FetchTime
 		pw.mu.Lock()
 		err := pw.enc.Encode(out)
 		if err == nil {

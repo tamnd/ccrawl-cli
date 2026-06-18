@@ -14,8 +14,45 @@ import (
 	"sync"
 )
 
-// HostDatasetRow is the Parquet schema for one row of the public cc-host-dataset.
-// It combines rank signals, graph topology, and CDX statistics into a flat record.
+// URLDatasetRow is the Parquet schema for one row of the public cc-host-dataset.
+// Each row is one URL capture from the CC CDX index, enriched with host rank signals.
+// No aggregation — callers GROUP BY host to compute per-host statistics.
+type URLDatasetRow struct {
+	// CDX identity
+	Host     string `parquet:"host,dict"`
+	RD       string `parquet:"rd,dict"`
+	TLD      string `parquet:"tld,dict"`
+	Proto    string `parquet:"proto,dict"`
+	URL      string `parquet:"url"`
+	Surt     string `parquet:"surt"`
+	// CDX fetch result
+	ST       int32  `parquet:"st"`
+	Redir    string `parquet:"redir"`
+	Digest   string `parquet:"digest,dict"`
+	// CDX content
+	MIME     string `parquet:"mime,dict"`
+	MIMEDecl string `parquet:"mime_d,dict"`
+	Charset  string `parquet:"charset,dict"`
+	Lang     string `parquet:"lang,dict"`
+	Trunc    string `parquet:"trunc,dict"`
+	// CDX timing and size
+	TS       string `parquet:"ts,dict"`
+	Bytes    int64  `parquet:"bytes"`
+	// CDX WARC location (for byte-range content fetch)
+	WARCFile string `parquet:"warc_f,dict"`
+	WARCOff  int64  `parquet:"warc_o"`
+	RobotsOK bool   `parquet:"robots_ok"`
+	Crawl    string `parquet:"crawl,dict"`
+	// Rank signals (joined from rank table by host)
+	GraphID      string  `parquet:"graph_id,dict"`
+	HarmonicPos  int64   `parquet:"harmonic_pos"`
+	HarmonicVal  float64 `parquet:"harmonic_val"`
+	PageRankPos  int64   `parquet:"pagerank_pos"`
+	PageRankVal  float64 `parquet:"pagerank_val"`
+}
+
+// HostDatasetRow is the legacy per-host aggregated schema kept for reference.
+// The active pipeline now uses URLDatasetRow (per-URL rows, no aggregation).
 type HostDatasetRow struct {
 	Host             string  `parquet:"host"`
 	HostRev          string  `parquet:"host_rev,dict"`
@@ -476,18 +513,56 @@ func streamRankTSV(ctx context.Context, r io.Reader, fn func(Rank) error) error 
 	return sc.Err()
 }
 
-// LoadCDXPrefix reads the CDX aggregate file for the given prefix from workDir.
-// It prefers cdx-agg-{prefix}.jsonl.gz (new pipeline) and falls back to
-// cdx-{prefix}.jsonl.gz (old DuckDB pipeline) for backwards compatibility.
-func LoadCDXPrefix(workDir, prefix string, fn func(HostCDXStats) error) error {
-	path := fmt.Sprintf("%s/cdx-agg-%s.jsonl.gz", workDir, prefix)
+// rankEntry holds rank signals for one host, loaded from rank-{prefix}.tsv.gz.
+type rankEntry struct {
+	HarmonicPos int64
+	HarmonicVal float64
+	PageRankPos int64
+	PageRankVal float64
+}
+
+// loadRankPrefix reads rank-{prefix}.tsv.gz and returns a host→rankEntry map.
+func loadRankPrefix(workDir, prefix string) (map[string]rankEntry, error) {
+	rankPath := fmt.Sprintf("%s/rank-%s.tsv.gz", workDir, prefix)
+	rf, err := os.Open(rankPath)
+	if err != nil {
+		return nil, fmt.Errorf("open rank file: %w", err)
+	}
+	defer func() { _ = rf.Close() }()
+	gz, err := gzip.NewReader(rf)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = gz.Close() }()
+
+	m := make(map[string]rankEntry, 12_000_000)
+	sc := bufio.NewScanner(gz)
+	sc.Buffer(make([]byte, 1<<20), 4<<20)
+	for sc.Scan() {
+		fields := strings.SplitN(sc.Text(), "\t", 5)
+		if len(fields) < 5 {
+			continue
+		}
+		hp, _ := strconv.ParseInt(fields[0], 10, 64)
+		hv, _ := strconv.ParseFloat(fields[1], 64)
+		pp, _ := strconv.ParseInt(fields[2], 10, 64)
+		pv, _ := strconv.ParseFloat(fields[3], 64)
+		m[fields[4]] = rankEntry{hp, hv, pp, pv}
+	}
+	return m, sc.Err()
+}
+
+// LoadCDXRawPrefix streams per-URL rows from cdx-raw-{prefix}.jsonl.gz.
+// Falls back to cdx-{prefix}.jsonl.gz for backward compatibility with old DuckDB output.
+func LoadCDXRawPrefix(workDir, prefix string, fn func(CDXRawOutputRow) error) error {
+	path := fmt.Sprintf("%s/cdx-raw-%s.jsonl.gz", workDir, prefix)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, prefix)
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // no CDX data for this prefix
+			return nil
 		}
 		return err
 	}
@@ -499,109 +574,78 @@ func LoadCDXPrefix(workDir, prefix string, fn func(HostCDXStats) error) error {
 	defer func() { _ = gz.Close() }()
 
 	sc := bufio.NewScanner(gz)
-	sc.Buffer(make([]byte, 1<<20), 4<<20)
+	sc.Buffer(make([]byte, 4<<20), 8<<20)
 	for sc.Scan() {
-		var s HostCDXStats
-		if err := json.Unmarshal(sc.Bytes(), &s); err != nil {
+		var r CDXRawOutputRow
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			continue
 		}
-		if err := fn(s); err != nil {
+		if err := fn(r); err != nil {
 			return err
 		}
 	}
 	return sc.Err()
 }
 
-// BuildDatasetShard reads the rank prefix file and CDX prefix file from workDir,
-// joins them, and writes a zstd-compressed Parquet file to outPath.
+// BuildDatasetShard reads cdx-raw-{prefix}.jsonl.gz (per-URL rows) and the rank
+// prefix file, joins rank signals by host, and writes a zstd-compressed Parquet
+// file with one URLDatasetRow per URL capture.
 // Returns the number of rows written.
 func BuildDatasetShard(ctx context.Context, prefix, workDir, crawlID, graphID, outPath string, progress func(n int64)) (int64, error) {
-	// Load CDX map for this prefix into RAM
-	cdxMap := make(map[string]HostCDXStats)
-	if err := LoadCDXPrefix(workDir, prefix, func(s HostCDXStats) error {
-		cdxMap[s.Host] = s
-		return nil
-	}); err != nil {
-		return 0, fmt.Errorf("load CDX cache for prefix %q: %w", prefix, err)
+	// Load rank map into RAM (~300 MB for typical prefix).
+	rankMap, err := loadRankPrefix(workDir, prefix)
+	if err != nil {
+		return 0, fmt.Errorf("load rank for prefix %q: %w", prefix, err)
 	}
 
-	// Open Parquet writer
-	out, err := NewParquetWriter[HostDatasetRow](outPath)
+	out, err := NewParquetWriter[URLDatasetRow](outPath)
 	if err != nil {
 		return 0, err
 	}
-
-	// Stream rank prefix file
-	rankPath := fmt.Sprintf("%s/rank-%s.tsv.gz", workDir, prefix)
-	rf, err := os.Open(rankPath)
-	if err != nil {
-		_ = out.Close()
-		return 0, fmt.Errorf("open rank file: %w", err)
-	}
-	defer func() { _ = rf.Close() }()
-	gz, err := gzip.NewReader(rf)
-	if err != nil {
-		_ = out.Close()
-		return 0, err
-	}
-	defer func() { _ = gz.Close() }()
 
 	var n int64
-	sc := bufio.NewScanner(gz)
-	sc.Buffer(make([]byte, 1<<20), 4<<20)
-	for sc.Scan() {
+	if err := LoadCDXRawPrefix(workDir, prefix, func(r CDXRawOutputRow) error {
 		if err := ctx.Err(); err != nil {
-			_ = out.Close()
-			return n, err
+			return err
 		}
-		fields := strings.SplitN(sc.Text(), "\t", 5)
-		if len(fields) < 5 {
-			continue
+		row := URLDatasetRow{
+			Host:     r.Host,
+			RD:       r.RD,
+			TLD:      r.TLD,
+			Proto:    r.Proto,
+			URL:      r.URL,
+			Surt:     r.Surt,
+			ST:       r.ST,
+			Redir:    r.Redir,
+			Digest:   r.Digest,
+			MIME:     r.MIME,
+			MIMEDecl: r.MIMEDecl,
+			Charset:  r.Charset,
+			Lang:     r.Lang,
+			Trunc:    r.Trunc,
+			TS:       r.TS,
+			Bytes:    r.Bytes,
+			WARCFile: r.WARCFile,
+			WARCOff:  r.WARCOff,
+			RobotsOK: r.RobotsOK,
+			Crawl:    r.Crawl,
+			GraphID:  graphID,
 		}
-		hp, _ := strconv.ParseInt(fields[0], 10, 64)
-		hv, _ := strconv.ParseFloat(fields[1], 64)
-		pp, _ := strconv.ParseInt(fields[2], 10, 64)
-		pv, _ := strconv.ParseFloat(fields[3], 64)
-		host := fields[4]
-
-		row := HostDatasetRow{
-			Host:             host,
-			HostRev:          reverseHost(host),
-			TLD:              hostTLD(host),
-			RegisteredDomain: registeredDomain(host),
-			CrawlID:          crawlID,
-			GraphID:          graphID,
-			HarmonicPos:      hp,
-			HarmonicVal:      hv,
-			PageRankPos:      pp,
-			PageRankVal:      pv,
+		if re, ok := rankMap[r.Host]; ok {
+			row.HarmonicPos = re.HarmonicPos
+			row.HarmonicVal = re.HarmonicVal
+			row.PageRankPos = re.PageRankPos
+			row.PageRankVal = re.PageRankVal
 		}
-		if s, ok := cdxMap[host]; ok {
-			if s.RegisteredDomain != "" {
-				row.RegisteredDomain = s.RegisteredDomain
-			}
-			row.URLCount = s.URLCount
-			row.Status2xx = s.Status2xx
-			row.Status3xx = s.Status3xx
-			row.Status4xx = s.Status4xx
-			row.Status5xx = s.Status5xx
-			row.TopMIME = s.TopMIME
-			row.Language = s.Language
-			row.FirstSeen = s.FirstSeen
-			row.LastSeen = s.LastSeen
-			row.TotalBytes = s.TotalBytes
-		}
-
 		if err := out.Write(row); err != nil {
-			_ = out.Close()
-			return n, err
+			return err
 		}
 		n++
-		if progress != nil && n%500_000 == 0 {
+		if progress != nil && n%1_000_000 == 0 {
 			progress(n)
 		}
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	}); err != nil {
 		_ = out.Close()
 		return n, err
 	}
