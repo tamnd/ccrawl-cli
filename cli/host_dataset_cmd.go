@@ -45,16 +45,20 @@ unattended:
 }
 
 type hostDatasetCmd struct {
-	graph    string
-	workDir  string
-	outDir   string
-	prefix   string
-	noCDX    bool
-	upload   bool
-	hfRepo   string
-	skipCDX  bool
-	skipRank bool
-	seqMode  bool
+	graph         string
+	workDir       string
+	outDir        string
+	prefix        string
+	noCDX         bool
+	upload        bool
+	hfRepo        string
+	skipCDX       bool
+	skipRank      bool
+	seqMode       bool
+	cdxBatch      int
+	cdxParallel   int
+	duckdbThreads int
+	memoryLimit   string
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -68,6 +72,10 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&d.skipCDX, "skip-cdx-prep", false, "skip CDX phase (assume cdx-*.jsonl.gz already present)")
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz already present)")
 	f.BoolVar(&d.seqMode, "seq", false, "download Parquet files sequentially instead of streaming via httpfs (avoids S3 rate limits, needs ~600 MB temp disk per prefix)")
+	f.IntVar(&d.cdxBatch, "cdx-batch", 1, "prefixes per DuckDB query (1=safe/slow, 3-4=fast on high-RAM machines; each extra prefix adds ~600 MB to the DuckDB hash table)")
+	f.IntVar(&d.cdxParallel, "cdx-parallel", 1, "concurrent DuckDB queries (multiply by cdx-batch×600 MB + 1.5 GB to get peak DuckDB RAM)")
+	f.IntVar(&d.duckdbThreads, "duckdb-threads", 2, "DuckDB SET threads= value per query (2 avoids S3 rate limits; raise on fast networks)")
+	f.StringVar(&d.memoryLimit, "memory-limit", "2GB", "DuckDB SET memory_limit= per query; raise when cdx-batch > 1 (e.g. 3.5GB for batch=3)")
 }
 
 func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
@@ -125,12 +133,20 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 			}
 			logf("phase 1 done in %s", time.Since(t0).Round(time.Second))
 		} else {
-			// httpfs mode: DuckDB streams all URLs via HTTP in one query per prefix.
-			logf("phase 1: CDX prep — %d prefix(es) via DuckDB (~184 GB Parquet total, ~1/26 per prefix)", len(cdxPrefixes))
+			// httpfs mode: DuckDB streams all URLs via HTTP.
+			// cdx-batch>1 scans each 184 GB corpus once per N prefixes instead of N times.
+			// cdx-parallel>1 runs multiple DuckDB queries concurrently.
+			opts := ccrawl.CDXBatchOptions{
+				BatchSize:     d.cdxBatch,
+				Parallel:      d.cdxParallel,
+				DuckDBThreads: d.duckdbThreads,
+				MemoryLimit:   d.memoryLimit,
+			}
+			logf("phase 1: CDX prep — %d prefix(es), batch=%d parallel=%d threads=%d mem=%s",
+				len(cdxPrefixes), opts.BatchSize, opts.Parallel, opts.DuckDBThreads, opts.MemoryLimit)
 			t0 := time.Now()
-			var counts map[string]int64
-			counts, err = ccrawl.SaveCDXSplitByPrefix(ctx, urls, crawlID, d.workDir, cdxPrefixes, func(prefix string, total int64) {
-				logf("  CDX prefix %q done (%d total rows so far)", prefix, total)
+			counts, err := ccrawl.SaveCDXBatchByPrefix(ctx, urls, crawlID, d.workDir, cdxPrefixes, opts, func(prefix string, n int64) {
+				logf("  CDX prefix %q done (%d rows)", prefix, n)
 			})
 			if err != nil {
 				return fmt.Errorf("phase 1 CDX prep: %w", err)

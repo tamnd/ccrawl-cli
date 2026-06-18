@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // HostDatasetRow is the Parquet schema for one row of the public cc-host-dataset.
@@ -109,29 +110,26 @@ func (pw *prefixWriters) close() {
 	}
 }
 
-// HostCDXPrefixSQL returns the CDX aggregation SQL filtered to a single prefix
-// letter. On low-RAM machines this is the safe approach: one DuckDB run per
-// prefix means the GROUP BY hash table covers only ~1/26 of all hosts (~2-4M
-// unique entries, ~600 MB) instead of all 100M+ (>15 GB).
-//
-// tempDir, if non-empty, configures DuckDB to spill the hash aggregate to disk
-// when it exceeds the memory limit (essential on machines with < 4 GB free RAM).
+// HostCDXPrefixSQL returns the CDX aggregation SQL filtered to a single prefix.
+// Superseded by HostCDXBatchSQL; kept for external callers and --seq mode.
 func HostCDXPrefixSQL(parquetURLs []string, crawlID, prefix, tempDir string) string {
+	return HostCDXBatchSQL(parquetURLs, crawlID, []string{prefix}, tempDir, "2GB", 2)
+}
+
+// HostCDXBatchSQL returns CDX aggregation SQL for a batch of prefix keys.
+// Each result row has an extra `prefix_key` column for routing to per-prefix files.
+// Scanning N prefixes in one query reads 184 GB once instead of N times.
+func HostCDXBatchSQL(parquetURLs []string, crawlID string, prefixes []string, tempDir, memLimit string, threads int) string {
 	src := ParquetListLiteral(parquetURLs)
-	var hostFilter string
-	switch {
-	case prefix >= "a" && prefix <= "z":
-		hostFilter = fmt.Sprintf("AND LOWER(SUBSTR(url_host_name, 1, 1)) = '%s'", sqlEscape(prefix))
-	case prefix == "0":
-		hostFilter = "AND LOWER(SUBSTR(url_host_name, 1, 1)) BETWEEN '0' AND '9'"
-	default:
-		hostFilter = "AND LOWER(SUBSTR(url_host_name, 1, 1)) NOT BETWEEN 'a' AND 'z' AND LOWER(SUBSTR(url_host_name, 1, 1)) NOT BETWEEN '0' AND '9'"
+	filter := cdxBatchFilter(prefixes)
+	if memLimit == "" {
+		memLimit = "2GB"
 	}
-	preamble := "SET threads=2;"
+	preamble := fmt.Sprintf("SET threads=%d;", threads)
 	if tempDir != "" {
 		preamble += fmt.Sprintf(
-			" SET memory_limit='2GB'; SET temp_directory='%s'; SET max_temp_directory_size='40GB';",
-			sqlEscape(tempDir),
+			" SET memory_limit='%s'; SET temp_directory='%s'; SET max_temp_directory_size='40GB';",
+			memLimit, sqlEscape(tempDir),
 		)
 	}
 	return preamble + fmt.Sprintf(`
@@ -147,83 +145,218 @@ SELECT
     MODE(content_languages) AS language,
     MIN(CAST(fetch_time AS VARCHAR)) AS first_seen,
     MAX(CAST(fetch_time AS VARCHAR)) AS last_seen,
-    SUM(COALESCE(warc_record_length, 0)) AS total_bytes
+    SUM(COALESCE(warc_record_length, 0)) AS total_bytes,
+    CASE
+      WHEN LOWER(SUBSTR(url_host_name, 1, 1)) BETWEEN 'a' AND 'z' THEN LOWER(SUBSTR(url_host_name, 1, 1))
+      WHEN LOWER(SUBSTR(url_host_name, 1, 1)) BETWEEN '0' AND '9' THEN '0'
+      ELSE 'misc'
+    END AS prefix_key
 FROM read_parquet(%s, hive_partitioning=1)
 WHERE crawl = '%s'
-  %s
-GROUP BY url_host_name`, src, sqlEscape(crawlID), hostFilter)
+  AND url_host_name IS NOT NULL AND url_host_name != ''
+  AND %s
+GROUP BY url_host_name`, src, sqlEscape(crawlID), filter)
 }
 
-// SaveCDXSplitByPrefix runs one DuckDB aggregation per prefix letter and writes
-// cdx-{prefix}.jsonl.gz files into workDir. Running one prefix at a time keeps the
-// DuckDB GROUP BY hash table to ~600 MB (2-4M unique hosts) instead of >15 GB for
-// all 100M+ hosts at once — this makes it safe on machines with 5.8 GB RAM.
-// prefixes is the list of prefix keys to process; pass DatasetPrefixes for all.
-// progress is called after each prefix completes with the running total and current prefix.
-func SaveCDXSplitByPrefix(ctx context.Context, parquetURLs []string, crawlID, workDir string, prefixes []string, progress func(prefix string, n int64)) (map[string]int64, error) {
-	counts := make(map[string]int64)
-	var total int64
-
-	for _, prefix := range prefixes {
-		outPath := fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, prefix)
-		// Skip if already written (resumable)
-		if _, err := os.Stat(outPath); err == nil {
-			// Count approximate rows by re-reading? For now just skip.
-			continue
-		}
-
-		f, err := os.Create(outPath)
-		if err != nil {
-			return nil, fmt.Errorf("create cdx file for prefix %q: %w", prefix, err)
-		}
-		gz := gzip.NewWriter(f)
-		enc := json.NewEncoder(gz)
-		var n int64
-
-		tempDir := workDir + "/duck-tmp"
-		if err := os.MkdirAll(tempDir, 0o755); err != nil {
-			_ = os.Remove(outPath)
-			return nil, fmt.Errorf("create DuckDB temp dir: %w", err)
-		}
-		sql := HostCDXPrefixSQL(parquetURLs, crawlID, prefix, tempDir)
-		runErr := RunDuckDBJSON(ctx, "", sql, func(row map[string]any) error {
-			s := HostCDXStats{
-				Host:             stringVal(row, "url_host_name"),
-				RegisteredDomain: stringVal(row, "registered_domain"),
-				URLCount:         int64Val(row, "url_count"),
-				Status2xx:        int64Val(row, "status_2xx"),
-				Status3xx:        int64Val(row, "status_3xx"),
-				Status4xx:        int64Val(row, "status_4xx"),
-				Status5xx:        int64Val(row, "status_5xx"),
-				TopMIME:          stringVal(row, "top_mime"),
-				Language:         stringVal(row, "language"),
-				FirstSeen:        stringVal(row, "first_seen"),
-				LastSeen:         stringVal(row, "last_seen"),
-				TotalBytes:       int64Val(row, "total_bytes"),
-			}
-			if s.Host == "" {
-				return nil
-			}
-			if err := enc.Encode(s); err != nil {
-				return err
-			}
-			n++
-			return nil
-		})
-		_ = gz.Close()
-		_ = f.Close()
-
-		if runErr != nil {
-			_ = os.Remove(outPath) // don't leave a partial file
-			return counts, fmt.Errorf("CDX query for prefix %q: %w", prefix, runErr)
-		}
-		counts[prefix] = n
-		total += n
-		if progress != nil {
-			progress(prefix, total)
+// cdxBatchFilter builds the WHERE clause for a batch of prefix keys.
+func cdxBatchFilter(prefixes []string) string {
+	var parts []string
+	for _, p := range prefixes {
+		switch {
+		case p >= "a" && p <= "z":
+			parts = append(parts, fmt.Sprintf("LOWER(SUBSTR(url_host_name, 1, 1)) = '%s'", sqlEscape(p)))
+		case p == "0":
+			parts = append(parts, "LOWER(SUBSTR(url_host_name, 1, 1)) BETWEEN '0' AND '9'")
+		default:
+			parts = append(parts, "(LOWER(SUBSTR(url_host_name, 1, 1)) NOT BETWEEN 'a' AND 'z' AND LOWER(SUBSTR(url_host_name, 1, 1)) NOT BETWEEN '0' AND '9')")
 		}
 	}
-	return counts, nil
+	if len(parts) == 0 {
+		return "1=0"
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// CDXBatchOptions controls how SaveCDXBatchByPrefix scans and fans CDX data.
+type CDXBatchOptions struct {
+	// BatchSize is the number of prefix letters per DuckDB query (default 1).
+	// Higher values reduce total S3 reads at the cost of a larger hash table.
+	// Rule of thumb: each extra prefix adds ~600 MB to the DuckDB hash table.
+	BatchSize int
+	// Parallel is how many DuckDB queries run concurrently (default 1).
+	// Memory budget: Parallel × (BatchSize × 600 MB + 1.5 GB DuckDB overhead).
+	Parallel int
+	// DuckDBThreads is passed as SET threads=N inside each query (default 2).
+	// Higher values speed up CPU-bound aggregation; each thread also opens one
+	// extra S3 connection, so keep ≤4 to avoid CC rate limiting.
+	DuckDBThreads int
+	// MemoryLimit is passed as SET memory_limit= per DuckDB instance (default "2GB").
+	// When BatchSize > 1 increase this to BatchSize × 600 MB + 1 GB headroom.
+	MemoryLimit string
+}
+
+func (o *CDXBatchOptions) withDefaults() CDXBatchOptions {
+	out := *o
+	if out.BatchSize <= 0 {
+		out.BatchSize = 1
+	}
+	if out.Parallel <= 0 {
+		out.Parallel = 1
+	}
+	if out.DuckDBThreads <= 0 {
+		out.DuckDBThreads = 2
+	}
+	if out.MemoryLimit == "" {
+		out.MemoryLimit = "2GB"
+	}
+	return out
+}
+
+// SaveCDXSplitByPrefix is the original one-prefix-at-a-time implementation.
+// Prefer SaveCDXBatchByPrefix for new code.
+func SaveCDXSplitByPrefix(ctx context.Context, parquetURLs []string, crawlID, workDir string, prefixes []string, progress func(prefix string, n int64)) (map[string]int64, error) {
+	return SaveCDXBatchByPrefix(ctx, parquetURLs, crawlID, workDir, prefixes, CDXBatchOptions{}, progress)
+}
+
+// SaveCDXBatchByPrefix runs CDX aggregation in batches of opts.BatchSize prefixes,
+// with up to opts.Parallel batches in flight at once. Compared to
+// SaveCDXSplitByPrefix with BatchSize=1, Parallel=1, a batch of N prefixes reads
+// the same 184 GB Parquet corpus once instead of N times — at the cost of a
+// proportionally larger DuckDB GROUP BY hash table.
+//
+// Already-written cdx-{prefix}.jsonl.gz files are skipped, so re-running is safe.
+// Each batch writes atomically via .tmp rename.
+func SaveCDXBatchByPrefix(ctx context.Context, parquetURLs []string, crawlID, workDir string, prefixes []string, opts CDXBatchOptions, progress func(prefix string, n int64)) (map[string]int64, error) {
+	opts = opts.withDefaults()
+
+	// Partition prefixes into batches, skipping fully-written ones.
+	type batchWork struct{ prefixes []string }
+	var batches []batchWork
+	for i := 0; i < len(prefixes); i += opts.BatchSize {
+		end := i + opts.BatchSize
+		if end > len(prefixes) {
+			end = len(prefixes)
+		}
+		var needed []string
+		for _, p := range prefixes[i:end] {
+			out := fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, p)
+			if _, err := os.Stat(out); os.IsNotExist(err) {
+				needed = append(needed, p)
+			}
+		}
+		if len(needed) > 0 {
+			batches = append(batches, batchWork{needed})
+		}
+	}
+
+	counts := make(map[string]int64)
+	var mu sync.Mutex
+	sem := make(chan struct{}, opts.Parallel)
+	var wg sync.WaitGroup
+	var firstErr error
+
+	for _, b := range batches {
+		b := b
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			bc, err := saveCDXBatch(ctx, parquetURLs, crawlID, workDir, b.prefixes, opts.DuckDBThreads, opts.MemoryLimit)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("CDX batch %v: %w", b.prefixes, err)
+			}
+			for p, n := range bc {
+				counts[p] = n
+				if progress != nil {
+					progress(p, n)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return counts, firstErr
+}
+
+// saveCDXBatch runs one DuckDB query covering all prefixes in the batch.
+// Writes cdx-{prefix}.jsonl.gz.tmp then renames to final on success.
+func saveCDXBatch(ctx context.Context, parquetURLs []string, crawlID, workDir string, prefixes []string, threads int, memLimit string) (map[string]int64, error) {
+	// Per-batch DuckDB temp dir avoids collisions when parallel > 1.
+	batchKey := strings.Join(prefixes, "_")
+	tempDir := fmt.Sprintf("%s/duck-tmp-%s", workDir, batchKey)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create DuckDB temp dir: %w", err)
+	}
+
+	// Open per-prefix temp writers.
+	type prefixState struct {
+		f    *os.File
+		gz   *gzip.Writer
+		enc  *json.Encoder
+		n    int64
+		tmp  string
+		final string
+	}
+	states := make(map[string]*prefixState, len(prefixes))
+	for _, p := range prefixes {
+		final := fmt.Sprintf("%s/cdx-%s.jsonl.gz", workDir, p)
+		tmp := final + ".tmp"
+		f, err := os.Create(tmp)
+		if err != nil {
+			for _, s := range states {
+				_ = s.gz.Close(); _ = s.f.Close(); _ = os.Remove(s.tmp)
+			}
+			return nil, fmt.Errorf("create tmp for prefix %q: %w", p, err)
+		}
+		gz := gzip.NewWriter(f)
+		states[p] = &prefixState{f: f, gz: gz, enc: json.NewEncoder(gz), tmp: tmp, final: final}
+	}
+
+	sql := HostCDXBatchSQL(parquetURLs, crawlID, prefixes, tempDir, memLimit, threads)
+	runErr := RunDuckDBJSON(ctx, "", sql, func(row map[string]any) error {
+		pk := stringVal(row, "prefix_key")
+		st := states[pk]
+		if st == nil {
+			return nil
+		}
+		s := HostCDXStats{
+			Host:             stringVal(row, "url_host_name"),
+			RegisteredDomain: stringVal(row, "registered_domain"),
+			URLCount:         int64Val(row, "url_count"),
+			Status2xx:        int64Val(row, "status_2xx"),
+			Status3xx:        int64Val(row, "status_3xx"),
+			Status4xx:        int64Val(row, "status_4xx"),
+			Status5xx:        int64Val(row, "status_5xx"),
+			TopMIME:          stringVal(row, "top_mime"),
+			Language:         stringVal(row, "language"),
+			FirstSeen:        stringVal(row, "first_seen"),
+			LastSeen:         stringVal(row, "last_seen"),
+			TotalBytes:       int64Val(row, "total_bytes"),
+		}
+		if s.Host == "" {
+			return nil
+		}
+		st.n++
+		return st.enc.Encode(s)
+	})
+
+	counts := make(map[string]int64, len(prefixes))
+	for p, st := range states {
+		_ = st.gz.Close()
+		_ = st.f.Close()
+		if runErr == nil {
+			_ = os.Rename(st.tmp, st.final)
+			counts[p] = st.n
+		} else {
+			_ = os.Remove(st.tmp)
+		}
+	}
+	_ = os.RemoveAll(tempDir)
+	return counts, runErr
 }
 
 // DownloadRankTable downloads the full rank table (gzipped TSV, 3-8 GB) to
