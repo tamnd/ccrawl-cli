@@ -45,18 +45,18 @@ unattended:
 }
 
 type hostDatasetCmd struct {
-	graph       string
-	workDir     string
-	outDir      string
-	prefix      string
-	noCDX       bool
-	upload      bool
-	hfRepo      string
-	skipCDX     bool
-	skipCDXAgg  bool
-	skipRank    bool
-	cdxWorkers  int
-	cdxLimit    int
+	graph      string
+	workDir    string
+	outDir     string
+	prefix     string
+	noCDX      bool
+	cdxAgg     bool
+	upload     bool
+	hfRepo     string
+	skipCDX    bool
+	skipRank   bool
+	cdxWorkers int
+	cdxLimit   int
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -65,10 +65,10 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&d.outDir, "out-dir", ".", "directory for output Parquet shards")
 	f.StringVar(&d.prefix, "prefix", "", "process only this prefix (a-z, 0, misc); empty = all")
 	f.BoolVar(&d.noCDX, "no-cdx", false, "skip CDX enrichment (rank signals only)")
+	f.BoolVar(&d.cdxAgg, "cdx-agg", false, "also write cdx-agg-*.jsonl.gz per-host summary files after raw extract")
 	f.BoolVar(&d.upload, "upload", false, "upload each shard to HuggingFace after building")
 	f.StringVar(&d.hfRepo, "hf-repo", "open-index/cc-host-dataset", "HuggingFace dataset repository")
 	f.BoolVar(&d.skipCDX, "skip-cdx-raw", false, "skip CDX raw extract phase (assume cdx-raw-*.jsonl.gz present)")
-	f.BoolVar(&d.skipCDXAgg, "skip-cdx-agg", false, "skip CDX aggregate phase (assume cdx-agg-*.jsonl.gz present)")
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz present)")
 	f.IntVar(&d.cdxWorkers, "cdx-workers", 8, "concurrent CDX Parquet download workers (lower if CC returns 429/403)")
 	f.IntVar(&d.cdxLimit, "cdx-limit", 0, "stop after N CDX files (0=all; for benchmarking only)")
@@ -121,11 +121,12 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		logf("phase 4 done in %s", time.Since(t0).Round(time.Second))
 	}
 
-	// ── Phase 5: CDX aggregate ────────────────────────────────────────────────
-	// Reads each cdx-raw-{prefix}.jsonl.gz locally and groups by host in Go.
-	// One row per unique host, written to cdx-agg-{prefix}.jsonl.gz.
-	if !d.noCDX && !d.skipCDXAgg {
-		logf("phase 5: CDX aggregate — %d prefixes", len(cdxPrefixes))
+	// ── Phase 5: CDX aggregate (opt-in) ──────────────────────────────────────
+	// Off by default. Pass --cdx-agg to also write cdx-agg-{prefix}.jsonl.gz
+	// per-host summary files alongside the raw files. Shard build (phase 3)
+	// reads cdx-raw-* directly and does not need these files.
+	if !d.noCDX && d.cdxAgg {
+		logf("phase 5: CDX aggregate (opt-in) — %d prefixes", len(cdxPrefixes))
 		t0 := time.Now()
 		if err := ccrawl.AggregateCDXRaw(ctx, d.workDir, cdxPrefixes, 1, func(prefix string, hosts int64) {
 			logf("  CDX agg prefix %q done (%d hosts)", prefix, hosts)
