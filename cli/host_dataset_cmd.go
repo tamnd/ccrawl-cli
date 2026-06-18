@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -53,6 +52,8 @@ type hostDatasetCmd struct {
 	cdxAgg     bool
 	upload     bool
 	hfRepo     string
+	hfToken    string
+	hfPrivate  bool
 	skipCDX    bool
 	skipRank   bool
 	cdxWorkers int
@@ -67,7 +68,9 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&d.noCDX, "no-cdx", false, "skip CDX enrichment (rank signals only)")
 	f.BoolVar(&d.cdxAgg, "cdx-agg", false, "also write cdx-agg-*.jsonl.gz per-host summary files after raw extract")
 	f.BoolVar(&d.upload, "upload", false, "upload each shard to HuggingFace after building")
-	f.StringVar(&d.hfRepo, "hf-repo", "open-index/cc-host-dataset", "HuggingFace dataset repository")
+	f.StringVar(&d.hfRepo, "hf-repo", "open-index/cc-host-dataset", "HuggingFace dataset repository (org/name)")
+	f.StringVar(&d.hfToken, "hf-token", "", "HuggingFace token (default: $HUGGINGFACE_TOKEN)")
+	f.BoolVar(&d.hfPrivate, "hf-private", false, "create HuggingFace repo as private")
 	f.BoolVar(&d.skipCDX, "skip-cdx-raw", false, "skip CDX raw extract phase (assume cdx-raw-*.jsonl.gz present)")
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz present)")
 	f.IntVar(&d.cdxWorkers, "cdx-workers", 8, "concurrent CDX Parquet download workers (lower if CC returns 429/403)")
@@ -96,6 +99,20 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{time.Since(runStart).Round(time.Second)}, args...)...)
+	}
+
+	// Set up HF client if upload requested.
+	var hf *ccrawl.HFClient
+	if d.upload {
+		hf = ccrawl.NewHFClient(d.hfToken)
+		if !hf.Valid() {
+			return fmt.Errorf("--upload requires HUGGINGFACE_TOKEN env var or --hf-token flag")
+		}
+		logf("HF upload enabled: repo=%s private=%v", d.hfRepo, d.hfPrivate)
+		if err := hf.CreateDatasetRepo(ctx, d.hfRepo, d.hfPrivate); err != nil {
+			return fmt.Errorf("create HF repo: %w", err)
+		}
+		logf("HF repo ready: https://huggingface.co/datasets/%s", d.hfRepo)
 	}
 
 	// ── Phase 4: CDX raw extract ─────────────────────────────────────────────
@@ -138,13 +155,11 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 
 	// ── Phase 2: Rank split ───────────────────────────────────────────────────
 	// Download the rank table (3-8 GB gzipped TSV) to disk first, then split.
-	// Downloading to disk with curl's --continue-at means interrupted downloads
-	// resume from where they left off rather than restarting from zero.
+	// Downloading to disk means interrupted downloads resume from where they left off.
 	if !d.skipRank {
 		markerPath := filepath.Join(d.workDir, "rank.done")
 		rankCachePath := filepath.Join(d.workDir, "rank-table.tsv.gz")
 		if _, err := os.Stat(markerPath); os.IsNotExist(err) {
-			// Step 2a: download with resume support.
 			logf("phase 2a: downloading rank table to %s (resumes if interrupted)", rankCachePath)
 			t0 := time.Now()
 			if err := ccrawl.DownloadRankTable(ctx, g.HostRankURL(), rankCachePath); err != nil {
@@ -152,7 +167,6 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 			}
 			logf("phase 2a done in %s", time.Since(t0).Round(time.Second))
 
-			// Step 2b: split from local file.
 			logf("phase 2b: rank split from local file")
 			t0 = time.Now()
 			counts, err := ccrawl.SplitRankFromFile(ctx, rankCachePath, d.workDir, func(total int64) {
@@ -167,13 +181,15 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 			}
 			logf("phase 2b done: %d rank rows in %s", total, time.Since(t0).Round(time.Second))
 			_ = os.WriteFile(markerPath, []byte(fmt.Sprintf("rows=%d graph=%s\n", total, g.ID)), 0o644)
-			// Keep the local cache — it's needed if shards are re-built later.
 		} else {
 			logf("phase 2: rank split already done (marker found), skipping")
 		}
 	}
 
 	// ── Phase 3: Per-prefix shards ────────────────────────────────────────────
+	// For each prefix: build Parquet shard, optionally commit to HF, remove local file.
+	// Commit path: data/crawl={crawlID}/subset=urls/hosts-{prefix}.parquet
+	// Hive-partition layout lets DuckDB read with hive_partitioning=true.
 	prefixes := ccrawl.DatasetPrefixes
 	if d.prefix != "" {
 		prefixes = []string{d.prefix}
@@ -211,7 +227,6 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		shardTimes = append(shardTimes, elapsed)
 		logf("shard %s done: %d rows in %s", prefix, n, elapsed.Round(time.Second))
 
-		// Estimate remaining time after at least 2 shards
 		if len(shardTimes) >= 2 {
 			var sum time.Duration
 			for _, d := range shardTimes {
@@ -220,19 +235,24 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 			avg := sum / time.Duration(len(shardTimes))
 			remaining := len(prefixes) - (i + 1)
 			eta := time.Duration(remaining) * avg
-			totalElapsed := time.Since(shardStart)
 			logf("estimate: avg %.0fs/shard, %d shards left, ETA ~%s (running %.0fs total)",
-				avg.Seconds(), remaining, eta.Round(time.Minute), totalElapsed.Seconds())
+				avg.Seconds(), remaining, eta.Round(time.Minute), time.Since(shardStart).Seconds())
 		}
 
-		// Upload to HuggingFace
-		if d.upload {
-			if err := hfUpload(ctx, d.hfRepo, outPath, fmt.Sprintf("data/train/hosts-%s.parquet", prefix)); err != nil {
-				logf("WARNING: upload failed for %s: %v", prefix, err)
+		if hf != nil {
+			remotePath := ccrawl.HFShardPath(crawlID, "urls", prefix)
+			msg := fmt.Sprintf("Add crawl=%s/subset=urls/prefix=%s (%d rows)", crawlID, prefix, n)
+			logf("shard %s: committing to HF %s/%s ...", prefix, d.hfRepo, remotePath)
+			t1 := time.Now()
+			commitURL, err := hf.CommitWithRetry(ctx, d.hfRepo, msg, []ccrawl.HFOperation{
+				{LocalPath: outPath, PathInRepo: remotePath},
+			}, 5)
+			if err != nil {
+				logf("WARNING: HF commit failed for shard %s: %v", prefix, err)
 			} else {
-				logf("shard %s: uploaded to %s", prefix, d.hfRepo)
-				if err := os.Remove(outPath); err != nil {
-					logf("WARNING: failed to remove %s: %v", outPath, err)
+				logf("shard %s: committed in %s — %s", prefix, time.Since(t1).Round(time.Second), commitURL)
+				if removeErr := os.Remove(outPath); removeErr != nil {
+					logf("WARNING: failed to remove local shard %s: %v", outPath, removeErr)
 				}
 			}
 		}
@@ -241,24 +261,6 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	logf("all shards done in %s", time.Since(runStart).Round(time.Second))
-	return nil
-}
-
-// hfUpload uploads a local file to a HuggingFace dataset repository.
-// Requires huggingface-cli on PATH.
-func hfUpload(ctx context.Context, repo, localPath, remotePath string) error {
-	_, err := exec.LookPath("huggingface-cli")
-	if err != nil {
-		return fmt.Errorf("huggingface-cli not found on PATH")
-	}
-	cmd := exec.CommandContext(ctx, "huggingface-cli", "upload",
-		"--repo-type", "dataset",
-		repo, localPath, remotePath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("huggingface-cli upload: %w", err)
-	}
 	return nil
 }
 
