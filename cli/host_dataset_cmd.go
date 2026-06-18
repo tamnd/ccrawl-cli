@@ -195,8 +195,37 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		prefixes = []string{d.prefix}
 	}
 
-	var shardTimes []time.Duration
-	shardStart := time.Now()
+	var (
+		shardTimes      []time.Duration
+		shardStart      = time.Now()
+		committedShards int
+		totalURLs       int64
+		totalBytes      int64
+	)
+
+	// Count already-done shards for accurate README stats on resume.
+	for _, p := range prefixes {
+		doneM := filepath.Join(d.workDir, fmt.Sprintf("shard-%s.done", p))
+		if _, e := os.Stat(doneM); e == nil {
+			committedShards++
+		}
+	}
+
+	readmePath := filepath.Join(d.workDir, "README.md")
+
+	writeReadme := func() {
+		if hf == nil {
+			return
+		}
+		readme := ccrawl.GenerateDatasetREADME(ccrawl.DatasetStats{
+			CrawlID:         crawlID,
+			CommittedShards: committedShards,
+			TotalShards:     len(prefixes),
+			TotalURLs:       totalURLs,
+			TotalBytes:      totalBytes,
+		})
+		_ = os.WriteFile(readmePath, []byte(readme), 0o644)
+	}
 
 	for i, prefix := range prefixes {
 		outPath := filepath.Join(d.outDir, fmt.Sprintf("hosts-%s.parquet", prefix))
@@ -225,6 +254,7 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 
 		elapsed := time.Since(t0)
 		shardTimes = append(shardTimes, elapsed)
+		totalURLs += n
 		logf("shard %s done: %d rows in %s", prefix, n, elapsed.Round(time.Second))
 
 		if len(shardTimes) >= 2 {
@@ -240,20 +270,29 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		}
 
 		if hf != nil {
+			committedShards++
+			writeReadme()
+
 			remotePath := ccrawl.HFShardPath(crawlID, "urls", prefix)
 			msg := fmt.Sprintf("Add crawl=%s/subset=urls/prefix=%s (%d rows)", crawlID, prefix, n)
-			logf("shard %s: committing to HF %s/%s ...", prefix, d.hfRepo, remotePath)
+			logf("shard %s: committing to HF %s ...", prefix, remotePath)
 			t1 := time.Now()
-			commitURL, err := hf.CommitWithRetry(ctx, d.hfRepo, msg, []ccrawl.HFOperation{
+
+			ops := []ccrawl.HFOperation{
 				{LocalPath: outPath, PathInRepo: remotePath},
-			}, 5)
+				{LocalPath: readmePath, PathInRepo: "README.md"},
+			}
+			commitURL, err := hf.CommitWithRetry(ctx, d.hfRepo, msg, ops, 5)
 			if err != nil {
 				logf("WARNING: HF commit failed for shard %s: %v", prefix, err)
+				committedShards-- // undo — marker not written
 			} else {
 				logf("shard %s: committed in %s — %s", prefix, time.Since(t1).Round(time.Second), commitURL)
 				if removeErr := os.Remove(outPath); removeErr != nil {
 					logf("WARNING: failed to remove local shard %s: %v", outPath, removeErr)
 				}
+				_ = os.WriteFile(doneMarker, []byte(fmt.Sprintf("rows=%d elapsed=%s\n", n, elapsed)), 0o644)
+				continue
 			}
 		}
 
