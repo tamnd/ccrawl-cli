@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/tamnd/any-cli/kit"
@@ -262,6 +263,7 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 		elapsed := time.Since(t0)
 		shardTimes = append(shardTimes, elapsed)
 		totalURLs += n
+		debug.FreeOSMemory() // return rank map memory to OS before next shard
 		logf("shard %s done: %d rows in %s", prefix, n, elapsed.Round(time.Second))
 
 		if len(shardTimes) >= 2 {
@@ -445,6 +447,7 @@ func (d *hostDatasetCmd) runBatched(ctx context.Context, app *App, g ccrawl.WebG
 			}
 			batchRows += n
 			outPaths = append(outPaths, outPath)
+			debug.FreeOSMemory() // return rank map memory to OS before next prefix
 		}
 		logf("batch %d/%d: shards done — %d rows in %s", chunkNum, totalBatches, batchRows, time.Since(t0).Round(time.Second))
 
