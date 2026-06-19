@@ -106,7 +106,7 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 	if d.upload {
 		hf = ccrawl.NewHFClient(d.hfToken)
 		if !hf.Valid() {
-			return fmt.Errorf("--upload requires HUGGINGFACE_TOKEN env var or --hf-token flag")
+			return fmt.Errorf("--upload requires HF_TOKEN env var or --hf-token flag")
 		}
 		logf("HF upload enabled: repo=%s private=%v", d.hfRepo, d.hfPrivate)
 		if err := hf.CreateDatasetRepo(ctx, d.hfRepo, d.hfPrivate); err != nil {

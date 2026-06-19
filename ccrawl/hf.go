@@ -55,8 +55,12 @@ type HFClient struct {
 	http  *http.Client
 }
 
-// NewHFClient creates an HFClient. If token is empty, HUGGINGFACE_TOKEN is used.
+// NewHFClient creates an HFClient. If token is empty, HF_TOKEN is used
+// (falling back to HUGGINGFACE_TOKEN for compatibility).
 func NewHFClient(token string) *HFClient {
+	if token == "" {
+		token = os.Getenv("HF_TOKEN")
+	}
 	if token == "" {
 		token = os.Getenv("HUGGINGFACE_TOKEN")
 	}
