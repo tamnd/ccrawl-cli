@@ -36,9 +36,10 @@ func (g WebGraph) HostEdgesManifestURL() string {
 // graphBaseURL is the root of all hyperlinkgraph releases.
 const graphBaseURL = "https://data.commoncrawl.org/projects/hyperlinkgraph/"
 
-// reGraphID matches a web-graph release directory name. The page uses both
-// href="cc-main-.../" and href="cc-main-.../index.html" forms.
-var reGraphID = regexp.MustCompile(`href="(cc-main-\d{4}-[^/"]+)[/"]`)
+// reGraphID matches a web-graph release directory name from the full HF URL
+// (e.g. href="https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2026-mar-apr-may/...")
+// or from a relative path (e.g. href="cc-main-.../").
+var reGraphID = regexp.MustCompile(`hyperlinkgraph/(cc-main-[^/"]+)[/"]`)
 
 // LatestWebGraph fetches the CC web-graphs index page and returns the most recent
 // host-level graph release. Results are cached for 24 hours.
