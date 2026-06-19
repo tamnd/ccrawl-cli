@@ -587,6 +587,100 @@ func LoadCDXRawPrefix(workDir, prefix string, fn func(CDXRawOutputRow) error) er
 	return sc.Err()
 }
 
+// LoadCDXRawChunk streams per-URL rows from cdx-raw-{prefix}-chunk{NNN}.jsonl.gz.
+func LoadCDXRawChunk(workDir, prefix string, chunk int, fn func(CDXRawOutputRow) error) error {
+	path := CDXBatchPath(workDir, prefix, chunk)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gz.Close() }()
+
+	sc := bufio.NewScanner(gz)
+	sc.Buffer(make([]byte, 4<<20), 8<<20)
+	for sc.Scan() {
+		var r CDXRawOutputRow
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			continue
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
+}
+
+// BuildDatasetShardFromChunk builds a Parquet shard for one prefix from one CDX
+// batch chunk. It loads the prefix's rank file internally, the same way
+// BuildDatasetShard does for the monolithic flow.
+func BuildDatasetShardFromChunk(ctx context.Context, prefix, workDir, crawlID, graphID, outPath string, chunk int, progress func(n int64)) (int64, error) {
+	rankMap, err := loadRankPrefix(workDir, prefix)
+	if err != nil {
+		return 0, fmt.Errorf("load rank for prefix %q: %w", prefix, err)
+	}
+
+	out, err := NewParquetWriter[URLDatasetRow](outPath)
+	if err != nil {
+		return 0, err
+	}
+
+	var n int64
+	if err := LoadCDXRawChunk(workDir, prefix, chunk, func(r CDXRawOutputRow) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		row := URLDatasetRow{
+			Host:     r.Host,
+			RD:       r.RD,
+			TLD:      r.TLD,
+			Proto:    r.Proto,
+			URL:      r.URL,
+			Surt:     r.Surt,
+			ST:       r.ST,
+			Redir:    r.Redir,
+			Digest:   r.Digest,
+			MIME:     r.MIME,
+			MIMEDecl: r.MIMEDecl,
+			Charset:  r.Charset,
+			Lang:     r.Lang,
+			Trunc:    r.Trunc,
+			TS:       r.TS,
+			Bytes:    r.Bytes,
+			WARCFile: r.WARCFile,
+			WARCOff:  r.WARCOff,
+			RobotsOK: r.RobotsOK,
+			Crawl:    r.Crawl,
+			GraphID:  graphID,
+		}
+		if re, ok := rankMap[r.Host]; ok {
+			row.HarmonicPos = re.HarmonicPos
+			row.HarmonicVal = re.HarmonicVal
+			row.PageRankPos = re.PageRankPos
+			row.PageRankVal = re.PageRankVal
+		}
+		if err := out.Write(row); err != nil {
+			return err
+		}
+		n++
+		if progress != nil && n%1_000_000 == 0 {
+			progress(n)
+		}
+		return nil
+	}); err != nil {
+		_ = out.Close()
+		return n, err
+	}
+	return n, out.Close()
+}
+
 // BuildDatasetShard reads cdx-raw-{prefix}.jsonl.gz (per-URL rows) and the rank
 // prefix file, joins rank signals by host, and writes a zstd-compressed Parquet
 // file with one URLDatasetRow per URL capture.

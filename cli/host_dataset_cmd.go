@@ -44,20 +44,21 @@ unattended:
 }
 
 type hostDatasetCmd struct {
-	graph      string
-	workDir    string
-	outDir     string
-	prefix     string
-	noCDX      bool
-	cdxAgg     bool
-	upload     bool
-	hfRepo     string
-	hfToken    string
-	hfPrivate  bool
-	skipCDX    bool
-	skipRank   bool
-	cdxWorkers int
-	cdxLimit   int
+	graph        string
+	workDir      string
+	outDir       string
+	prefix       string
+	noCDX        bool
+	cdxAgg       bool
+	upload       bool
+	hfRepo       string
+	hfToken      string
+	hfPrivate    bool
+	skipCDX      bool
+	skipRank     bool
+	cdxWorkers   int
+	cdxLimit     int
+	cdxBatchSize int
 }
 
 func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
@@ -75,6 +76,7 @@ func (d *hostDatasetCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&d.skipRank, "skip-rank-split", false, "skip rank-split phase (assume rank-*.tsv.gz present)")
 	f.IntVar(&d.cdxWorkers, "cdx-workers", 8, "concurrent CDX Parquet download workers (lower if CC returns 429/403)")
 	f.IntVar(&d.cdxLimit, "cdx-limit", 0, "stop after N CDX files (0=all; for benchmarking only)")
+	f.IntVar(&d.cdxBatchSize, "cdx-batch-size", 30, "CDX files per commit batch (0=monolithic, commit only after all CDX done)")
 }
 
 func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
@@ -113,6 +115,11 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 			return fmt.Errorf("create HF repo: %w", err)
 		}
 		logf("HF repo ready: https://huggingface.co/datasets/%s", d.hfRepo)
+	}
+
+	// Batched mode: interleave CDX batches with shard builds and HF commits.
+	if d.cdxBatchSize > 0 && !d.noCDX && !d.skipCDX && d.prefix == "" {
+		return d.runBatched(ctx, app, g, crawlID, hf, logf, runStart)
 	}
 
 	// ── Phase 4: CDX raw extract ─────────────────────────────────────────────
@@ -300,6 +307,182 @@ func (d *hostDatasetCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	logf("all shards done in %s", time.Since(runStart).Round(time.Second))
+	return nil
+}
+
+// runBatched implements the incremental pipeline:
+//
+//  1. Rank download + split starts in a goroutine concurrently with CDX batch 1.
+//  2. For each CDX batch (chunk 1..N):
+//     a. ExtractCDXBatch → 28 per-prefix JSONL files for this chunk only.
+//     b. Wait for rank goroutine to finish (usually done by end of chunk 1).
+//     c. Build 28 Parquet shards (one prefix at a time: load rank, write, unload).
+//     d. Commit all 28 shards + README in one HF commit.
+//     e. Delete local JSONL + Parquet, write batch-{N}.done marker.
+//
+// First HF commit lands ~30-50 min in instead of ~5 hours.
+func (d *hostDatasetCmd) runBatched(ctx context.Context, app *App, g ccrawl.WebGraph, crawlID string, hf *ccrawl.HFClient, logf func(string, ...any), runStart time.Time) error {
+	urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, crawlID, "warc", app.Cfg.Source)
+	if err != nil {
+		return fmt.Errorf("CDX parquet URLs: %w", err)
+	}
+
+	// Divide URLs into batches.
+	bs := d.cdxBatchSize
+	var batches [][]string
+	for i := 0; i < len(urls); i += bs {
+		end := i + bs
+		if end > len(urls) {
+			end = len(urls)
+		}
+		batches = append(batches, urls[i:end])
+	}
+	totalBatches := len(batches)
+	logf("batched mode: %d CDX files → %d batches of ~%d, %d workers", len(urls), totalBatches, bs, d.cdxWorkers)
+
+	// Start rank download + split in the background.
+	rankReady := make(chan error, 1)
+	rankDone := false
+	rankMarker := filepath.Join(d.workDir, "rank.done")
+	if _, err := os.Stat(rankMarker); err == nil {
+		logf("rank: already done (marker found), skipping")
+		rankDone = true
+		rankReady <- nil
+	} else if !d.skipRank {
+		go func() {
+			rankCachePath := filepath.Join(d.workDir, "rank-table.tsv.gz")
+			logf("rank: downloading in background (~5 GB, runs parallel to CDX batch 1)")
+			if err := ccrawl.DownloadRankTable(ctx, g.HostRankURL(), rankCachePath); err != nil {
+				rankReady <- fmt.Errorf("rank download: %w", err)
+				return
+			}
+			logf("rank: download done, splitting")
+			counts, err := ccrawl.SplitRankFromFile(ctx, rankCachePath, d.workDir, func(total int64) {
+				logf("  rank rows written: %d M", total/1_000_000)
+			})
+			if err != nil {
+				rankReady <- fmt.Errorf("rank split: %w", err)
+				return
+			}
+			var total int64
+			for _, c := range counts {
+				total += c
+			}
+			logf("rank: split done (%d rows)", total)
+			_ = os.WriteFile(rankMarker, []byte(fmt.Sprintf("rows=%d graph=%s\n", total, g.ID)), 0o644)
+			rankReady <- nil
+		}()
+	} else {
+		rankDone = true
+		rankReady <- nil
+	}
+
+	readmePath := filepath.Join(d.workDir, "README.md")
+	committedBatches := 0
+
+	// Count already-done batches for resume.
+	for b := 1; b <= totalBatches; b++ {
+		if _, e := os.Stat(filepath.Join(d.workDir, fmt.Sprintf("batch-%03d.done", b))); e == nil {
+			committedBatches++
+		}
+	}
+
+	writeReadme := func() {
+		if hf == nil {
+			return
+		}
+		readme := ccrawl.GenerateDatasetREADME(ccrawl.DatasetStats{
+			CrawlID:          crawlID,
+			TotalBatches:     totalBatches,
+			CommittedBatches: committedBatches,
+		})
+		_ = os.WriteFile(readmePath, []byte(readme), 0o644)
+	}
+
+	prefixes := ccrawl.DatasetPrefixes
+
+	for b, batchURLs := range batches {
+		chunkNum := b + 1 // 1-based
+		batchMarker := filepath.Join(d.workDir, fmt.Sprintf("batch-%03d.done", chunkNum))
+
+		if _, err := os.Stat(batchMarker); err == nil {
+			logf("batch %d/%d: already done, skipping", chunkNum, totalBatches)
+			continue
+		}
+
+		// ── CDX extract for this batch ────────────────────────────────────────
+		logf("batch %d/%d: CDX extract — %d files", chunkNum, totalBatches, len(batchURLs))
+		t0 := time.Now()
+		if err := ccrawl.ExtractCDXBatch(ctx, app.HTTP, batchURLs, d.workDir, chunkNum, d.cdxWorkers,
+			func(fileN, total int, rows int64) {
+				logf("  batch %d: CDX file %d/%d done (%d rows)", chunkNum, fileN, total, rows)
+			}); err != nil {
+			return fmt.Errorf("batch %d CDX extract: %w", chunkNum, err)
+		}
+		logf("batch %d/%d: CDX done in %s", chunkNum, totalBatches, time.Since(t0).Round(time.Second))
+
+		// ── Wait for rank ─────────────────────────────────────────────────────
+		if !rankDone {
+			logf("batch %d/%d: waiting for rank goroutine...", chunkNum, totalBatches)
+			if rankErr := <-rankReady; rankErr != nil {
+				return rankErr
+			}
+			rankDone = true
+		}
+
+		// ── Build shards ──────────────────────────────────────────────────────
+		logf("batch %d/%d: building %d prefix shards", chunkNum, totalBatches, len(prefixes))
+		var outPaths []string
+		var batchRows int64
+		t0 = time.Now()
+		for _, prefix := range prefixes {
+			outPath := filepath.Join(d.outDir, fmt.Sprintf("hosts-%s-chunk%03d.parquet", prefix, chunkNum))
+			n, err := ccrawl.BuildDatasetShardFromChunk(ctx, prefix, d.workDir, crawlID, g.ID, outPath, chunkNum, func(n int64) {
+				logf("  batch %d prefix %s: %d rows", chunkNum, prefix, n)
+			})
+			if err != nil {
+				return fmt.Errorf("batch %d shard %s: %w", chunkNum, prefix, err)
+			}
+			batchRows += n
+			outPaths = append(outPaths, outPath)
+		}
+		logf("batch %d/%d: shards done — %d rows in %s", chunkNum, totalBatches, batchRows, time.Since(t0).Round(time.Second))
+
+		// ── HF commit ─────────────────────────────────────────────────────────
+		if hf != nil {
+			committedBatches++
+			writeReadme()
+
+			ops := []ccrawl.HFOperation{{LocalPath: readmePath, PathInRepo: "README.md"}}
+			for i, prefix := range prefixes {
+				ops = append(ops, ccrawl.HFOperation{
+					LocalPath:  outPaths[i],
+					PathInRepo: ccrawl.HFShardPathChunk(crawlID, "urls", prefix, chunkNum),
+				})
+			}
+			msg := fmt.Sprintf("Add chunk %03d/%03d for crawl=%s (%d rows)", chunkNum, totalBatches, crawlID, batchRows)
+			logf("batch %d/%d: committing %d files to HF...", chunkNum, totalBatches, len(ops))
+			t1 := time.Now()
+			commitURL, err := hf.CommitWithRetry(ctx, d.hfRepo, msg, ops, 5)
+			if err != nil {
+				logf("WARNING: batch %d HF commit failed: %v", chunkNum, err)
+				committedBatches--
+			} else {
+				logf("batch %d/%d: committed in %s — %s", chunkNum, totalBatches, time.Since(t1).Round(time.Second), commitURL)
+			}
+		}
+
+		// ── Cleanup ───────────────────────────────────────────────────────────
+		for _, prefix := range prefixes {
+			_ = os.Remove(ccrawl.CDXBatchPath(d.workDir, prefix, chunkNum))
+		}
+		for _, p := range outPaths {
+			_ = os.Remove(p)
+		}
+		_ = os.WriteFile(batchMarker, []byte(fmt.Sprintf("rows=%d\n", batchRows)), 0o644)
+	}
+
+	logf("all batches done in %s", time.Since(runStart).Round(time.Second))
 	return nil
 }
 

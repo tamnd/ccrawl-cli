@@ -25,13 +25,19 @@ type HFOperation struct {
 	PathInRepo string
 }
 
-// HFShardPath returns the canonical HF repo path for a prefix shard.
-// Uses Hive-partition layout so DuckDB reads with hive_partitioning=true,
-// automatically extracting `crawl` and `subset` as virtual columns:
+// HFShardPath returns the canonical HF repo path for a prefix shard (flat layout).
 //
 //	data/crawl=CC-MAIN-2026-21/subset=urls/hosts-a.parquet
 func HFShardPath(crawlID, subset, prefix string) string {
 	return fmt.Sprintf("data/crawl=%s/subset=%s/hosts-%s.parquet", crawlID, subset, prefix)
+}
+
+// HFShardPathChunk returns the HF path for one prefix shard within a CDX batch.
+// chunk is 1-based. DuckDB reads all chunks with:
+//
+//	read_parquet('.../subset=urls/**/*.parquet')
+func HFShardPathChunk(crawlID, subset, prefix string, chunk int) string {
+	return fmt.Sprintf("data/crawl=%s/subset=%s/chunk=%03d/hosts-%s.parquet", crawlID, subset, chunk, prefix)
 }
 
 // RateLimitError is returned when HuggingFace responds 429 Too Many Requests.

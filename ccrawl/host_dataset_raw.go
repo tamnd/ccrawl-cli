@@ -292,6 +292,91 @@ func streamParquetCDX(path string, emit func(CDXRawRow) error) error {
 	}
 }
 
+// CDXBatchPath returns the work-dir path for a per-prefix per-batch CDX file.
+// chunk is 1-based. Used by the batched pipeline to write per-chunk JSONL.
+func CDXBatchPath(workDir, prefix string, chunk int) string {
+	return fmt.Sprintf("%s/cdx-raw-%s-chunk%03d.jsonl.gz", workDir, prefix, chunk)
+}
+
+// ExtractCDXBatch is the batched variant of ExtractCDXRaw: it processes only
+// batchURLs (a contiguous slice of the full CDX URL list) and writes per-prefix
+// cdx-raw-{p}-chunk{NNN}.jsonl.gz files. No done-marker checks or writes.
+// chunk is 1-based. progress reports (fileN within batch, total rows so far).
+func ExtractCDXBatch(ctx context.Context, h *HTTPClient, batchURLs []string, workDir string, chunk, workers int, progress func(fileN, totalInBatch int, rows int64)) error {
+	if workers <= 0 {
+		workers = 8
+	}
+
+	writers := make(map[string]*cdxPrefixWriter, len(DatasetPrefixes))
+	for _, p := range DatasetPrefixes {
+		tmp := CDXBatchPath(workDir, p, chunk) + ".tmp"
+		f, err := os.Create(tmp)
+		if err != nil {
+			for _, pw := range writers {
+				_ = pw.gz.Close()
+				_ = pw.f.Close()
+				_ = os.Remove(pw.tmp)
+			}
+			return fmt.Errorf("create CDX batch file prefix %q chunk %d: %w", p, chunk, err)
+		}
+		gz, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
+		writers[p] = &cdxPrefixWriter{f: f, gz: gz, enc: json.NewEncoder(gz), tmp: tmp}
+	}
+
+	var totalRows int64
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+
+	for i, url := range batchURLs {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(fileIdx int, fileURL string) {
+			defer func() { <-sem; wg.Done() }()
+			n, err := extractOneParquetFile(ctx, h, fileURL, fileIdx, workDir, writers)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("batch %d file %d (%s): %w", chunk, fileIdx, fileURL, err)
+				}
+				errMu.Unlock()
+				return
+			}
+			atomic.AddInt64(&totalRows, n)
+			if progress != nil {
+				progress(fileIdx+1, len(batchURLs), atomic.LoadInt64(&totalRows))
+			}
+		}(i, url)
+	}
+	wg.Wait()
+
+	var closeErr error
+	for p, pw := range writers {
+		if err := pw.gz.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		if err := pw.f.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		final := CDXBatchPath(workDir, p, chunk)
+		if firstErr == nil && closeErr == nil {
+			if err := os.Rename(pw.tmp, final); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		} else {
+			_ = os.Remove(pw.tmp)
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return closeErr
+}
+
 // AggregateCDXRaw reads cdx-raw-{prefix}.jsonl.gz for each prefix and writes
 // cdx-agg-{prefix}.jsonl.gz with one row per unique host.
 // parallel controls how many prefixes are aggregated concurrently.

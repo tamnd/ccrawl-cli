@@ -12,6 +12,9 @@ type DatasetStats struct {
 	TotalShards     int
 	TotalURLs       int64
 	TotalBytes      int64 // sum of WARC record bytes across all URL rows
+	// Batched-pipeline fields (non-zero activates batch-aware progress line).
+	TotalBatches     int
+	CommittedBatches int
 }
 
 // GenerateDatasetREADME produces a HuggingFace dataset card for cc-host-dataset.
@@ -21,11 +24,22 @@ func GenerateDatasetREADME(s DatasetStats) string {
 		s.TotalShards = 28
 	}
 
-	progressLine := fmt.Sprintf("**%d / %d** prefix shards committed for crawl `%s`.",
-		s.CommittedShards, s.TotalShards, s.CrawlID)
-	if s.CommittedShards >= s.TotalShards {
-		progressLine = fmt.Sprintf("All **%d** prefix shards committed for crawl `%s`.",
-			s.TotalShards, s.CrawlID)
+	var progressLine string
+	if s.TotalBatches > 0 {
+		if s.CommittedBatches >= s.TotalBatches {
+			progressLine = fmt.Sprintf("All **%d** CDX batches committed for crawl `%s` — dataset complete.",
+				s.TotalBatches, s.CrawlID)
+		} else {
+			progressLine = fmt.Sprintf("**%d / %d** CDX batches committed for crawl `%s` — partial data available, updating every ~30 minutes.",
+				s.CommittedBatches, s.TotalBatches, s.CrawlID)
+		}
+	} else {
+		progressLine = fmt.Sprintf("**%d / %d** prefix shards committed for crawl `%s`.",
+			s.CommittedShards, s.TotalShards, s.CrawlID)
+		if s.CommittedShards >= s.TotalShards {
+			progressLine = fmt.Sprintf("All **%d** prefix shards committed for crawl `%s`.",
+				s.TotalShards, s.CrawlID)
+		}
 	}
 
 	urlsStr := fmtCount(s.TotalURLs)
@@ -49,7 +63,11 @@ func GenerateDatasetREADME(s DatasetStats) string {
 	w("- config_name: default\n")
 	w("  data_files:\n")
 	w("  - split: train\n")
-	w("    path: \"data/crawl=%s/subset=urls/*.parquet\"\n", s.CrawlID)
+	if s.TotalBatches > 0 {
+		w("    path: \"data/crawl=%s/subset=urls/**/*.parquet\"\n", s.CrawlID)
+	} else {
+		w("    path: \"data/crawl=%s/subset=urls/*.parquet\"\n", s.CrawlID)
+	}
 	w("license: odc-by\n")
 	w("task_categories:\n  - feature-extraction\n  - text-classification\n")
 	w("language:\n  - multilingual\n")
