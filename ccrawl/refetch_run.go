@@ -57,8 +57,12 @@ type RefetchRunStats struct {
 	HTMLBytes     int64
 	MDBytes       int64
 	ParquetBytes  int64
-	ConvertS      int64
-	PublishS      int64
+	// Per-phase wall-time sums (in seconds, across all completed shards).
+	ExtractS int64 // phase 1: WARC download + URL extraction
+	FetchS   int64 // phase 2: ami live refetch
+	ConvertS int64 // phase 3: HTML to Markdown
+	ExportS  int64 // phase 4: Parquet write
+	PublishS int64 // HF commit (off critical path)
 	Elapsed       time.Duration
 	ShardsPerHour float64
 	ETA           time.Duration
@@ -204,7 +208,10 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			run.HTMLBytes += r.stats.HTMLBytes
 			run.MDBytes += r.stats.MDBytes
 			run.ParquetBytes += r.stats.ParquetBytes
+			run.ExtractS += int64(r.stats.DurExtract.Seconds())
+			run.FetchS += int64(r.stats.DurFetch.Seconds())
 			run.ConvertS += int64(r.stats.DurConvert.Seconds())
+			run.ExportS += int64(r.stats.DurExport.Seconds())
 		}
 
 		if cfg.Push {
@@ -292,7 +299,7 @@ func updateRefetchRunRates(run *RefetchRunStats, start time.Time) {
 	}
 }
 
-// logRefetchProgress prints a one-line status with throughput, ETA, and free disk.
+// logRefetchProgress prints a two-line status: top-level throughput + per-phase breakdown.
 func logRefetchProgress(cfg RefetchExportConfig, run *RefetchRunStats) {
 	done := run.Committed + run.Skipped + run.Failed
 	pct := 0.0
@@ -300,10 +307,23 @@ func logRefetchProgress(cfg RefetchExportConfig, run *RefetchRunStats) {
 		pct = float64(done) / float64(run.Total) * 100
 	}
 	run.FreeDiskBytes = freeDiskBytes(cfg.OutDir)
+
+	// Per-phase average over committed shards (0 guard avoids div-by-zero).
+	n := int64(run.Committed)
+	if n == 0 {
+		n = 1
+	}
+	fetchPagesPerS := 0.0
+	if run.FetchS > 0 {
+		fetchPagesPerS = float64(run.Rows) / float64(run.FetchS)
+	}
 	fmt.Fprintf(os.Stderr,
-		"refetch: %d/%d shards (%.1f%%) | %d rows total | %.1f shards/hour | ETA %s | disk free %s\n",
+		"refetch: %d/%d shards (%.1f%%) | %d rows | %.1f shards/hr | ETA %s | disk %s\n",
 		done, run.Total, pct, run.Rows,
 		run.ShardsPerHour, fmtETA(run.ETA), fmtBytes(run.FreeDiskBytes))
+	fmt.Fprintf(os.Stderr,
+		"  phases/shard avg: extract=%ds fetch=%ds convert=%ds export=%ds | fetch %.0f pages/s\n",
+		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPagesPerS)
 }
 
 // RefetchDatasetStats holds cumulative stats for the refetch README card.

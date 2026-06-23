@@ -184,11 +184,25 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		Ledger:         ledger,
 	})
 
+	n := int64(run.Committed)
+	if n == 0 {
+		n = 1
+	}
+	fetchPagesPerS := 0.0
+	if run.FetchS > 0 {
+		fetchPagesPerS = float64(run.Rows) / float64(run.FetchS)
+	}
 	fmt.Fprintf(os.Stderr,
 		"\nrefetch: %d committed, %d skipped, %d failed of %d | %d rows | urls=%d html=%s md=%s parquet=%s | %s elapsed (%.1f shards/hour)\n",
 		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
 		run.URLsFound, humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),
 		run.Elapsed.Round(time.Second), run.ShardsPerHour)
+	fmt.Fprintf(os.Stderr,
+		"phase totals: extract=%ds fetch=%ds convert=%ds export=%ds publish=%ds\n",
+		run.ExtractS, run.FetchS, run.ConvertS, run.ExportS, run.PublishS)
+	fmt.Fprintf(os.Stderr,
+		"phase avg/shard: extract=%ds fetch=%ds convert=%ds export=%ds | fetch-only %.0f pages/s\n",
+		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPagesPerS)
 
 	return runErr
 }
