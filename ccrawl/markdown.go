@@ -1,7 +1,6 @@
 package ccrawl
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -77,6 +76,11 @@ type MarkdownPackConfig struct {
 	// Workers is the number of goroutines for HTML→Markdown conversion.
 	// 0 selects runtime.NumCPU().
 	Workers int
+	// ConvertSem, when non-nil, caps the number of conversions running at once
+	// across every shard that shares it. The orchestrator passes one semaphore
+	// sized to the CPU count so several shards can be in flight (hiding download
+	// latency) without oversubscribing the cores. nil means no global cap.
+	ConvertSem chan struct{}
 	// Progress is called after each row is written. It may be nil.
 	Progress func(MarkdownStats)
 }
@@ -164,7 +168,7 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 		go func() {
 			defer wg.Done()
 			for r := range records {
-				md := htmlToMarkdown(r.html, r.url)
+				md := convertGated(cfg.ConvertSem, r.html, r.url)
 				if md == "" {
 					continue
 				}
@@ -233,10 +237,7 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 		return nil, err
 	}
 	codec := &zstd.Codec{Level: zstd.SpeedBetterCompression, Concurrency: 4}
-	w := parquet.NewGenericWriter[MarkdownRow](
-		bufio.NewWriterSize(f, 256*1024),
-		parquet.Compression(codec),
-	)
+	w := parquet.NewGenericWriter[MarkdownRow](f, parquet.Compression(codec))
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 
@@ -264,6 +265,17 @@ func htmlToMarkdown(body []byte, pageURL string) string {
 		return strings.ToValidUTF8(res.Markdown, "")
 	}
 	return res.Markdown
+}
+
+// convertGated runs htmlToMarkdown while holding a slot in sem, so the total
+// number of concurrent conversions across all in-flight shards stays bounded.
+// A nil sem runs the conversion ungated.
+func convertGated(sem chan struct{}, body []byte, pageURL string) string {
+	if sem != nil {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+	}
+	return htmlToMarkdown(body, pageURL)
 }
 
 // isHTMLMIME reports whether a MIME type string names an HTML document.

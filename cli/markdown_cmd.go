@@ -17,17 +17,23 @@ import (
 func registerMarkdown(app *kit.App) {
 	app.CommandGroup("markdown", "Build open-index/open-markdown-style Markdown-parquet datasets from CC WARCs")
 	app.AddCommandUnder("markdown", newMarkdownExportCmd())
+	registerMarkdownRefetch(app)
 }
 
 // markdownExportCmd holds the flags for `ccrawl markdown export`.
 type markdownExportCmd struct {
-	shards  string // "0", "0-49", "1,3,5", "0-2,5" or "all"
-	outDir  string
-	repo    string
-	workers int
-	skip    bool // --skip-errors: continue on per-shard failure
-	push    bool // push to HF after each shard (default true)
-	limit   int  // stop after this many shards (0 = all)
+	shards      string // "0", "0-49", "1,3,5", "0-2,5" or "all"
+	outDir      string
+	repo        string
+	workers     int
+	skip        bool // --skip-errors: continue on per-shard failure
+	push        bool // push to HF after each shard (default true)
+	limit       int  // stop after this many shards (0 = all)
+	parallel    int  // shards in flight at once (P)
+	commitBatch int  // parquets per HF commit (K)
+	keepParquet bool // keep local parquet after commit
+	minFreeGB   int  // pause downloads below this much free disk
+	ledger      string
 }
 
 func newMarkdownExportCmd() kit.Command {
@@ -53,10 +59,17 @@ Output schema (open-markdown-v2):
 HF path layout:
   data/crawl=CC-MAIN-YYYY-WW/NNNNNN.parquet
 
+Shards stream in parallel: several downloads run at once (--parallel) to hide
+network latency, while a single CPU-sized convert pool (--workers) is shared
+across them so the cores never oversubscribe. A background committer batches
+finished parquets into one HuggingFace commit (--commit-batch), then deletes the
+local files, so the slow commit round trip stays off the per-shard critical path.
+A ledger file records committed shards, so a killed run resumes where it stopped.
+
 Examples:
   ccrawl markdown export --shards 0 --repo open-index/open-markdown-v2
   ccrawl markdown export --shards 0-9 --repo open-index/open-markdown-v2
-  ccrawl markdown export --shards 0,5,10 --repo open-index/open-markdown-v2
+  ccrawl markdown export --shards all --parallel 4 --commit-batch 10
   ccrawl markdown export --shards 0-99 --no-push --out ~/data/md
   HF_TOKEN=hf_... ccrawl markdown export --shards 0 -c 2026-25`,
 		Flags: v.flags,
@@ -68,10 +81,15 @@ func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.shards, "shards", "0", "shard range: N, N-M, N,M, or all")
 	f.StringVar(&v.outDir, "out", "", "directory for parquet files (default: <data-dir>/markdown)")
 	f.StringVar(&v.repo, "repo", "open-index/open-markdown-v2", "HuggingFace dataset repo (org/name)")
-	f.IntVar(&v.workers, "workers", 0, "conversion workers per shard (0 = NumCPU)")
+	f.IntVar(&v.workers, "workers", 0, "total conversion workers shared across shards (0 = NumCPU)")
 	f.IntVar(&v.limit, "limit", 0, "process at most this many shards (0 = all)")
-	f.BoolVar(&v.skip, "skip-errors", false, "continue to next shard on failure instead of aborting")
+	f.BoolVar(&v.skip, "skip-errors", false, "continue past per-shard failures instead of aborting")
 	f.BoolVar(&v.push, "push", true, "commit each parquet shard to HuggingFace after writing")
+	f.IntVar(&v.parallel, "parallel", 3, "shards downloaded/converted concurrently")
+	f.IntVar(&v.commitBatch, "commit-batch", 1, "parquet files per HuggingFace commit")
+	f.BoolVar(&v.keepParquet, "keep-parquet", false, "keep local parquet files after they are committed")
+	f.IntVar(&v.minFreeGB, "min-free-gb", 2, "pause new downloads when free disk drops below this many GiB")
+	f.StringVar(&v.ledger, "ledger", "", "resume ledger file (default: <out>/.committed)")
 }
 
 func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
@@ -116,156 +134,44 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		}
 	}
 
-	var (
-		totalRows      int64
-		totalWARC      int64
-		totalHTML      int64
-		totalMD        int64
-		totalParquet   int64
-		totalDownloadS int64
-		totalConvertS  int64
-		totalExportS   int64
-		totalPublishS  int64
-		failedShards   int
-	)
-
-	for n, idx := range indices {
-		if ctx.Err() != nil {
-			break
-		}
-		warcPath := paths[idx]
-		outPath := filepath.Join(outDir, fmt.Sprintf("%06d.parquet", idx))
-
-		// Skip shards whose parquet already exists and is non-empty (idempotent).
-		if fi, serr := os.Stat(outPath); serr == nil && fi.Size() > 0 {
-			fmt.Fprintf(os.Stderr, "markdown: [%d/%d] shard %d: already exists (%s), skipping\n",
-				n+1, len(indices), idx, humanBytes(fi.Size()))
-			if v.push {
-				dstats := ccrawl.MarkdownDatasetStats{
-					CrawlID:     crawlID,
-					TotalShards: len(paths),
-				}
-				if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath, dstats); err != nil {
-					fmt.Fprintf(os.Stderr, "markdown: push shard %d: %v\n", idx, err)
-				}
-			}
-			continue
-		}
-
-		fmt.Fprintf(os.Stderr, "markdown: [%d/%d] shard %06d: %s\n", n+1, len(indices), idx, warcPath)
-
-		t0 := time.Now()
-		stats, packErr := ccrawl.PackMarkdownShard(ctx, app.HTTP, ccrawl.MarkdownPackConfig{
-			CrawlID:  crawlID,
-			ShardIdx: idx,
-			WARCPath: warcPath,
-			OutPath:  outPath,
-			Workers:  v.workers,
-			Progress: func(s ccrawl.MarkdownStats) {
-				if s.Rows%5000 == 0 {
-					fmt.Fprintf(os.Stderr, "  … %d rows, %s html, %s md\n",
-						s.Rows, humanBytes(s.HTMLBytes), humanBytes(s.MDBytes))
-				}
-			},
-		})
-		elapsed := time.Since(t0)
-
-		if packErr != nil {
-			fmt.Fprintf(os.Stderr, "markdown: shard %d failed: %v\n", idx, packErr)
-			_ = os.Remove(outPath)
-			failedShards++
-			if !v.skip {
-				return packErr
-			}
-			continue
-		}
-
-		totalRows += stats.Rows
-		totalWARC += stats.WARCBytes
-		totalHTML += stats.HTMLBytes
-		totalMD += stats.MDBytes
-		totalParquet += stats.ParquetBytes
-		totalDownloadS += int64(stats.DurDownload.Seconds())
-		totalConvertS += int64(stats.DurConvert.Seconds())
-		totalExportS += int64(stats.DurExport.Seconds())
-
-		ratio := float64(0)
-		if stats.HTMLBytes > 0 {
-			ratio = float64(stats.MDBytes) / float64(stats.HTMLBytes) * 100
-		}
-		fmt.Fprintf(os.Stderr,
-			"markdown: shard %06d done in %s | rows=%d html=%s md=%s (%.0f%%) parquet=%s dl=%s conv=%s\n",
-			idx, elapsed.Round(time.Second),
-			stats.Rows,
-			humanBytes(stats.HTMLBytes), humanBytes(stats.MDBytes), ratio,
-			humanBytes(stats.ParquetBytes),
-			stats.DurDownload.Round(time.Second),
-			stats.DurConvert.Round(time.Second),
-		)
-
-		if v.push {
-			committed := n + 1 - failedShards
-			dstats := ccrawl.MarkdownDatasetStats{
-				CrawlID:         crawlID,
-				CommittedShards: committed,
-				TotalShards:     len(paths),
-				Rows:            totalRows,
-				WARCBytes:       totalWARC,
-				HTMLBytes:       totalHTML,
-				MDBytes:         totalMD,
-				ParquetBytes:    totalParquet,
-				DownloadS:       totalDownloadS,
-				ConvertS:        totalConvertS,
-				ExportS:         totalExportS,
-				PublishS:        totalPublishS,
-			}
-			tPush := time.Now()
-			if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath, dstats); err != nil {
-				fmt.Fprintf(os.Stderr, "markdown: push shard %d: %v\n", idx, err)
-				if !v.skip {
-					return err
-				}
-			}
-			totalPublishS += int64(time.Since(tPush).Seconds())
-		}
+	ledgerPath := v.ledger
+	if ledgerPath == "" {
+		ledgerPath = filepath.Join(outDir, ".committed")
 	}
-
-	fmt.Fprintf(os.Stderr, "\nmarkdown: %d shards complete | %d rows | html=%s md=%s parquet=%s | %d failed\n",
-		len(indices)-failedShards, totalRows,
-		humanBytes(totalHTML), humanBytes(totalMD), humanBytes(totalParquet),
-		failedShards)
-	return nil
-}
-
-// pushShard commits one finished parquet file plus an updated README to the
-// HuggingFace dataset repo.
-func pushShard(ctx context.Context, hf *ccrawl.HFClient, repo, crawlID string, shardIdx int, localPath string, dstats ccrawl.MarkdownDatasetStats) error {
-	hfPath := ccrawl.HFMarkdownPath(crawlID, shardIdx)
-	commitMsg := fmt.Sprintf("add %s shard %06d", crawlID, shardIdx)
-	fmt.Fprintf(os.Stderr, "  → pushing to %s/%s\n", repo, hfPath)
-	t0 := time.Now()
-
-	// Write README to a temp file so CommitWithRetry can pick it up.
-	readmeTmp, err := os.CreateTemp("", "open-markdown-readme-*.md")
+	ledger, err := ccrawl.OpenLedger(ledgerPath)
 	if err != nil {
-		return fmt.Errorf("readme temp: %w", err)
+		return fmt.Errorf("open ledger: %w", err)
 	}
-	defer func() { _ = os.Remove(readmeTmp.Name()) }()
-	if _, err := readmeTmp.WriteString(ccrawl.GenerateMarkdownREADME(dstats)); err != nil {
-		_ = readmeTmp.Close()
-		return fmt.Errorf("readme write: %w", err)
+	defer func() { _ = ledger.Close() }()
+	if done := ledger.Count(); done > 0 {
+		fmt.Fprintf(os.Stderr, "markdown: ledger %s already records %d committed shards\n", ledgerPath, done)
 	}
-	_ = readmeTmp.Close()
 
-	url, err := hf.CommitWithRetry(ctx, repo, commitMsg, []ccrawl.HFOperation{
-		{LocalPath: localPath, PathInRepo: hfPath},
-		{LocalPath: readmeTmp.Name(), PathInRepo: "README.md"},
-	}, 5)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "  ✓ committed in %s: %s\n", time.Since(t0).Round(time.Second), url)
-	return nil
+	run, runErr := ccrawl.RunMarkdownExport(ctx, app.HTTP, hf, ccrawl.MarkdownExportConfig{
+		CrawlID:        crawlID,
+		Indices:        indices,
+		WARCPaths:      paths,
+		OutDir:         outDir,
+		Repo:           v.repo,
+		Push:           v.push,
+		ShardParallel:  v.parallel,
+		ConvertWorkers: v.workers,
+		CommitBatch:    v.commitBatch,
+		KeepParquet:    v.keepParquet,
+		MinFreeBytes:   int64(v.minFreeGB) << 30,
+		Ledger:         ledger,
+	})
+
+	fmt.Fprintf(os.Stderr,
+		"\nmarkdown: %d committed, %d skipped, %d failed of %d | %d rows | html=%s md=%s parquet=%s | %s elapsed (%.1f shards/hour)\n",
+		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
+		humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),
+		run.Elapsed.Round(time.Second), run.ShardsPerHour)
+
+	// Per-shard conversion failures never abort the run; they are logged and
+	// counted (the committer keeps draining). runErr is only set for a fatal
+	// commit failure or a cancelled context, which always propagates.
+	return runErr
 }
 
 // parseShardRange turns a shard spec into a sorted list of 0-based indices. It
