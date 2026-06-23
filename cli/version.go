@@ -1,27 +1,38 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 )
 
-func newVersionCmd() *cobra.Command {
-	var short bool
-	cmd := &cobra.Command{
+// versionCmd holds the --short flag for the version command.
+type versionCmd struct {
+	short bool
+}
+
+func newVersionCmd() kit.Command {
+	v := &versionCmd{}
+	return kit.Command{
 		Use:   "version",
 		Short: "Print version information",
-		RunE: func(c *cobra.Command, _ []string) error {
-			if short {
-				_, _ = fmt.Fprintln(cmdOut, Version)
-				return nil
-			}
-			_, _ = fmt.Fprintf(cmdOut, "ccrawl %s (commit %s, built %s, %s/%s, %s)\n",
-				Version, Commit, Date, runtime.GOOS, runtime.GOARCH, runtime.Version())
-			return nil
-		},
+		Flags: v.flags,
+		Run:   v.run,
 	}
-	cmd.Flags().BoolVar(&short, "short", false, "print just the version number")
-	return cmd
+}
+
+func (v *versionCmd) flags(f *kit.FlagSet) {
+	f.BoolVar(&v.short, "short", false, "print just the version number")
+}
+
+func (v *versionCmd) run(_ context.Context, _ []string) error {
+	if v.short {
+		_, _ = fmt.Fprintln(cmdOut, Version)
+		return nil
+	}
+	_, _ = fmt.Fprintf(cmdOut, "ccrawl %s (commit %s, built %s, %s/%s, %s)\n",
+		Version, Commit, Date, runtime.GOOS, runtime.GOARCH, runtime.Version())
+	return nil
 }

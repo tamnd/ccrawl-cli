@@ -1,21 +1,27 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync/atomic"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newDownloadCmd(app *App) *cobra.Command {
-	var outDir string
-	var segment string
-	var sample float64
-	var flat bool
+// downloadCmd holds the flags for the download command.
+type downloadCmd struct {
+	outDir  string
+	segment string
+	sample  float64
+	flat    bool
+}
 
-	cmd := &cobra.Command{
+func newDownloadCmd() kit.Command {
+	d := &downloadCmd{}
+	return kit.Command{
 		Use:   "download <kind|->",
 		Short: "Download archive files for a crawl",
 		Long: `Download whole WARC/WAT/WET/index files for a crawl, concurrently and
@@ -33,20 +39,24 @@ Examples:
 
 With --library the files land under <library>/<crawl>/<kind>/ instead of the
 data dir, building a curated corpus you can later parse and convert in place.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			return runDownload(app, c, args[0], outDir, segment, sample, flat)
-		},
+		Args:  kit.ExactArgs(1),
+		Flags: d.flags,
+		Run:   d.run,
 	}
-	cmd.Flags().StringVar(&outDir, "out", "", "output directory (default: <data-dir>/raw)")
-	cmd.Flags().StringVar(&segment, "segment", "", "only files under this segment prefix")
-	cmd.Flags().Float64Var(&sample, "sample", 0, "download a random fraction (0-1) of files")
-	cmd.Flags().BoolVar(&flat, "flat", false, "save files flat, not in the source dir tree")
-	return cmd
 }
 
-func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sample float64, flat bool) error {
-	ctx := c.Context()
+func (d *downloadCmd) flags(f *kit.FlagSet) {
+	f.StringVar(&d.outDir, "out", "", "output directory (default: <data-dir>/raw)")
+	f.StringVar(&d.segment, "segment", "", "only files under this segment prefix")
+	f.Float64Var(&d.sample, "sample", 0, "download a random fraction (0-1) of files")
+	f.BoolVar(&d.flat, "flat", false, "save files flat, not in the source dir tree")
+}
+
+func (d *downloadCmd) run(ctx context.Context, args []string) error {
+	return runDownload(ctx, appFromCtx(ctx), args[0], d.outDir, d.segment, d.sample, d.flat)
+}
+
+func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sample float64, flat bool) error {
 	if outDir == "" {
 		outDir = app.Cfg.RawDir()
 	}
@@ -114,7 +124,7 @@ func runDownload(app *App, c *cobra.Command, kind, outDir, segment string, sampl
 	err := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
 	_, _ = fmt.Fprintf(cmdErr, "downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
 	if err != nil {
-		return codedError{err, 4}
+		return errs.Wrap(errs.KindNetwork, err, "download failed")
 	}
 	return nil
 }

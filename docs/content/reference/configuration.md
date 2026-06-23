@@ -4,15 +4,13 @@ description: "The data directory, environment variables, and global flags, with 
 weight: 20
 ---
 
-ccrawl needs almost no configuration. There is no config file; every option is
-a flag or an environment variable, and the defaults are chosen so the common
-case needs neither.
+ccrawl needs almost no configuration.
+There is no config file; every option is a flag or an environment variable, and the defaults are chosen so the common case needs neither.
 
 ## The data directory
 
-ccrawl keeps all of its state under one tree, `~/data/ccrawl` by default: the
-on-disk cache, downloaded archives, converted Parquet, and the local DuckDB
-file. See the resolved paths any time:
+ccrawl keeps all of its state under one tree, `~/data/ccrawl` by default: the on-disk cache, downloaded archives, converted Parquet, and the local DuckDB file.
+See the resolved paths any time:
 
 ```bash
 ccrawl config show
@@ -26,23 +24,19 @@ parquet_dir  ~/data/ccrawl/parquet
 db_path      ~/data/ccrawl/ccrawl.duckdb
 ```
 
-Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with
-`--data-dir`.
+Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with `--data-dir`.
 
 ## The dataset library
 
-The `--library` flag (see [bulk and archives](/guides/archives/)) reads and
-writes a curated corpus of archive files in a tree of its own, separate from the
-data dir so scratch state and the files you keep never mix. It defaults to
-`~/notes/ccrawl` and reports as `library_dir` in `ccrawl config show`:
+The `--library` flag (see [bulk and archives](/guides/archives/)) reads and writes a curated corpus of archive files in a tree of its own, separate from the data dir so scratch state and the files you keep never mix.
+It defaults to `~/notes/ccrawl` and reports as `library_dir` in `ccrawl config show`:
 
 ```
 library_dir  ~/notes/ccrawl
 ```
 
-Move it with `CCRAWL_LIBRARY` or per-command with `--library-dir`. Inside it,
-raw archives live under `<crawl>/<kind>/` and processed output under
-`<crawl>/<format>/<kind>/`.
+Move it with `CCRAWL_LIBRARY` or per-command with `--library-dir`.
+Inside it, raw archives live under `<crawl>/<kind>/` and processed output under `<crawl>/<format>/<kind>/`.
 
 ## Environment variables
 
@@ -78,14 +72,12 @@ raw archives live under `<crawl>/<kind>/` and processed output under
 
 ## Output auto-detection
 
-The default output format adapts to where it is going: an aligned table when
-the output is a terminal, JSONL when it is piped. That keeps interactive use
-readable and scripted use parseable without you setting `-o` either time. See
-[output formats](/reference/output/) for the full set.
+The default output format adapts to where it is going: an aligned table when the output is a terminal, JSONL when it is piped.
+That keeps interactive use readable and scripted use parseable without you setting `-o` either time.
+See [output formats](/reference/output/) for the full set.
 
 ## Caching and politeness
 
-ccrawl caches small index responses and manifests on disk so repeated commands
-do not re-fetch them. `--rate` keeps a minimum gap between requests so a busy
-session stays a good citizen against the public data. `cache info`, `cache
-dir`, and `cache clear` manage the cache.
+ccrawl caches small index responses and manifests on disk so repeated commands do not re-fetch them.
+`--rate` keeps a minimum gap between requests so a busy session stays a good citizen against the public data.
+`cache info`, `cache dir`, and `cache clear` manage the cache.

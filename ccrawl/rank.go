@@ -113,6 +113,52 @@ func RankTop(ctx context.Context, h *HTTPClient, url, tld string, n int) ([]Rank
 	return out, sc.Err()
 }
 
+// RankStream streams every row of a gzipped rank table, calling fn for each
+// entry. If tld is non-empty only hosts under that TLD are emitted. The caller
+// controls early-exit by returning an error from fn.
+func RankStream(ctx context.Context, h *HTTPClient, url, tld string, fn func(Rank) error) error {
+	resp, err := h.GetDownload(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("rank table HTTP %d (%s)", resp.StatusCode, url)
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gz.Close() }()
+
+	suffix := ""
+	if tld != "" {
+		suffix = reverseHost(tld)
+	}
+	sc := bufio.NewScanner(gz)
+	sc.Buffer(make([]byte, 1<<20), 8<<20)
+	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		line := sc.Text()
+		if rankComment(line) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) <= hostRevField {
+			continue
+		}
+		if suffix != "" && !strings.HasPrefix(fields[hostRevField], suffix+".") {
+			continue
+		}
+		if err := fn(parseRank(fields)); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
+}
+
 func parseRank(fields []string) Rank {
 	key := reverseHost(fields[hostRevField])
 	hp, _ := strconv.ParseInt(fields[0], 10, 64)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,19 +9,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 	"golang.org/x/sync/errgroup"
 )
 
-func newFetchCmd(app *App) *cobra.Command {
-	var mode contentMode
-	var file string
-	var offset, length int64
-	var outDir string
-	var asDir bool
+// fetchCmd holds the flags for the fetch command.
+type fetchCmd struct {
+	mode           contentMode
+	file           string
+	offset, length int64
+	outDir         string
+	asDir          bool
+}
 
-	cmd := &cobra.Command{
+func newFetchCmd() kit.Command {
+	c := &fetchCmd{}
+	return kit.Command{
 		Use:   "fetch [-]",
 		Short: "Retrieve WARC records by location",
 		Long: `Fetch one or many WARC records by their byte location.
@@ -33,27 +38,34 @@ Examples:
   ccrawl fetch --file crawl-data/.../x.warc.gz --offset 123 --length 4567 --text
   ccrawl search example.com --locations | ccrawl fetch - --markdown
   ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
-		RunE: func(c *cobra.Command, args []string) error {
-			if file != "" {
-				return runFetchOne(app, c, ccrawl.Location{Filename: file, Offset: offset, Length: length}, mode)
-			}
-			if len(args) == 1 && args[0] == "-" {
-				return runFetchStdin(app, c, mode, outDir, asDir)
-			}
-			return usageErr("provide --file/--offset/--length or pass - to read locations from stdin")
-		},
+		Flags: c.flags,
+		Run:   c.run,
 	}
-	addContentFlags(cmd, &mode)
-	cmd.Flags().StringVar(&file, "file", "", "WARC file path (relative to data.commoncrawl.org)")
-	cmd.Flags().Int64Var(&offset, "offset", 0, "byte offset of the record")
-	cmd.Flags().Int64Var(&length, "length", 0, "byte length of the record")
-	cmd.Flags().StringVar(&outDir, "out-dir", "pages", "output directory when --output dir")
-	cmd.Flags().BoolVar(&asDir, "dir", false, "write one file per record into --out-dir")
-	return cmd
 }
 
-func runFetchOne(app *App, c *cobra.Command, loc ccrawl.Location, mode contentMode) error {
-	rec, err := ccrawl.FetchWARCRecord(c.Context(), app.HTTP, loc.Filename, loc.Offset, loc.Length)
+func (c *fetchCmd) flags(f *kit.FlagSet) {
+	c.mode.bind(f)
+	f.StringVar(&c.file, "file", "", "WARC file path (relative to data.commoncrawl.org)")
+	f.Int64Var(&c.offset, "offset", 0, "byte offset of the record")
+	f.Int64Var(&c.length, "length", 0, "byte length of the record")
+	f.StringVar(&c.outDir, "out-dir", "pages", "output directory when --output dir")
+	f.BoolVar(&c.asDir, "dir", false, "write one file per record into --out-dir")
+}
+
+func (c *fetchCmd) run(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	if c.file != "" {
+		loc := ccrawl.Location{Filename: c.file, Offset: c.offset, Length: c.length}
+		return runFetchOne(ctx, app, loc, c.mode)
+	}
+	if len(args) == 1 && args[0] == "-" {
+		return runFetchStdin(ctx, app, c.mode, c.outDir, c.asDir)
+	}
+	return usageErr("provide --file/--offset/--length or pass - to read locations from stdin")
+}
+
+func runFetchOne(ctx context.Context, app *App, loc ccrawl.Location, mode contentMode) error {
+	rec, err := ccrawl.FetchWARCRecord(ctx, app.HTTP, loc.Filename, loc.Offset, loc.Length)
 	if err != nil {
 		return err
 	}
@@ -66,9 +78,8 @@ func runFetchOne(app *App, c *cobra.Command, loc ccrawl.Location, mode contentMo
 	return nil
 }
 
-func runFetchStdin(app *App, c *cobra.Command, mode contentMode, outDir string, asDir bool) error {
-	ctx := c.Context()
-	asDir = asDir || app.Out.format == "dir"
+func runFetchStdin(ctx context.Context, app *App, mode contentMode, outDir string, asDir bool) error {
+	asDir = asDir || app.Out.Format() == "dir"
 
 	var locs []ccrawl.Location
 	if err := readLines(os.Stdin, func(line string) error {

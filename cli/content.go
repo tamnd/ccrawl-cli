@@ -1,7 +1,8 @@
 package cli
 
 import (
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/render"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -16,8 +17,9 @@ type contentMode struct {
 	meta     bool
 }
 
-func addContentFlags(cmd *cobra.Command, m *contentMode) {
-	f := cmd.Flags()
+// bind registers the content-selection flags shared by get and fetch. It is a
+// method so a command can wire it as kit.Command.Flags without a closure.
+func (m *contentMode) bind(f *kit.FlagSet) {
 	f.BoolVar(&m.raw, "raw", false, "print the full raw WARC record")
 	f.BoolVar(&m.headers, "headers", false, "print only the captured HTTP response headers")
 	f.BoolVar(&m.body, "body", false, "print the response body (default)")
@@ -27,14 +29,14 @@ func addContentFlags(cmd *cobra.Command, m *contentMode) {
 	f.BoolVar(&m.meta, "meta", false, "print the record metadata instead of content")
 }
 
-// render writes a WARC record to out according to the selected mode. It returns
+// render writes a WARC record to out according to the selected mode. It emits
 // rows for the structured selectors (links/meta) and writes raw bytes otherwise.
-func (m contentMode) render(out *Output, rec ccrawl.WARCRecord) error {
+func (m contentMode) render(out *render.Renderer, rec ccrawl.WARCRecord) error {
 	switch {
 	case m.raw:
-		return out.Raw(rec.Block)
+		return writeAll(out, rec.Block)
 	case m.headers:
-		return out.Raw(append(ccrawl.HTTPHeaders(rec.Block), '\n'))
+		return writeAll(out, append(ccrawl.HTTPHeaders(rec.Block), '\n'))
 	case m.meta:
 		return out.Emit(warcRow(rec))
 	case m.links:
@@ -46,16 +48,23 @@ func (m contentMode) render(out *Output, rec ccrawl.WARCRecord) error {
 		}
 		return nil
 	case m.text:
-		return out.Raw([]byte(ccrawl.ExtractText(ccrawl.HTTPBody(rec.Block)) + "\n"))
+		return writeAll(out, []byte(ccrawl.ExtractText(ccrawl.HTTPBody(rec.Block))+"\n"))
 	case m.markdown:
 		md, err := ccrawl.ExtractMarkdown(ccrawl.HTTPBody(rec.Block))
 		if err != nil {
 			return err
 		}
-		return out.Raw([]byte(md + "\n"))
+		return writeAll(out, []byte(md+"\n"))
 	default: // body
-		return out.Raw(ccrawl.HTTPBody(rec.Block))
+		return writeAll(out, ccrawl.HTTPBody(rec.Block))
 	}
+}
+
+// writeAll writes a raw content blob to the renderer, which passes it straight
+// through to its underlying writer.
+func writeAll(out *render.Renderer, b []byte) error {
+	_, err := out.Write(b)
+	return err
 }
 
 // structured reports whether the mode emits Rows (links/meta) versus raw bytes,

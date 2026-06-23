@@ -1,18 +1,23 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
-func newPathsCmd(app *App) *cobra.Command {
-	var segment string
-	var kinds bool
+// pathsCmd holds the flags for the paths command.
+type pathsCmd struct {
+	segment string
+	kinds   bool
+}
 
-	cmd := &cobra.Command{
+func newPathsCmd() kit.Command {
+	p := &pathsCmd{}
+	return kit.Command{
 		Use:   "paths <kind>",
 		Short: "List the archive file paths for a crawl",
 		Long: `Print the file paths of a crawl, one per line, ready to pipe into download.
@@ -27,34 +32,39 @@ Examples:
 
 With --library this lists what you have downloaded locally for a kind rather than
 the remote crawl manifest.`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			if kinds {
-				_, _ = fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
-				return nil
-			}
-			if len(args) == 0 {
-				return usageErr("specify a kind (one of: " + strings.Join(ccrawl.PathKinds, ", ") + ")")
-			}
-			return runPaths(app, c, args[0], segment)
-		},
+		Args:  kit.MaximumNArgs(1),
+		Flags: p.flags,
+		Run:   p.run,
 	}
-	cmd.Flags().StringVar(&segment, "segment", "", "only paths under this segment prefix")
-	cmd.Flags().BoolVar(&kinds, "kinds", false, "list the available path kinds and exit")
-	return cmd
 }
 
-func runPaths(app *App, c *cobra.Command, kind, segment string) error {
-	ctx := c.Context()
+func (p *pathsCmd) flags(f *kit.FlagSet) {
+	f.StringVar(&p.segment, "segment", "", "only paths under this segment prefix")
+	f.BoolVar(&p.kinds, "kinds", false, "list the available path kinds and exit")
+}
+
+func (p *pathsCmd) run(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	if p.kinds {
+		_, _ = fmt.Fprintln(cmdOut, strings.Join(ccrawl.PathKinds, "\n"))
+		return nil
+	}
+	if len(args) == 0 {
+		return usageErr("specify a kind (one of: " + strings.Join(ccrawl.PathKinds, ", ") + ")")
+	}
+	return runPaths(ctx, app, args[0], p.segment)
+}
+
+func runPaths(ctx context.Context, app *App, kind, segment string) error {
 	if app.UseLibrary {
-		return listLibraryPaths(app, c, kind, segment)
+		return listLibraryPaths(ctx, app, kind, segment)
 	}
 	id, err := app.Crawl(ctx)
 	if err != nil {
 		return err
 	}
 	limit := app.Limit
-	asURL := app.Out.format == "url"
+	asURL := app.Out.Format() == "url"
 	count := 0
 	err = ccrawl.StreamPaths(ctx, app.HTTP, id, kind, func(p string) error {
 		if segment != "" && !strings.Contains(p, segment) {
@@ -89,8 +99,8 @@ var errStopPaths = fmt.Errorf("stop")
 // listLibraryPaths lists the archive files of a kind already downloaded into the
 // library, so paths --library tells you what you have locally rather than what
 // the remote crawl offers. Honours --segment (substring match) and -n.
-func listLibraryPaths(app *App, c *cobra.Command, kind, segment string) error {
-	lib, err := app.Library(c.Context())
+func listLibraryPaths(ctx context.Context, app *App, kind, segment string) error {
+	lib, err := app.Library(ctx)
 	if err != nil {
 		return err
 	}

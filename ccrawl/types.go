@@ -14,31 +14,31 @@ import (
 
 // Crawl is one Common Crawl collection as published in collinfo.json.
 type Crawl struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	CDXAPI string `json:"cdx-api"`
-	From   string `json:"from,omitempty"`
-	To     string `json:"to,omitempty"`
+	ID     string `json:"id" kit:"id" table:"id"`
+	Name   string `json:"name" table:"name"`
+	CDXAPI string `json:"cdx-api" table:"-"`
+	From   string `json:"from,omitempty" table:"from"`
+	To     string `json:"to,omitempty" table:"to"`
 }
 
 // CDXRecord is one capture from the URL index. Numeric fields stay as strings
 // because that is how the CDX server returns them; helpers convert on demand.
 type CDXRecord struct {
-	CrawlID      string `json:"crawl,omitempty"`
-	URLKey       string `json:"urlkey"`
-	Timestamp    string `json:"timestamp"` // 14-digit YYYYMMDDHHmmss
-	URL          string `json:"url"`
-	MIME         string `json:"mime"`
-	MIMEDetected string `json:"mime-detected"`
-	Status       string `json:"status"`
-	Digest       string `json:"digest"`
-	Length       string `json:"length"`
-	Offset       string `json:"offset"`
-	Filename     string `json:"filename"`
-	Charset      string `json:"charset,omitempty"`
-	Languages    string `json:"languages,omitempty"`
-	Truncated    string `json:"truncated,omitempty"`
-	Redirect     string `json:"redirect,omitempty"`
+	CrawlID      string `json:"crawl,omitempty" table:"crawl"`
+	URLKey       string `json:"urlkey" table:"-"`
+	Timestamp    string `json:"timestamp" table:"timestamp"` // 14-digit YYYYMMDDHHmmss
+	URL          string `json:"url" table:"url,url"`
+	MIME         string `json:"mime" table:"-"`
+	MIMEDetected string `json:"mime-detected" table:"mime"`
+	Status       string `json:"status" table:"status"`
+	Digest       string `json:"digest" table:"digest"`
+	Length       string `json:"length" table:"length"`
+	Offset       string `json:"offset" table:"offset"`
+	Filename     string `json:"filename" table:"filename"`
+	Charset      string `json:"charset,omitempty" table:"-"`
+	Languages    string `json:"languages,omitempty" table:"languages"`
+	Truncated    string `json:"truncated,omitempty" table:"-"`
+	Redirect     string `json:"redirect,omitempty" table:"-"`
 }
 
 // Time parses the 14-digit timestamp. The zero time is returned on failure.
@@ -52,10 +52,10 @@ func (r CDXRecord) Time() time.Time {
 
 // Location is the WARC file plus byte span needed to range-fetch this capture.
 type Location struct {
-	Filename string `json:"filename"`
-	Offset   int64  `json:"offset"`
-	Length   int64  `json:"length"`
-	URL      string `json:"url,omitempty"`
+	Filename string `json:"filename" table:"filename"`
+	Offset   int64  `json:"offset" table:"offset"`
+	Length   int64  `json:"length" table:"length"`
+	URL      string `json:"url,omitempty" table:"url,url"`
 }
 
 // Location returns the byte span of this capture within its WARC file.
@@ -90,16 +90,16 @@ type WETRecord = wet.Record
 
 // NewsFile describes one CC-NEWS WARC file.
 type NewsFile struct {
-	Path string
-	Year int
-	Mon  int
+	Path string `json:"path" table:"path"`
+	Year int    `json:"year" table:"year"`
+	Mon  int    `json:"month" table:"month"`
 }
 
 // Rank is a host/domain entry from the web-graph rank tables.
 type Rank struct {
-	Key         string  `json:"key"` // host or domain (forward form)
-	HarmonicPos int64   `json:"harmonic_pos"`
-	HarmonicVal float64 `json:"harmonic_val"`
-	PageRankPos int64   `json:"pagerank_pos"`
-	PageRankVal float64 `json:"pagerank_val"`
+	Key         string  `json:"key" kit:"id" table:"key"` // host or domain (forward form)
+	HarmonicPos int64   `json:"harmonic_pos" table:"harmonic_pos"`
+	HarmonicVal float64 `json:"harmonic_val" table:"harmonic_val"`
+	PageRankPos int64   `json:"pagerank_pos" table:"pagerank_pos"`
+	PageRankVal float64 `json:"pagerank_val" table:"pagerank_val"`
 }

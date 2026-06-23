@@ -6,11 +6,9 @@ weight: 20
 
 ## Prebuilt binaries
 
-Every [release](https://github.com/tamnd/ccrawl-cli/releases) carries archives
-for Linux, macOS, and Windows on amd64 and arm64, plus deb, rpm, and apk
-packages for Linux. Download, unpack, put `ccrawl` on your `PATH`, done. The
-`checksums.txt` on each release is signed with keyless
-[cosign](https://docs.sigstore.dev/) if you want to verify before running.
+Every [release](https://github.com/tamnd/ccrawl-cli/releases) carries archives for Linux, macOS, and Windows on amd64 and arm64, plus deb, rpm, and apk packages for Linux.
+Download, unpack, put `ccrawl` on your `PATH`, done.
+The `checksums.txt` on each release is signed with keyless [cosign](https://docs.sigstore.dev/) if you want to verify before running.
 
 ## With Go
 
@@ -18,8 +16,8 @@ packages for Linux. Download, unpack, put `ccrawl` on your `PATH`, done. The
 go install github.com/tamnd/ccrawl-cli/cmd/ccrawl@latest
 ```
 
-That puts `ccrawl` in `$(go env GOPATH)/bin`, which is `~/go/bin` unless you
-moved it. Make sure that directory is on your `PATH`.
+That puts `ccrawl` in `$(go env GOPATH)/bin`, which is `~/go/bin` unless you moved it.
+Make sure that directory is on your `PATH`.
 
 ## From source
 
@@ -32,14 +30,13 @@ make build        # produces ./bin/ccrawl
 
 ## Optional: DuckDB
 
-The columnar index commands (`ccrawl table`, `ccrawl db`) run SQL against the
-public Parquet index. If a `duckdb` binary is on your `PATH`, ccrawl uses it to
-run the queries directly. With no `duckdb` on your `PATH`, ccrawl prints the SQL
-so you can paste it into DuckDB, Athena, Spark, or Trino yourself. Either way the ccrawl binary
-never links DuckDB, so the install stays small and pure Go.
+The columnar index commands (`ccrawl table`, `ccrawl db`) run SQL against the public Parquet index.
+If a `duckdb` binary is on your `PATH`, ccrawl uses it to run the queries directly.
+With no `duckdb` on your `PATH`, ccrawl prints the SQL so you can paste it into DuckDB, Athena, Spark, or Trino yourself.
+Either way the ccrawl binary never links DuckDB, so the install stays small and pure Go.
 
-Install DuckDB from [duckdb.org](https://duckdb.org/docs/installation) if you
-want local execution. Everything else in ccrawl works without it.
+Install DuckDB from [duckdb.org](https://duckdb.org/docs/installation) if you want local execution.
+Everything else in ccrawl works without it.
 
 ## Requirements
 
@@ -60,5 +57,5 @@ prints the version and exits. Then confirm it can reach Common Crawl:
 ccrawl crawls latest
 ```
 
-should print the newest crawl ID, for example `CC-MAIN-2026-21`. If you see
-that, you are ready for the [quick start](/getting-started/quick-start/).
+should print the newest crawl ID, for example `CC-MAIN-2026-21`.
+If you see that, you are ready for the [quick start](/getting-started/quick-start/).

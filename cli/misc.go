@@ -1,16 +1,17 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
 )
 
-func itoa(n int) string { return strconv.Itoa(n) }
+// errStop is a sentinel returned from callbacks to halt streaming early.
+var errStop = errors.New("stop")
 
-// limitFrom returns the global --limit value.
-func limitFrom(app *App) int { return app.Limit }
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // normalizePath strips a full Common Crawl URL down to its relative path so the
 // downloader treats stdin URLs and manifest paths the same way.

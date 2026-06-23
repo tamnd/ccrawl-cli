@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -27,9 +28,9 @@ type parseFlags struct {
 	meta     bool
 }
 
-func newParseCmd(app *App) *cobra.Command {
+func newParseCmd() kit.Command {
 	pf := &parseFlags{}
-	cmd := &cobra.Command{
+	return kit.Command{
 		Use:   "parse <file|->",
 		Short: "Decode a local WARC/WAT/WET file into records",
 		Long: `Parse an archive file into structured records.
@@ -47,12 +48,13 @@ Examples:
 With --library the argument is a kind (warc, wat, wet, ...) and ccrawl parses
 every archive of that kind held in the library, streaming all records through
 one output so -n caps the whole run.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			return runParse(app, c, args[0], pf)
-		},
+		Args:  kit.ExactArgs(1),
+		Flags: pf.flags,
+		Run:   pf.run,
 	}
-	f := cmd.Flags()
+}
+
+func (pf *parseFlags) flags(f *kit.FlagSet) {
 	f.StringVar(&pf.format, "format", "", "force format: warc|wat|wet")
 	f.StringVar(&pf.wtype, "type", "", "WARC-Type filter (response|request|metadata|...)")
 	f.StringVar(&pf.status, "status", "", "HTTP status filter")
@@ -63,7 +65,10 @@ one output so -n caps the whole run.`,
 	f.BoolVar(&pf.text, "text", false, "emit extracted text for response/conversion records")
 	f.BoolVar(&pf.markdown, "markdown", false, "convert response bodies to Markdown")
 	f.BoolVar(&pf.meta, "meta", false, "emit record metadata only")
-	return cmd
+}
+
+func (pf *parseFlags) run(ctx context.Context, args []string) error {
+	return runParse(ctx, appFromCtx(ctx), args[0], pf)
 }
 
 // errLimit is returned by a limited emitter once the requested number of rows
@@ -88,9 +93,9 @@ func limitedEmit(app *App) func(Row) error {
 	}
 }
 
-func runParse(app *App, c *cobra.Command, path string, pf *parseFlags) error {
+func runParse(ctx context.Context, app *App, path string, pf *parseFlags) error {
 	if app.UseLibrary {
-		return parseLibrary(app, c, path, pf)
+		return parseLibrary(ctx, app, path, pf)
 	}
 
 	r, name, closeFn, err := openInput(path)
@@ -103,7 +108,7 @@ func runParse(app *App, c *cobra.Command, path string, pf *parseFlags) error {
 	if format == "" {
 		format = detectFormat(name)
 	}
-	id, _ := app.Crawl(c.Context())
+	id, _ := app.Crawl(ctx)
 
 	emit := limitedEmit(app)
 	count, err := parseReader(r, format, id, pf, emit)
@@ -122,8 +127,8 @@ func runParse(app *App, c *cobra.Command, path string, pf *parseFlags) error {
 // parseLibrary parses every archive of a kind held in the library, streaming all
 // records through one emitter so the global -n limit caps the whole run, not each
 // file. The argument is the kind (warc, wat, wet, robotstxt, ...).
-func parseLibrary(app *App, c *cobra.Command, kind string, pf *parseFlags) error {
-	lib, err := app.Library(c.Context())
+func parseLibrary(ctx context.Context, app *App, kind string, pf *parseFlags) error {
+	lib, err := app.Library(ctx)
 	if err != nil {
 		return err
 	}

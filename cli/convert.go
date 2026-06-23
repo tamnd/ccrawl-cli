@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -22,12 +23,16 @@ func closeWith(c io.Closer, err error) error {
 	return err
 }
 
-func newConvertCmd(app *App) *cobra.Command {
-	var to string
-	var outPath string
-	var markdown bool
+// convertCmd holds the flags for the convert command.
+type convertCmd struct {
+	to       string
+	outPath  string
+	markdown bool
+}
 
-	cmd := &cobra.Command{
+func newConvertCmd() kit.Command {
+	v := &convertCmd{}
+	return kit.Command{
 		Use:   "convert <file|dir>",
 		Short: "Convert WARC/WAT/WET archives to Parquet or JSONL",
 		Long: `Convert one archive file or a directory of them to columnar Parquet (zstd,
@@ -43,23 +48,28 @@ Examples:
 With --library the argument is a kind: ccrawl reads every archive of that kind
 from the library and writes the output under <crawl>/<format>/<kind>/, beside
 the raw files.`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(c *cobra.Command, args []string) error {
-			return runConvert(app, c, args[0], to, outPath, markdown)
-		},
+		Args:  kit.ExactArgs(1),
+		Flags: v.flags,
+		Run:   v.run,
 	}
-	cmd.Flags().StringVar(&to, "to", "parquet", "output format: parquet|jsonl")
-	cmd.Flags().StringVarP(&outPath, "out", "O", "", "output file (single input) or directory")
-	cmd.Flags().BoolVar(&markdown, "markdown", false, "convert WARC HTML bodies to Markdown")
-	return cmd
 }
 
-func runConvert(app *App, c *cobra.Command, input, to, outPath string, markdown bool) error {
+func (v *convertCmd) flags(f *kit.FlagSet) {
+	f.StringVar(&v.to, "to", "parquet", "output format: parquet|jsonl")
+	f.StringVarP(&v.outPath, "out", "O", "", "output file (single input) or directory")
+	f.BoolVar(&v.markdown, "markdown", false, "convert WARC HTML bodies to Markdown")
+}
+
+func (v *convertCmd) run(ctx context.Context, args []string) error {
+	return runConvert(ctx, appFromCtx(ctx), args[0], v.to, v.outPath, v.markdown)
+}
+
+func runConvert(ctx context.Context, app *App, input, to, outPath string, markdown bool) error {
 	if app.UseLibrary {
 		// In library mode the argument is a kind: read every archive of that kind
 		// from the library and write the processed output back into the library
 		// under <crawl>/<format>/<kind>/, beside the raw files.
-		lib, err := app.Library(c.Context())
+		lib, err := app.Library(ctx)
 		if err != nil {
 			return err
 		}
@@ -101,7 +111,7 @@ func runConvert(app *App, c *cobra.Command, input, to, outPath string, markdown 
 			}
 			out = filepath.Join(dir, base+"."+to)
 		}
-		if err := convertOne(app, c, f, out, to, markdown); err != nil {
+		if err := convertOne(ctx, app, f, out, to, markdown); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintln(cmdErr, "wrote "+out)
@@ -109,14 +119,14 @@ func runConvert(app *App, c *cobra.Command, input, to, outPath string, markdown 
 	return nil
 }
 
-func convertOne(app *App, c *cobra.Command, in, out, to string, markdown bool) error {
+func convertOne(ctx context.Context, app *App, in, out, to string, markdown bool) error {
 	r, name, closeFn, err := openInput(in)
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 	format := detectFormat(name)
-	id, _ := app.Crawl(c.Context())
+	id, _ := app.Crawl(ctx)
 
 	if to == "jsonl" {
 		return convertJSONL(r, format, id, out)
