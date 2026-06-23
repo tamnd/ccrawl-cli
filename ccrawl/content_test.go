@@ -134,4 +134,3 @@ func TestCanonicalURL(t *testing.T) {
 		t.Errorf("CanonicalURL = %q", got)
 	}
 }
-

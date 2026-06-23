@@ -142,7 +142,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("open ledger: %w", err)
 	}
-	defer ledger.Close()
+	defer func() { _ = ledger.Close() }()
 	if done := ledger.Count(); done > 0 {
 		fmt.Fprintf(os.Stderr, "markdown: ledger %s already records %d committed shards\n", ledgerPath, done)
 	}

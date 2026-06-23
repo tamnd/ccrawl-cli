@@ -37,8 +37,8 @@ type SeedRecord struct {
 
 func registerCrawlSeed(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "seed",
-		Parent: "crawl",
+		Name:    "seed",
+		Parent:  "crawl",
 		Summary: "Generate crawl seed URLs from the web-graph host rank table",
 		Long: `Stream the top hosts from the CC web-graph rank table and emit one seed URL
 per host (https://{host}/) as a SeedRecord. Use --max-tier to restrict to
@@ -85,9 +85,9 @@ Examples:
 // ── crawl fetch ───────────────────────────────────────────────────────────────
 
 type crawlFetchIn struct {
-	App      *App   `kit:"inject"`
-	URL      string `kit:"arg" name:"url" help:"URL to crawl"`
-	Robots   bool   `kit:"flag" help:"check robots.txt before fetching"`
+	App    *App   `kit:"inject"`
+	URL    string `kit:"arg" name:"url" help:"URL to crawl"`
+	Robots bool   `kit:"flag" help:"check robots.txt before fetching"`
 }
 
 // FetchRecord is the result of crawling one URL.
@@ -104,9 +104,9 @@ type FetchRecord struct {
 
 func registerCrawlFetch(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "fetch",
-		Parent: "crawl",
-		Single: true,
+		Name:    "fetch",
+		Parent:  "crawl",
+		Single:  true,
 		Summary: "Crawl a single URL with robots.txt checking and digest",
 		Long: `Fetch a single URL using the v2 crawler config (user-agent, redirect following,
 body limit). Optionally check robots.txt before fetching.
@@ -177,8 +177,8 @@ type CrawlStatus struct {
 
 func registerCrawlStatus(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "status",
-		Parent: "crawl",
+		Name:    "status",
+		Parent:  "crawl",
 		Summary: "Show crawl budget allocation across recrawl tiers",
 		Long: `Display the daily page crawl budget allocation across the 5 recrawl tiers.
 Total assumed capacity: 864 million pages per day (10,000 pages/sec).

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/parquet-go/parquet-go"
 	"io"
 	"os"
 	"sync"
 	"sync/atomic"
-	"github.com/parquet-go/parquet-go"
 )
 
 // CDXRawRow is the projected schema for CC CDX Parquet files.
@@ -100,7 +100,9 @@ func ExtractCDXRaw(ctx context.Context, h *HTTPClient, parquetURLs []string, wor
 		f, err := os.Create(tmp)
 		if err != nil {
 			for _, pw := range writers {
-				_ = pw.gz.Close(); _ = pw.f.Close(); _ = os.Remove(pw.tmp)
+				_ = pw.gz.Close()
+				_ = pw.f.Close()
+				_ = os.Remove(pw.tmp)
 			}
 			return fmt.Errorf("create raw CDX file for prefix %q: %w", p, err)
 		}
@@ -505,12 +507,15 @@ func aggregateCDXPrefix(ctx context.Context, workDir, prefix string) (int64, err
 			TotalBytes:       a.TotalBytes,
 		}
 		if err := enc.Encode(s); err != nil {
-			_ = ogz.Close(); _ = of.Close(); _ = os.Remove(tmpPath)
+			_ = ogz.Close()
+			_ = of.Close()
+			_ = os.Remove(tmpPath)
 			return 0, err
 		}
 	}
 	if err := ogz.Close(); err != nil {
-		_ = of.Close(); _ = os.Remove(tmpPath)
+		_ = of.Close()
+		_ = os.Remove(tmpPath)
 		return 0, err
 	}
 	if err := of.Close(); err != nil {

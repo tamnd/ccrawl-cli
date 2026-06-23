@@ -24,8 +24,8 @@ type schedAssignIn struct {
 
 func registerSchedAssign(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "assign",
-		Parent: "sched",
+		Name:    "assign",
+		Parent:  "sched",
 		Summary: "Assign crawl tiers to hosts from the web-graph rank table",
 		Long: `Stream the host rank table and assign each host to a crawl tier based on
 its harmonic rank position and (assumed or measured) change rate.
@@ -65,8 +65,8 @@ type schedDiffIn struct {
 
 func registerSchedDiff(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "diff",
-		Parent: "sched",
+		Name:    "diff",
+		Parent:  "sched",
 		Summary: "Compute per-host change rates between two CC crawl snapshots",
 		Long: `Join two CC columnar Parquet indexes on URL and compare content digests
 to compute a per-host change rate. This drives tier re-assignment and freshness

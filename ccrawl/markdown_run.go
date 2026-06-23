@@ -116,21 +116,21 @@ type MarkdownExportConfig struct {
 
 // MarkdownRunStats is a live snapshot of a parallel export run.
 type MarkdownRunStats struct {
-	Total          int   // shards requested this run
-	Skipped        int   // shards skipped via the ledger
-	Committed      int   // shards committed so far
-	Failed         int   // shards that errored
-	Rows           int64 // cumulative rows across committed shards
-	WARCBytes      int64
-	HTMLBytes      int64
-	MDBytes        int64
-	ParquetBytes   int64
-	ConvertS       int64 // cumulative per-shard conversion wall-clock, seconds
-	PublishS       int64 // cumulative HF commit wall-clock, seconds
-	Elapsed        time.Duration
-	ShardsPerHour  float64
-	ETA            time.Duration // estimated time to finish the remaining shards
-	FreeDiskBytes  int64
+	Total         int   // shards requested this run
+	Skipped       int   // shards skipped via the ledger
+	Committed     int   // shards committed so far
+	Failed        int   // shards that errored
+	Rows          int64 // cumulative rows across committed shards
+	WARCBytes     int64
+	HTMLBytes     int64
+	MDBytes       int64
+	ParquetBytes  int64
+	ConvertS      int64 // cumulative per-shard conversion wall-clock, seconds
+	PublishS      int64 // cumulative HF commit wall-clock, seconds
+	Elapsed       time.Duration
+	ShardsPerHour float64
+	ETA           time.Duration // estimated time to finish the remaining shards
+	FreeDiskBytes int64
 }
 
 // packShardFn is the function the orchestrator uses to convert one shard. It
@@ -309,7 +309,7 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 				return err
 			}
 			readmeTmp = tmp
-			defer os.Remove(readmeTmp)
+			defer func() { _ = os.Remove(readmeTmp) }()
 			ops = append(ops, HFOperation{LocalPath: readmeTmp, PathInRepo: "README.md"})
 
 			lo, hi := batch[0].idx, batch[len(batch)-1].idx
@@ -370,7 +370,7 @@ func updateRunRates(run *MarkdownRunStats, start time.Time) {
 		run.ShardsPerHour = float64(run.Committed) / elapsed.Hours()
 		remaining := run.Total - run.Skipped - run.Committed - run.Failed
 		if remaining > 0 && run.ShardsPerHour > 0 {
-			run.ETA = time.Duration(float64(remaining)/run.ShardsPerHour*float64(time.Hour))
+			run.ETA = time.Duration(float64(remaining) / run.ShardsPerHour * float64(time.Hour))
 		} else {
 			run.ETA = 0
 		}
@@ -414,11 +414,11 @@ func writeTempREADME(dstats MarkdownDatasetStats) (string, error) {
 	}
 	w := bufio.NewWriter(f)
 	if _, err := w.WriteString(GenerateMarkdownREADME(dstats)); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
 	return f.Name(), f.Close()

@@ -49,11 +49,11 @@ func (h *frontierHeap) Pop() any {
 // Frontier is an in-memory URL frontier with a priority heap and per-host
 // politeness (minimum delay between requests to the same host).
 type Frontier struct {
-	mu      sync.Mutex
-	heap    frontierHeap
-	seen    map[string]struct{}    // URL SHA-1 dedup
-	hostAt  map[string]int64       // last-fetch Unix timestamp per host
-	delay   time.Duration          // minimum inter-request delay per host
+	mu     sync.Mutex
+	heap   frontierHeap
+	seen   map[string]struct{} // URL SHA-1 dedup
+	hostAt map[string]int64    // last-fetch Unix timestamp per host
+	delay  time.Duration       // minimum inter-request delay per host
 }
 
 // NewFrontier creates a Frontier with the given per-host politeness delay.
@@ -140,8 +140,8 @@ func ContentSHA1(content []byte) string {
 
 // RobotsRule is one allow/disallow rule from robots.txt.
 type RobotsRule struct {
-	Allow    bool
-	Pattern  string
+	Allow   bool
+	Pattern string
 }
 
 // RobotsEntry is a cached robots.txt for one host.

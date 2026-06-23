@@ -42,7 +42,7 @@ func TestLedgerPersistsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 	if l2.Count() != 3 {
 		t.Fatalf("reopened Count = %d, want 3", l2.Count())
 	}
@@ -78,7 +78,7 @@ func TestRunMarkdownExportConvertsAndDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ledger.Close()
+	defer func() { _ = ledger.Close() }()
 
 	indices := []int{0, 1, 2, 3, 4}
 	paths := make([]string, 5)
@@ -128,7 +128,7 @@ func TestRunMarkdownExportSkipsLedgered(t *testing.T) {
 	var packed int64
 	stubPack(t, func(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
 		atomic.AddInt64(&packed, 1)
-		os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
+		_ = os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
 		return MarkdownStats{ShardIdx: cfg.ShardIdx, Rows: 1}, nil
 	})
 
@@ -136,10 +136,10 @@ func TestRunMarkdownExportSkipsLedgered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ledger.Close()
+	defer func() { _ = ledger.Close() }()
 	// Pretend shards 0 and 2 were committed by an earlier run.
-	ledger.Mark(0)
-	ledger.Mark(2)
+	_ = ledger.Mark(0)
+	_ = ledger.Mark(2)
 
 	paths := make([]string, 4)
 	run, err := RunMarkdownExport(context.Background(), nil, nil, MarkdownExportConfig{
@@ -170,7 +170,7 @@ func TestRunMarkdownExportCountsFailures(t *testing.T) {
 		if cfg.ShardIdx%2 == 1 {
 			return MarkdownStats{}, fmt.Errorf("boom on shard %d", cfg.ShardIdx)
 		}
-		os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
+		_ = os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
 		return MarkdownStats{ShardIdx: cfg.ShardIdx, Rows: 1}, nil
 	})
 
@@ -210,7 +210,7 @@ func TestRunMarkdownExportSharedConvertCap(t *testing.T) {
 		atomic.AddInt64(&inFlight, -1)
 		<-cfg.ConvertSem
 
-		os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
+		_ = os.WriteFile(cfg.OutPath, []byte("p"), 0o644)
 		return MarkdownStats{ShardIdx: cfg.ShardIdx, Rows: 1}, nil
 	})
 

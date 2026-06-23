@@ -30,8 +30,8 @@ type ServeResult struct {
 
 func registerServeAPI(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "api",
-		Single: true,
+		Name:    "api",
+		Single:  true,
 		Summary: "Start the ccrawl v2 REST API server",
 		Long: `Start the ccrawl v2 HTTP API server. Exposes:
 

@@ -19,16 +19,16 @@ import (
 // No aggregation — callers GROUP BY host to compute per-host statistics.
 type URLDatasetRow struct {
 	// CDX identity
-	Host     string `parquet:"host,dict"`
-	RD       string `parquet:"rd,dict"`
-	TLD      string `parquet:"tld,dict"`
-	Proto    string `parquet:"proto,dict"`
-	URL      string `parquet:"url"`
-	Surt     string `parquet:"surt"`
+	Host  string `parquet:"host,dict"`
+	RD    string `parquet:"rd,dict"`
+	TLD   string `parquet:"tld,dict"`
+	Proto string `parquet:"proto,dict"`
+	URL   string `parquet:"url"`
+	Surt  string `parquet:"surt"`
 	// CDX fetch result
-	ST       int32  `parquet:"st"`
-	Redir    string `parquet:"redir"`
-	Digest   string `parquet:"digest,dict"`
+	ST     int32  `parquet:"st"`
+	Redir  string `parquet:"redir"`
+	Digest string `parquet:"digest,dict"`
 	// CDX content
 	MIME     string `parquet:"mime,dict"`
 	MIMEDecl string `parquet:"mime_d,dict"`
@@ -36,19 +36,19 @@ type URLDatasetRow struct {
 	Lang     string `parquet:"lang,dict"`
 	Trunc    string `parquet:"trunc,dict"`
 	// CDX timing and size
-	TS       string `parquet:"ts,dict"`
-	Bytes    int64  `parquet:"bytes"`
+	TS    string `parquet:"ts,dict"`
+	Bytes int64  `parquet:"bytes"`
 	// CDX WARC location (for byte-range content fetch)
 	WARCFile string `parquet:"warc_f,dict"`
 	WARCOff  int64  `parquet:"warc_o"`
 	RobotsOK bool   `parquet:"robots_ok"`
 	Crawl    string `parquet:"crawl,dict"`
 	// Rank signals (joined from rank table by host)
-	GraphID      string  `parquet:"graph_id,dict"`
-	HarmonicPos  int64   `parquet:"harmonic_pos"`
-	HarmonicVal  float64 `parquet:"harmonic_val"`
-	PageRankPos  int64   `parquet:"pagerank_pos"`
-	PageRankVal  float64 `parquet:"pagerank_val"`
+	GraphID     string  `parquet:"graph_id,dict"`
+	HarmonicPos int64   `parquet:"harmonic_pos"`
+	HarmonicVal float64 `parquet:"harmonic_val"`
+	PageRankPos int64   `parquet:"pagerank_pos"`
+	PageRankVal float64 `parquet:"pagerank_val"`
 }
 
 // HostDatasetRow is the legacy per-host aggregated schema kept for reference.
@@ -106,19 +106,19 @@ func datasetPrefix(host string) string {
 
 // prefixWriters manages a set of gzipped JSONL or TSV writers keyed by prefix.
 type prefixWriters struct {
-	dir    string
-	stem   string
-	ext    string
-	files  map[string]*os.File
+	dir     string
+	stem    string
+	ext     string
+	files   map[string]*os.File
 	writers map[string]*gzip.Writer
 }
 
 func newPrefixWriters(dir, stem, ext string) *prefixWriters {
 	return &prefixWriters{
-		dir:    dir,
-		stem:   stem,
-		ext:    ext,
-		files:  make(map[string]*os.File),
+		dir:     dir,
+		stem:    stem,
+		ext:     ext,
+		files:   make(map[string]*os.File),
 		writers: make(map[string]*gzip.Writer),
 	}
 }
@@ -331,11 +331,11 @@ func saveCDXBatch(ctx context.Context, parquetURLs []string, crawlID, workDir st
 
 	// Open per-prefix temp writers.
 	type prefixState struct {
-		f    *os.File
-		gz   *gzip.Writer
-		enc  *json.Encoder
-		n    int64
-		tmp  string
+		f     *os.File
+		gz    *gzip.Writer
+		enc   *json.Encoder
+		n     int64
+		tmp   string
 		final string
 	}
 	states := make(map[string]*prefixState, len(prefixes))
@@ -345,7 +345,9 @@ func saveCDXBatch(ctx context.Context, parquetURLs []string, crawlID, workDir st
 		f, err := os.Create(tmp)
 		if err != nil {
 			for _, s := range states {
-				_ = s.gz.Close(); _ = s.f.Close(); _ = os.Remove(s.tmp)
+				_ = s.gz.Close()
+				_ = s.f.Close()
+				_ = os.Remove(s.tmp)
 			}
 			return nil, fmt.Errorf("create tmp for prefix %q: %w", p, err)
 		}
@@ -404,8 +406,8 @@ func saveCDXBatch(ctx context.Context, parquetURLs []string, crawlID, workDir st
 // from the beginning — essential for multi-GB files over unstable connections.
 func DownloadRankTable(ctx context.Context, rankURL, localPath string) error {
 	args := []string{
-		"-L",           // follow redirects
-		"-C", "-",      // resume from byte offset already downloaded
+		"-L",      // follow redirects
+		"-C", "-", // resume from byte offset already downloaded
 		"-o", localPath,
 		"--retry", "5",
 		"--retry-delay", "30",

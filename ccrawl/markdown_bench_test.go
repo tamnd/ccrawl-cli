@@ -86,7 +86,7 @@ func TestEngineComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open WARC: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var pages []page
 	var totalHTML int64
@@ -174,8 +174,8 @@ func TestEngineComparison(t *testing.T) {
 			if a == "" || b == "" {
 				continue
 			}
-			os.WriteFile(dir+"/"+strconv.Itoa(i)+".h2m.md", []byte("URL: "+p.url+"\n\n"+a), 0o644)
-			os.WriteFile(dir+"/"+strconv.Itoa(i)+".v2.md", []byte("URL: "+p.url+"\n\n"+b), 0o644)
+			_ = os.WriteFile(dir+"/"+strconv.Itoa(i)+".h2m.md", []byte("URL: "+p.url+"\n\n"+a), 0o644)
+			_ = os.WriteFile(dir+"/"+strconv.Itoa(i)+".v2.md", []byte("URL: "+p.url+"\n\n"+b), 0o644)
 			dumped++
 		}
 		t.Logf("dumped %d page pairs to %s", dumped, dir)

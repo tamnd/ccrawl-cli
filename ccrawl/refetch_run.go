@@ -225,7 +225,7 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			if err != nil {
 				return err
 			}
-			defer os.Remove(readmeTmp)
+			defer func() { _ = os.Remove(readmeTmp) }()
 			ops = append(ops, HFOperation{LocalPath: readmeTmp, PathInRepo: "README.md"})
 
 			lo, hi := batch[0].idx, batch[len(batch)-1].idx
@@ -330,11 +330,11 @@ func writeRefetchTempREADME(s RefetchDatasetStats) (string, error) {
 	}
 	w := bufio.NewWriter(f)
 	if _, err := w.WriteString(generateRefetchREADME(s)); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
 	return f.Name(), f.Close()

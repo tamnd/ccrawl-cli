@@ -30,10 +30,10 @@ type markdownRefetchCmd struct {
 	shards       string
 	outDir       string
 	repo         string
-	workers      int  // conversion workers (NumCPU default)
-	fetchWorkers int  // ami fetch workers
-	maxRedirects int  // per-fetch redirect limit
-	rate         int  // per-host rate limit (req/s, 0 = unlimited)
+	workers      int // conversion workers (NumCPU default)
+	fetchWorkers int // ami fetch workers
+	maxRedirects int // per-fetch redirect limit
+	rate         int // per-host rate limit (req/s, 0 = unlimited)
 	push         bool
 	limit        int
 	parallel     int
