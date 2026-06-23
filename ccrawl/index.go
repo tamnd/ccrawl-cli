@@ -153,13 +153,13 @@ func (b *InvertedIndexBuilder) Flush() error {
 	if err != nil {
 		return err
 	}
-	defer tf.Close()
+	defer func() { _ = tf.Close() }()
 
 	pf, err := os.Create(postPath)
 	if err != nil {
 		return err
 	}
-	defer pf.Close()
+	defer func() { _ = pf.Close() }()
 
 	tw := bufio.NewWriter(tf)
 	pw := bufio.NewWriter(pf)
@@ -215,7 +215,7 @@ func (b *InvertedIndexBuilder) Flush() error {
 	if err != nil {
 		return err
 	}
-	defer sf.Close()
+	defer func() { _ = sf.Close() }()
 	_, err = fmt.Fprintf(sf, "%d\t%.4f\n", b.N, avgDL)
 	return err
 }
@@ -224,11 +224,11 @@ func (b *InvertedIndexBuilder) Flush() error {
 
 // IndexReader reads a flushed inverted index from disk.
 type IndexReader struct {
-	dir     string
-	terms   map[string]termEntry // populated by loadTerms()
-	N       int
-	AvgDL   float64
-	postF   *os.File
+	dir   string
+	terms map[string]termEntry // populated by loadTerms()
+	N     int
+	AvgDL float64
+	postF *os.File
 }
 
 type termEntry struct {
@@ -267,7 +267,7 @@ func (r *IndexReader) loadStats() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = fmt.Fscan(f, &r.N, &r.AvgDL)
 	return err
 }
@@ -277,7 +277,7 @@ func (r *IndexReader) loadTerms() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB — handles long terms
 	for sc.Scan() {
@@ -394,16 +394,16 @@ func readVarInt(r io.ByteReader) (uint64, error) {
 
 // ForwardDoc is one row in the forward index.
 type ForwardDoc struct {
-	DocID       uint64 `json:"doc_id" table:"doc_id"`
-	URL         string `json:"url" table:"url"`
-	CanonURL    string `json:"canon_url" table:"canon_url"`
-	Host        string `json:"host" table:"host"`
-	Title       string `json:"title" table:"title"`
-	Description string `json:"description" table:"description"`
-	Language    string `json:"language" table:"language"`
-	WordCount   int    `json:"word_count" table:"word_count"`
+	DocID       uint64  `json:"doc_id" table:"doc_id"`
+	URL         string  `json:"url" table:"url"`
+	CanonURL    string  `json:"canon_url" table:"canon_url"`
+	Host        string  `json:"host" table:"host"`
+	Title       string  `json:"title" table:"title"`
+	Description string  `json:"description" table:"description"`
+	Language    string  `json:"language" table:"language"`
+	WordCount   int     `json:"word_count" table:"word_count"`
 	LinkScore   float32 `json:"link_score" table:"link_score"`
-	Snippet     string `json:"snippet" table:"snippet"`
+	Snippet     string  `json:"snippet" table:"snippet"`
 }
 
 // ForwardIndexWriter appends ForwardDoc rows to a JSONL file.

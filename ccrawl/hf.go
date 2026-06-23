@@ -96,8 +96,8 @@ func (c *HFClient) CreateDatasetRepo(ctx context.Context, repoID string, private
 	if err != nil {
 		return fmt.Errorf("create repo: %w", err)
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	if resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 409 {
 		return nil
 	}
@@ -122,14 +122,14 @@ func (c *HFClient) PathsExist(ctx context.Context, repoID string, paths []string
 			return nil, fmt.Errorf("paths-info: %w", err)
 		}
 		if resp.StatusCode == 404 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			continue
 		}
 		var infos []struct {
 			Path string `json:"path"`
 		}
-		json.NewDecoder(resp.Body).Decode(&infos)
-		resp.Body.Close()
+		_ = json.NewDecoder(resp.Body).Decode(&infos)
+		_ = resp.Body.Close()
 		for _, info := range infos {
 			existing[info.Path] = true
 		}
@@ -150,7 +150,7 @@ func (c *HFClient) CreateCommit(ctx context.Context, repoID, message string, ops
 	}
 	opsJSON := make([]opJSON, len(ops))
 	for i, op := range ops {
-		opsJSON[i] = opJSON{LocalPath: op.LocalPath, PathInRepo: op.PathInRepo}
+		opsJSON[i] = opJSON(op)
 	}
 	stdin, _ := json.Marshal(map[string]interface{}{
 		"token": c.token, "repo_id": repoID,

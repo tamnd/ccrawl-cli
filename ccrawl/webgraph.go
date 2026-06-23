@@ -13,11 +13,11 @@ import (
 
 // WebGraph describes one Common Crawl web-graph release.
 type WebGraph struct {
-	ID         string // e.g. cc-main-2026-mar-apr-may
-	BaseURL    string // https://data.commoncrawl.org/projects/hyperlinkgraph/{ID}/
-	HostNodes  int64
-	HostArcs   int64
-	Published  string
+	ID        string // e.g. cc-main-2026-mar-apr-may
+	BaseURL   string // https://data.commoncrawl.org/projects/hyperlinkgraph/{ID}/
+	HostNodes int64
+	HostArcs  int64
+	Published string
 }
 
 // HostRankURL is the single gzipped rank table for hosts.
