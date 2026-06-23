@@ -17,6 +17,7 @@ import (
 func registerMarkdown(app *kit.App) {
 	app.CommandGroup("markdown", "Build open-index/open-markdown-style Markdown-parquet datasets from CC WARCs")
 	app.AddCommandUnder("markdown", newMarkdownExportCmd())
+	registerMarkdownRefetch(app)
 }
 
 // markdownExportCmd holds the flags for `ccrawl markdown export`.
