@@ -250,12 +250,12 @@ func pushShard(ctx context.Context, hf *ccrawl.HFClient, repo, crawlID string, s
 	if err != nil {
 		return fmt.Errorf("readme temp: %w", err)
 	}
-	defer os.Remove(readmeTmp.Name())
+	defer func() { _ = os.Remove(readmeTmp.Name()) }()
 	if _, err := readmeTmp.WriteString(ccrawl.GenerateMarkdownREADME(dstats)); err != nil {
-		readmeTmp.Close()
+		_ = readmeTmp.Close()
 		return fmt.Errorf("readme write: %w", err)
 	}
-	readmeTmp.Close()
+	_ = readmeTmp.Close()
 
 	url, err := hf.CommitWithRetry(ctx, repo, commitMsg, []ccrawl.HFOperation{
 		{LocalPath: localPath, PathInRepo: hfPath},
