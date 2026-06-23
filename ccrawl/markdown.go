@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
@@ -254,6 +255,13 @@ func htmlToMarkdown(body []byte, pageURL string) string {
 	res := h2m.Convert(body, pageURL)
 	if !res.HasContent {
 		return ""
+	}
+	// A handful of pages declare one charset but serve another, so the
+	// transcoded Markdown can still carry stray invalid byte sequences. Parquet
+	// strings and the Arrow readers on top of them require valid UTF-8, so drop
+	// any invalid bytes before the value reaches the writer.
+	if !utf8.ValidString(res.Markdown) {
+		return strings.ToValidUTF8(res.Markdown, "")
 	}
 	return res.Markdown
 }
