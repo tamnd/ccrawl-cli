@@ -1,7 +1,6 @@
 package ccrawl
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -306,10 +305,7 @@ func newRefetchParquetWriter(path string) (*ParquetWriter[RefetchRow], error) {
 		return nil, err
 	}
 	codec := &zstd.Codec{Level: zstd.SpeedBetterCompression, Concurrency: 4}
-	w := parquet.NewGenericWriter[RefetchRow](
-		bufio.NewWriterSize(f, 256*1024),
-		parquet.Compression(codec),
-	)
+	w := parquet.NewGenericWriter[RefetchRow](f, parquet.Compression(codec))
 	return &ParquetWriter[RefetchRow]{f: f, w: w}, nil
 }
 

@@ -1,7 +1,6 @@
 package ccrawl
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -238,10 +237,7 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 		return nil, err
 	}
 	codec := &zstd.Codec{Level: zstd.SpeedBetterCompression, Concurrency: 4}
-	w := parquet.NewGenericWriter[MarkdownRow](
-		bufio.NewWriterSize(f, 256*1024),
-		parquet.Compression(codec),
-	)
+	w := parquet.NewGenericWriter[MarkdownRow](f, parquet.Compression(codec))
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 

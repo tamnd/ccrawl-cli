@@ -6,7 +6,7 @@ require (
 	github.com/klauspost/compress v1.18.6
 	github.com/mattn/go-isatty v0.0.22
 	github.com/parquet-go/parquet-go v0.30.1
-	github.com/tamnd/ami v0.1.0
+	github.com/tamnd/ami v0.2.0
 	github.com/tamnd/h2m v0.0.0-20260623075801-655bddfbeddf
 	github.com/tamnd/yomi v0.3.1
 	golang.org/x/net v0.56.0
@@ -78,15 +78,10 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/tamnd/any-cli v0.0.0-00010101000000-000000000000
+	github.com/tamnd/any-cli v0.4.0
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-)
-
-replace (
-	github.com/tamnd/ami => ../ami
-	github.com/tamnd/any-cli => ../any-cli
 )
