@@ -17,6 +17,9 @@ func registerEscapeHatches(app *kit.App) {
 		app.AddCommandUnder("news", c)
 	}
 
+	registerSeed(app)
+	registerMarkdown(app)
+
 	app.AddCommand(newGetCmd())
 	app.AddCommand(newFetchCmd())
 	app.AddCommand(newDownloadCmd())

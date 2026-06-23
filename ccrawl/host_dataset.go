@@ -488,6 +488,12 @@ func splitRankStream(ctx context.Context, r io.Reader, workDir string, progress 
 	if err != nil {
 		return nil, err
 	}
+	// Write per-prefix done markers so that allRankPrefixFilesExist can reliably
+	// detect a completed split even if the process was killed before rank.done.
+	for prefix := range counts {
+		markerPath := fmt.Sprintf("%s/rank-%s.tsv.gz.done", workDir, prefix)
+		_ = os.WriteFile(markerPath, []byte("ok\n"), 0o644)
+	}
 	return counts, nil
 }
 
