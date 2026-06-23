@@ -10,11 +10,11 @@ import (
 // CrawlTier assigns a 1–5 crawl tier to a host based on its harmonic rank
 // position and estimated change rate. Lower tier = more frequent crawling.
 //
-//   Tier 1: > 0.8 change rate + top 100 K rank  → 24 h interval
-//   Tier 2: 0.5–0.8 + top 1 M                  → 3 days
-//   Tier 3: 0.2–0.5 + top 5 M                  → 7 days
-//   Tier 4: < 0.2  + top 10 M                  → 30 days
-//   Tier 5: everything else                     → on-demand
+//	Tier 1: > 0.8 change rate + top 100 K rank  → 24 h interval
+//	Tier 2: 0.5–0.8 + top 1 M                  → 3 days
+//	Tier 3: 0.2–0.5 + top 5 M                  → 7 days
+//	Tier 4: < 0.2  + top 10 M                  → 30 days
+//	Tier 5: everything else                     → on-demand
 func CrawlTier(harmonicPos int64, changeRate float64) int {
 	switch {
 	case harmonicPos <= 100_000 && changeRate > 0.8:

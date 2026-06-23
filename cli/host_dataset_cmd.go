@@ -533,4 +533,3 @@ func allRankPrefixFilesExist(workDir string) bool {
 func shardDoneMarker(workDir string, chunk int, prefix string) string {
 	return fmt.Sprintf("%s/shard-chunk%03d-%s.done", workDir, chunk, prefix)
 }
-

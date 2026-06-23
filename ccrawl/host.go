@@ -150,15 +150,6 @@ func hostTLD(host string) string {
 	return parts[len(parts)-1]
 }
 
-// registeredDomain returns the registered domain (last two labels).
-func registeredDomain(host string) string {
-	parts := strings.Split(host, ".")
-	if len(parts) <= 2 {
-		return host
-	}
-	return strings.Join(parts[len(parts)-2:], ".")
-}
-
 // stringVal extracts a string from a DuckDB JSON row.
 func stringVal(row map[string]any, key string) string {
 	if v, ok := row[key]; ok && v != nil {

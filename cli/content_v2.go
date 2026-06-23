@@ -37,9 +37,9 @@ type ContentExtractResult struct {
 
 func registerContentExtract(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "extract",
-		Parent: "content",
-		Single: true,
+		Name:    "extract",
+		Parent:  "content",
+		Single:  true,
 		Summary: "Fetch a URL and extract clean text, title, and metadata",
 		Long: `Fetch a URL and run the v2 content processing pipeline: HTML to clean text,
 title extraction, canonical URL resolution, and word count.
@@ -106,9 +106,9 @@ type QualityReport struct {
 
 func registerContentQuality(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "quality",
-		Parent: "content",
-		Single: true,
+		Name:    "quality",
+		Parent:  "content",
+		Single:  true,
 		Summary: "Compute content quality signals for a URL",
 		Long: `Fetch a URL and compute v2 quality signals: word count, spam score,
 and parked-domain detection.
@@ -154,8 +154,8 @@ type LinkRecord struct {
 
 func registerContentLinksV2(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "outlinks",
-		Parent: "content",
+		Name:    "outlinks",
+		Parent:  "content",
 		Summary: "Extract structured outbound links from a URL",
 		Long: `Fetch a URL and emit each outbound hyperlink as a structured record.
 Use 'ccrawl get --links' for the raw text list.

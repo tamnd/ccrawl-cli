@@ -13,9 +13,6 @@ var errStop = errors.New("stop")
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// limitFrom returns the global --limit value.
-func limitFrom(app *App) int { return app.Limit }
-
 // normalizePath strips a full Common Crawl URL down to its relative path so the
 // downloader treats stdin URLs and manifest paths the same way.
 func normalizePath(p string) string {

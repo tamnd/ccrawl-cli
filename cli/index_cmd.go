@@ -185,8 +185,8 @@ type SearchHit struct {
 
 func registerIndexSearch(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{
-		Name:   "search",
-		Parent: "index",
+		Name:    "search",
+		Parent:  "index",
 		Summary: "Search the local inverted index with BM25 ranking",
 		Long: `Query the local inverted index built by 'ccrawl index build'. Results are
 ranked by BM25 score (best match first).

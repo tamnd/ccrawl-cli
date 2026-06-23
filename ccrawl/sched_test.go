@@ -11,12 +11,12 @@ func TestCrawlTier(t *testing.T) {
 		changeRate float64
 		wantTier   int
 	}{
-		{50_000, 0.9, 1},       // top 100K, high change → tier 1
-		{500_000, 0.6, 2},      // top 1M, moderate change → tier 2
-		{2_000_000, 0.3, 3},    // top 5M, low change → tier 3
-		{5_000_000, 0.1, 4},    // top 10M → tier 4
-		{50_000_000, 0.9, 5},   // long tail → tier 5
-		{100_001, 0.9, 2},      // just outside tier-1 rank but top 1M with high change → tier 2
+		{50_000, 0.9, 1},     // top 100K, high change → tier 1
+		{500_000, 0.6, 2},    // top 1M, moderate change → tier 2
+		{2_000_000, 0.3, 3},  // top 5M, low change → tier 3
+		{5_000_000, 0.1, 4},  // top 10M → tier 4
+		{50_000_000, 0.9, 5}, // long tail → tier 5
+		{100_001, 0.9, 2},    // just outside tier-1 rank but top 1M with high change → tier 2
 	}
 	for _, c := range cases {
 		got := CrawlTier(c.pos, c.changeRate)
