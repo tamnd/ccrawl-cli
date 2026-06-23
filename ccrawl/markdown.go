@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,9 +16,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
-	"github.com/tamnd/yomi/extract"
-	"github.com/tamnd/yomi/mdconv"
-	"golang.org/x/net/html/charset"
+	"github.com/tamnd/h2m"
 )
 
 // MarkdownRow is the parquet schema for one converted HTML document. It matches
@@ -48,6 +45,7 @@ func MarkdownDocID(rawURL string) string {
 type MarkdownStats struct {
 	ShardIdx     int
 	Rows         int64
+	WARCBytes    int64 // compressed .warc.gz bytes downloaded (Content-Length)
 	HTMLBytes    int64
 	MDBytes      int64
 	ParquetBytes int64
@@ -91,7 +89,7 @@ type MarkdownPackConfig struct {
 //	HTTP stream → WARC iterator → filter (response + HTML) → records chan
 //	→ [N conversion workers]   → rows chan → parquet writer
 //
-// N workers parallelise readability extraction and markdown rendering.
+// N workers parallelise the h2m extraction and markdown rendering.
 // The single writer keeps the parquet output sequential.
 func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
 	workers := cfg.Workers
@@ -110,6 +108,9 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return stats, fmt.Errorf("download shard %d: HTTP %d", cfg.ShardIdx, resp.StatusCode)
+	}
+	if resp.ContentLength > 0 {
+		stats.WARCBytes = resp.ContentLength
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.OutPath), 0o755); err != nil {
@@ -155,7 +156,7 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 
 	tConvert := time.Now()
 
-	// Workers: readability + mdconv, in parallel.
+	// Workers: h2m extraction + markdown rendering, in parallel.
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	for range workers {
@@ -238,43 +239,23 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 
-// htmlToMarkdown converts one HTML body to Markdown. It transcodes the body to
-// UTF-8 first, then runs yomi's readability extraction and mdconv rendering.
-// The charset transcode is the key addition beyond calling extract.FromHTML
-// directly: a Common Crawl WARC contains pages in GBK, Shift-JIS, Latin-1, and
-// many other encodings declared in the HTML body's <meta charset> tag, and
-// extract.FromHTML parses bytes as UTF-8 directly.
+// htmlToMarkdown converts one HTML body to Markdown via h2m: go-trafilatura
+// tuned for recall strips boilerplate and isolates the main content, then h2m
+// renders GitHub-flavored Markdown with links resolved against pageURL. h2m
+// transcodes non-UTF-8 bodies (GBK, Shift-JIS, Latin-1, and so on) from the
+// page's declared charset before parsing, so Common Crawl's mixed-encoding
+// pages convert correctly.
 //
 // Returns "" when the body yields no extractable article or conversion fails.
 func htmlToMarkdown(body []byte, pageURL string) string {
 	if len(body) == 0 {
 		return ""
 	}
-	// charset.NewReader passes "" for the Content-Type here because the WARC
-	// MIME field is not threaded into this function. charset falls back to the
-	// <meta charset> inside the HTML, which covers the majority of non-UTF-8
-	// pages correctly. The remaining gap (pages where charset is declared only
-	// in the HTTP header and not in <meta>) is small enough to accept.
-	r, err := charset.NewReader(strings.NewReader(string(body)), "")
-	if err != nil {
+	res := h2m.Convert(body, pageURL)
+	if !res.HasContent {
 		return ""
 	}
-	utf8Body, err := io.ReadAll(r)
-	if err != nil || len(utf8Body) == 0 {
-		return ""
-	}
-
-	art, err := extract.FromHTML(utf8Body, pageURL)
-	if err != nil || art.Node == nil {
-		return ""
-	}
-
-	base, _ := url.Parse(pageURL)
-	md, err := mdconv.Convert(art.Node, mdconv.Options{Base: base})
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(md)
+	return res.Markdown
 }
 
 // isHTMLMIME reports whether a MIME type string names an HTML document.
