@@ -253,7 +253,7 @@ func loadForwardIndex(path string) map[uint64]ccrawl.ForwardDoc {
 	if err != nil {
 		return m
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
