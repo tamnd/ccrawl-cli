@@ -36,9 +36,9 @@ func newMarkdownExportCmd() kit.Command {
 		Use:   "export",
 		Short: "Stream CC WARCs → Markdown → Parquet → HuggingFace",
 		Long: `Download one or more Common Crawl WARC files, extract HTML bodies, convert to
-Markdown with readability + mdconv (GFM tables, cleaned prose, absolute links),
-and write each shard to a zstd-compressed Parquet file. After each shard the
-Parquet is committed to a HuggingFace dataset repo.
+Markdown with h2m (go-trafilatura tuned for recall plus a GFM renderer: cleaned
+prose, tables, absolute links), and write each shard to a zstd-compressed Parquet
+file. After each shard the Parquet is committed to a HuggingFace dataset repo.
 
 Output schema (open-markdown-v2):
   doc_id          stable SHA-256 URL hash (16 bytes hex)
@@ -117,11 +117,16 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	var (
-		totalRows    int64
-		totalHTML    int64
-		totalMD      int64
-		totalParquet int64
-		failedShards int
+		totalRows      int64
+		totalWARC      int64
+		totalHTML      int64
+		totalMD        int64
+		totalParquet   int64
+		totalDownloadS int64
+		totalConvertS  int64
+		totalExportS   int64
+		totalPublishS  int64
+		failedShards   int
 	)
 
 	for n, idx := range indices {
@@ -176,9 +181,13 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		}
 
 		totalRows += stats.Rows
+		totalWARC += stats.WARCBytes
 		totalHTML += stats.HTMLBytes
 		totalMD += stats.MDBytes
 		totalParquet += stats.ParquetBytes
+		totalDownloadS += int64(stats.DurDownload.Seconds())
+		totalConvertS += int64(stats.DurConvert.Seconds())
+		totalExportS += int64(stats.DurExport.Seconds())
 
 		ratio := float64(0)
 		if stats.HTMLBytes > 0 {
@@ -201,16 +210,23 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 				CommittedShards: committed,
 				TotalShards:     len(paths),
 				Rows:            totalRows,
+				WARCBytes:       totalWARC,
 				HTMLBytes:       totalHTML,
 				MDBytes:         totalMD,
 				ParquetBytes:    totalParquet,
+				DownloadS:       totalDownloadS,
+				ConvertS:        totalConvertS,
+				ExportS:         totalExportS,
+				PublishS:        totalPublishS,
 			}
+			tPush := time.Now()
 			if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath, dstats); err != nil {
 				fmt.Fprintf(os.Stderr, "markdown: push shard %d: %v\n", idx, err)
 				if !v.skip {
 					return err
 				}
 			}
+			totalPublishS += int64(time.Since(tPush).Seconds())
 		}
 	}
 
