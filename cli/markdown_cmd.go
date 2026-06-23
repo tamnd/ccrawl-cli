@@ -136,7 +136,11 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 			fmt.Fprintf(os.Stderr, "markdown: [%d/%d] shard %d: already exists (%s), skipping\n",
 				n+1, len(indices), idx, humanBytes(fi.Size()))
 			if v.push {
-				if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath); err != nil {
+				dstats := ccrawl.MarkdownDatasetStats{
+					CrawlID:     crawlID,
+					TotalShards: len(paths),
+				}
+				if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath, dstats); err != nil {
 					fmt.Fprintf(os.Stderr, "markdown: push shard %d: %v\n", idx, err)
 				}
 			}
@@ -191,7 +195,17 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		)
 
 		if v.push {
-			if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath); err != nil {
+			committed := n + 1 - failedShards
+			dstats := ccrawl.MarkdownDatasetStats{
+				CrawlID:         crawlID,
+				CommittedShards: committed,
+				TotalShards:     len(paths),
+				Rows:            totalRows,
+				HTMLBytes:       totalHTML,
+				MDBytes:         totalMD,
+				ParquetBytes:    totalParquet,
+			}
+			if err := pushShard(ctx, hf, v.repo, crawlID, idx, outPath, dstats); err != nil {
 				fmt.Fprintf(os.Stderr, "markdown: push shard %d: %v\n", idx, err)
 				if !v.skip {
 					return err
@@ -207,14 +221,29 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 	return nil
 }
 
-// pushShard commits one finished parquet file to the HuggingFace dataset repo.
-func pushShard(ctx context.Context, hf *ccrawl.HFClient, repo, crawlID string, shardIdx int, localPath string) error {
+// pushShard commits one finished parquet file plus an updated README to the
+// HuggingFace dataset repo.
+func pushShard(ctx context.Context, hf *ccrawl.HFClient, repo, crawlID string, shardIdx int, localPath string, dstats ccrawl.MarkdownDatasetStats) error {
 	hfPath := ccrawl.HFMarkdownPath(crawlID, shardIdx)
 	commitMsg := fmt.Sprintf("add %s shard %06d", crawlID, shardIdx)
 	fmt.Fprintf(os.Stderr, "  → pushing to %s/%s\n", repo, hfPath)
 	t0 := time.Now()
+
+	// Write README to a temp file so CommitWithRetry can pick it up.
+	readmeTmp, err := os.CreateTemp("", "open-markdown-readme-*.md")
+	if err != nil {
+		return fmt.Errorf("readme temp: %w", err)
+	}
+	defer os.Remove(readmeTmp.Name())
+	if _, err := readmeTmp.WriteString(ccrawl.GenerateMarkdownREADME(dstats)); err != nil {
+		readmeTmp.Close()
+		return fmt.Errorf("readme write: %w", err)
+	}
+	readmeTmp.Close()
+
 	url, err := hf.CommitWithRetry(ctx, repo, commitMsg, []ccrawl.HFOperation{
 		{LocalPath: localPath, PathInRepo: hfPath},
+		{LocalPath: readmeTmp.Name(), PathInRepo: "README.md"},
 	}, 5)
 	if err != nil {
 		return err
