@@ -136,7 +136,6 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 				}
 				waitForDisk(ctx, cfg.OutDir, minFree)
 				outPath := filepath.Join(cfg.OutDir, fmt.Sprintf("%06d.parquet", idx))
-				t0 := time.Now()
 				stats, err := packRefetchFn(ctx, h, RefetchPackConfig{
 					CrawlID:    cfg.CrawlID,
 					ShardIdx:   idx,
@@ -145,7 +144,6 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					FetchCfg:   cfg.FetchCfg,
 					ConvertSem: sem,
 				})
-				stats.DurConvert = time.Since(t0)
 				if err != nil {
 					_ = os.Remove(outPath)
 					finished <- refetchShardResult{idx: idx, err: err}

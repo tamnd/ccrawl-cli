@@ -143,9 +143,14 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	}
 
 	results := make(chan fetch.Result, fetchCfg.Workers)
+
+	// fetchDone closes when FetchBatch returns, letting us measure DurFetch
+	// independently of the concurrent convert phase.
+	fetchDone := make(chan struct{})
 	go func() {
 		_ = amirun.FetchBatch(ctx, fetchCfg, urls, results)
 		close(results)
+		close(fetchDone)
 	}()
 
 	// Phase 3+4: convert and write parquet concurrently with phase 2.
@@ -210,6 +215,9 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 		close(rows)
 	}()
 
+	// Wait for FetchBatch to finish before recording its duration.
+	// (Workers may still be converting the last batch, but fetching is done.)
+	<-fetchDone
 	stats.DurFetch = time.Since(t1)
 
 	for row := range rows {
