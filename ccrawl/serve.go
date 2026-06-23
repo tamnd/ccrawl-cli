@@ -12,8 +12,8 @@ import (
 
 // ServeConfig holds configuration for the HTTP API server.
 type ServeConfig struct {
-	Addr    string // e.g. ":8080"
-	DBPath  string // path to DuckDB/SQLite host database (optional)
+	Addr     string // e.g. ":8080"
+	DBPath   string // path to DuckDB/SQLite host database (optional)
 	IndexDir string // path to the inverted index directory (optional)
 }
 

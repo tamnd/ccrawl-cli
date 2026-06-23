@@ -77,7 +77,7 @@ func TestInvertedIndexRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal("OpenIndex:", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if r.N != 3 {
 		t.Errorf("N = %d, want 3", r.N)

@@ -15,21 +15,21 @@ import (
 // TextResult holds the output of HTML-to-text extraction.
 type TextResult struct {
 	Title       string
-	Description string   // <meta name="description">
-	CanonURL    string   // canonical URL from meta or link[rel=canonical]
-	Body        string   // extracted clean body text
+	Description string // <meta name="description">
+	CanonURL    string // canonical URL from meta or link[rel=canonical]
+	Body        string // extracted clean body text
 	WordCount   int
-	Language    string  // BCP-47 code inferred from lang attribute
+	Language    string // BCP-47 code inferred from lang attribute
 }
 
 // QualityResult holds per-document quality signals computed from a TextResult.
 type QualityResult struct {
-	WordCount          int
-	TitleLength        int
-	HasMainContent     bool
-	SpamScore          float64 // 0–1
-	IsParked           bool
-	IsShortContent     bool // word_count < 50
+	WordCount      int
+	TitleLength    int
+	HasMainContent bool
+	SpamScore      float64 // 0–1
+	IsParked       bool
+	IsShortContent bool // word_count < 50
 }
 
 // ExtractContent parses HTML bytes and returns a TextResult with clean text,

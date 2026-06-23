@@ -15,24 +15,6 @@ func cdxRow(r ccrawl.CDXRecord) Row {
 	}
 }
 
-// locationRow emits just the fields fetch needs.
-func locationRow(r ccrawl.CDXRecord) Row {
-	loc := r.Location()
-	return Row{
-		Cols:  []string{"filename", "offset", "length", "url"},
-		Vals:  []string{loc.Filename, strconv.FormatInt(loc.Offset, 10), strconv.FormatInt(loc.Length, 10), loc.URL},
-		Value: loc,
-	}
-}
-
-func crawlRow(c ccrawl.Crawl) Row {
-	return Row{
-		Cols:  []string{"id", "name", "from", "to"},
-		Vals:  []string{c.ID, c.Name, c.From, c.To},
-		Value: c,
-	}
-}
-
 func wetRow(r ccrawl.WETRecord) Row {
 	return Row{
 		Cols:  []string{"url", "language", "length", "text"},
