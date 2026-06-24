@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -97,11 +98,6 @@ type MarkdownPackConfig struct {
 // N workers parallelise the h2m extraction and markdown rendering.
 // The single writer keeps the parquet output sequential.
 func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
-	workers := cfg.Workers
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-
 	stats := MarkdownStats{ShardIdx: cfg.ShardIdx}
 
 	t0 := time.Now()
@@ -116,6 +112,20 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	}
 	if resp.ContentLength > 0 {
 		stats.WARCBytes = resp.ContentLength
+	}
+
+	return packStream(ctx, resp.Body, cfg, stats, t0)
+}
+
+// packStream runs the conversion pipeline over an already-open WARC byte stream
+// and writes the parquet file at cfg.OutPath. It is the core shared by the
+// network path (PackMarkdownShard) and the local-file benchmark, so both
+// exercise identical extract and encode work. t0 marks when the download
+// started so DurDownload covers the time until the first records flow.
+func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, stats MarkdownStats, t0 time.Time) (MarkdownStats, error) {
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = runtime.NumCPU()
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.OutPath), 0o755); err != nil {
@@ -133,7 +143,7 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	var readErr error
 	go func() {
 		defer close(records)
-		readErr = IterateWARC(resp.Body, func(rec WARCRecord) error {
+		readErr = IterateWARC(body, func(rec WARCRecord) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
