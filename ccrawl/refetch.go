@@ -43,6 +43,7 @@ type RefetchRow struct {
 	BodyLength     int64  `parquet:"body_length"`
 	Digest         string `parquet:"digest"`
 	HTMLLength     int64  `parquet:"html_length"`
+	HTML           string `parquet:"html"`
 	MarkdownLength int64  `parquet:"markdown_length"`
 	Markdown       string `parquet:"markdown"`
 	Error          string `parquet:"error"`
@@ -101,6 +102,14 @@ type RefetchPackConfig struct {
 	FetchCfg   config.Config
 	ConvertSem chan struct{}
 	Progress   func(RefetchStats)
+
+	// FetchOnly stores the raw HTML body in the html column and skips the
+	// HTML-to-Markdown convert entirely. Convert is the CPU-bound phase and the
+	// end-to-end wall on a multi-core box, so skipping it lets the fetch step run
+	// at its true ceiling; the Markdown is produced later by an offline convert
+	// pass over the stored html column, which can run on a bigger box or a
+	// cluster without holding back the crawl.
+	FetchOnly bool
 
 	// CacheDir, when set, is where the downloaded WARC is cached so a re-run of
 	// the same shard skips the multi-second download. The download streams to a
@@ -234,10 +243,16 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 					continue
 				}
 				if isHTMLMIME(row.ContentType) && len(res.Body) > 0 {
-					md := convertGated(cfg.ConvertSem, res.Body, res.URL)
 					row.HTMLLength = int64(len(res.Body))
-					row.MarkdownLength = int64(len(md))
-					row.Markdown = md
+					if cfg.FetchOnly {
+						// Store the raw HTML for an offline convert pass and skip
+						// the CPU-bound conversion, so fetch is not throttled by it.
+						row.HTML = string(res.Body)
+					} else {
+						md := convertGated(cfg.ConvertSem, res.Body, res.URL)
+						row.MarkdownLength = int64(len(md))
+						row.Markdown = md
+					}
 				}
 				rows <- row
 			}
@@ -260,7 +275,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 			if row.FinalURL != "" && row.FinalURL != row.URL {
 				stats.Redirected++
 			}
-			if row.Markdown != "" {
+			if row.Markdown != "" || row.HTML != "" {
 				stats.Rows++
 			}
 		}

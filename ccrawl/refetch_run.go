@@ -40,6 +40,10 @@ type RefetchExportConfig struct {
 	// CacheDir caches downloaded WARC shards so a re-run skips the download.
 	// Empty disables caching.
 	CacheDir string
+	// FetchOnly stores raw HTML and skips the HTML-to-Markdown convert, so the
+	// fetch step runs at its true ceiling and Markdown is produced by a separate
+	// offline pass over the stored html column.
+	FetchOnly bool
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
@@ -154,6 +158,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					FetchCfg:   cfg.FetchCfg,
 					ConvertSem: sem,
 					CacheDir:   cfg.CacheDir,
+					FetchOnly:  cfg.FetchOnly,
 				})
 				if err != nil {
 					_ = os.Remove(outPath)

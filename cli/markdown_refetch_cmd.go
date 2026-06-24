@@ -43,6 +43,7 @@ type markdownRefetchCmd struct {
 	ledger       string
 	warcCacheDir string // where to cache downloaded WARC shards ("" = default)
 	noWARCCache  bool   // disable WARC caching entirely
+	fetchOnly    bool   // store raw HTML, skip the convert phase
 }
 
 func newMarkdownRefetchCmd() kit.Command {
@@ -109,6 +110,7 @@ func (v *markdownRefetchCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.ledger, "ledger", "", "resume ledger file (default: <out>/.committed)")
 	f.StringVar(&v.warcCacheDir, "warc-cache-dir", "", "cache downloaded WARC shards here (default: <data-dir>/ami/warc)")
 	f.BoolVar(&v.noWARCCache, "no-warc-cache", false, "do not cache downloaded WARC shards to disk")
+	f.BoolVar(&v.fetchOnly, "fetch-only", false, "store raw HTML and skip the convert phase, so fetch runs at full speed (convert offline later over the html column)")
 }
 
 func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
@@ -198,16 +200,20 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	//     congestion.
 	//   - ProbeTimeout low: an unreachable host fails at the dial in ~1.5s
 	//     instead of holding a worker for the full request timeout.
-	//   - DomainFailThreshold low: trip the dead-domain breaker after 2 failures
-	//     so the rest of a dead domain's URLs are skipped instantly.
+	//   - DomainFailThreshold 4: the breaker now counts a header timeout on a host
+	//     that never sent a byte, which is a softer death signal than a DNS or
+	//     route failure, so it takes more strikes to shed a host. This keeps a
+	//     live-but-slow host that needs a few attempts to warm up from being
+	//     skipped, while a host that is genuinely silent still trips after four.
 	//   - MaxRetries 1: a congested-retry on a dead-host-heavy shard multiplies
 	//     wasted work; one attempt plus a single retry is enough.
 	fetchCfg.StartInflight = fetchWorkers
 	fetchCfg.MinInflight = 64
-	fetchCfg.Timeout = 2500 * time.Millisecond // request deadline: a connect-but-silent host is the dominant dead-host cost, so cap it tight
+	fetchCfg.Timeout = 4000 * time.Millisecond       // whole-exchange deadline, including body read
+	fetchCfg.HeaderTimeout = 2000 * time.Millisecond // first-byte deadline: a host that sends a byte by here is immunized as live, so this must be generous enough for a slow-but-real backend; only true silence is abandoned
 	fetchCfg.ProbeTimeout = 1500 * time.Millisecond
 	fetchCfg.DNSTimeout = 1500 * time.Millisecond
-	fetchCfg.DomainFailThreshold = 2
+	fetchCfg.DomainFailThreshold = 4
 	fetchCfg.MaxRetries = 1
 
 	// Resolve the WARC cache dir. A cached shard skips the ~80s download on a
@@ -222,6 +228,9 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	}
 	if warcCacheDir != "" {
 		fmt.Fprintf(os.Stderr, "refetch: caching WARC shards under %s\n", warcCacheDir)
+	}
+	if v.fetchOnly {
+		fmt.Fprintf(os.Stderr, "refetch: fetch-only mode, storing raw HTML and skipping convert\n")
 	}
 
 	run, runErr := ccrawl.RunRefetchExport(ctx, app.HTTP, hf, ccrawl.RefetchExportConfig{
@@ -239,6 +248,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		MinFreeBytes:   int64(v.minFreeGB) << 30,
 		Ledger:         ledger,
 		CacheDir:       warcCacheDir,
+		FetchOnly:      v.fetchOnly,
 	})
 
 	n := int64(run.Committed)
