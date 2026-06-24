@@ -144,13 +144,14 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 
 	results := make(chan fetch.Result, fetchCfg.Workers)
 
-	// fetchDone closes when FetchBatch returns, letting us measure DurFetch
-	// independently of the concurrent convert phase.
-	fetchDone := make(chan struct{})
+	// fetchEndTime is written by the goroutine when FetchBatch returns. Safe to
+	// read after rows is drained (which implies all workers exited, which implies
+	// FetchBatch returned and the goroutine completed its write).
+	var fetchEndTime time.Time
 	go func() {
 		_ = amirun.FetchBatch(ctx, fetchCfg, urls, results)
+		fetchEndTime = time.Now()
 		close(results)
-		close(fetchDone)
 	}()
 
 	// Phase 3+4: convert and write parquet concurrently with phase 2.
@@ -215,11 +216,6 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 		close(rows)
 	}()
 
-	// Wait for FetchBatch to finish before recording its duration.
-	// (Workers may still be converting the last batch, but fetching is done.)
-	<-fetchDone
-	stats.DurFetch = time.Since(t1)
-
 	for row := range rows {
 		if row.Error != "" {
 			stats.Failed++
@@ -248,6 +244,9 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 		}
 	}
 
+	// By here, rows is drained → workers exited → results was closed by the
+	// FetchBatch goroutine → fetchEndTime has been written.
+	stats.DurFetch = fetchEndTime.Sub(t1)
 	stats.DurConvert = time.Since(t2)
 
 	tExport := time.Now()
