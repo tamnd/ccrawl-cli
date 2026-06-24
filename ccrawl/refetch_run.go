@@ -53,17 +53,17 @@ type RefetchExportConfig struct {
 
 // RefetchRunStats is a live snapshot of a parallel refetch export run.
 type RefetchRunStats struct {
-	Total         int
-	Skipped       int
-	Committed     int
-	Failed        int
-	Rows          int64
-	URLsFound     int64
-	WARCBytes     int64
-	FetchBytes    int64
-	HTMLBytes     int64
-	MDBytes       int64
-	ParquetBytes  int64
+	Total        int
+	Skipped      int
+	Committed    int
+	Failed       int
+	Rows         int64
+	URLsFound    int64
+	WARCBytes    int64
+	FetchBytes   int64
+	HTMLBytes    int64
+	MDBytes      int64
+	ParquetBytes int64
 	// Per-phase wall-time sums (in seconds, across all completed shards).
 	ExtractS int64 // phase 1: WARC download + URL extraction
 	FetchS   int64 // phase 2: ami live refetch
@@ -71,12 +71,12 @@ type RefetchRunStats struct {
 	ExportS  int64 // phase 4: Parquet write
 	PublishS int64 // HF commit (off critical path)
 	// Failure breakdown summed across shards, for throughput diagnosis.
-	Failures   int64
-	ErrDNS     int64
-	ErrTimeout int64
-	ErrRefused int64
-	ErrSkip    int64
-	ErrOther   int64
+	Failures      int64
+	ErrDNS        int64
+	ErrTimeout    int64
+	ErrRefused    int64
+	ErrSkip       int64
+	ErrOther      int64
 	Elapsed       time.Duration
 	ShardsPerHour float64
 	ETA           time.Duration
