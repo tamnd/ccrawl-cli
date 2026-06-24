@@ -37,6 +37,9 @@ type RefetchExportConfig struct {
 	KeepParquet bool
 	// MinFreeBytes pauses new downloads while free disk is below this. 0 selects 2 GiB.
 	MinFreeBytes int64
+	// CacheDir caches downloaded WARC shards so a re-run skips the download.
+	// Empty disables caching.
+	CacheDir string
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
@@ -63,6 +66,13 @@ type RefetchRunStats struct {
 	ConvertS int64 // phase 3: HTML to Markdown
 	ExportS  int64 // phase 4: Parquet write
 	PublishS int64 // HF commit (off critical path)
+	// Failure breakdown summed across shards, for throughput diagnosis.
+	Failures   int64
+	ErrDNS     int64
+	ErrTimeout int64
+	ErrRefused int64
+	ErrSkip    int64
+	ErrOther   int64
 	Elapsed       time.Duration
 	ShardsPerHour float64
 	ETA           time.Duration
@@ -143,6 +153,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					OutPath:    outPath,
 					FetchCfg:   cfg.FetchCfg,
 					ConvertSem: sem,
+					CacheDir:   cfg.CacheDir,
 				})
 				if err != nil {
 					_ = os.Remove(outPath)
@@ -210,6 +221,12 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			run.FetchS += int64(r.stats.DurFetch.Seconds())
 			run.ConvertS += int64(r.stats.DurConvert.Seconds())
 			run.ExportS += int64(r.stats.DurExport.Seconds())
+			run.Failures += r.stats.Failed
+			run.ErrDNS += r.stats.ErrDNS
+			run.ErrTimeout += r.stats.ErrTimeout
+			run.ErrRefused += r.stats.ErrRefused
+			run.ErrSkip += r.stats.ErrSkip
+			run.ErrOther += r.stats.ErrOther
 		}
 
 		if cfg.Push {
@@ -311,17 +328,27 @@ func logRefetchProgress(cfg RefetchExportConfig, run *RefetchRunStats) {
 	if n == 0 {
 		n = 1
 	}
-	fetchPagesPerS := 0.0
+	// Fetch throughput is URLs processed per second of the fetch phase: that is
+	// the rate the refetch step disposes of pages, whether they answer or time
+	// out. Markdown rows are a downstream yield, not a fetch rate, so reporting
+	// rows/s would understate fetch throughput on a dead-host-heavy shard where
+	// most URLs fail.
+	fetchPerS := 0.0
 	if run.FetchS > 0 {
-		fetchPagesPerS = float64(run.Rows) / float64(run.FetchS)
+		fetchPerS = float64(run.URLsFound) / float64(run.FetchS)
 	}
 	fmt.Fprintf(os.Stderr,
 		"refetch: %d/%d shards (%.1f%%) | %d rows | %.1f shards/hr | ETA %s | disk %s\n",
 		done, run.Total, pct, run.Rows,
 		run.ShardsPerHour, fmtETA(run.ETA), fmtBytes(run.FreeDiskBytes))
 	fmt.Fprintf(os.Stderr,
-		"  phases/shard avg: extract=%ds fetch=%ds convert=%ds export=%ds | fetch %.0f pages/s\n",
-		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPagesPerS)
+		"  phases/shard avg: extract=%ds fetch=%ds convert=%ds export=%ds | fetch %.0f pages/s (%d urls)\n",
+		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPerS, run.URLsFound)
+	if run.Failures > 0 {
+		fmt.Fprintf(os.Stderr,
+			"  failures: %d total | dns=%d timeout=%d refused=%d skip=%d other=%d\n",
+			run.Failures, run.ErrDNS, run.ErrTimeout, run.ErrRefused, run.ErrSkip, run.ErrOther)
+	}
 }
 
 // RefetchDatasetStats holds cumulative stats for the refetch README card.

@@ -64,6 +64,14 @@ type RefetchStats struct {
 	FetchBytes int64
 	DurFetch   time.Duration
 
+	// Failure breakdown, so a low-yield shard can be diagnosed without a second
+	// run. These count Result.Err by class and sum to Failed.
+	ErrDNS     int64 // name does not resolve (no such host / NXDOMAIN)
+	ErrTimeout int64 // deadline exceeded before a response
+	ErrRefused int64 // connection refused / reset by peer
+	ErrSkip    int64 // engine skipped the URL (dead-domain breaker, non-HTTP)
+	ErrOther   int64 // TLS, protocol, and everything else
+
 	// Phase 3: HTML to Markdown convert.
 	Rows       int64
 	HTMLBytes  int64
@@ -93,6 +101,13 @@ type RefetchPackConfig struct {
 	FetchCfg   config.Config
 	ConvertSem chan struct{}
 	Progress   func(RefetchStats)
+
+	// CacheDir, when set, is where the downloaded WARC is cached so a re-run of
+	// the same shard skips the multi-second download. The download streams to a
+	// .part file beside the final name and is renamed into place only once it is
+	// complete, so an interrupted run never leaves a truncated file that a later
+	// run would mistake for a good cache. Empty disables caching.
+	CacheDir string
 }
 
 // PackRefetchShard runs the four-phase refetch pipeline for one WARC shard:
@@ -103,24 +118,32 @@ type RefetchPackConfig struct {
 func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig) (RefetchStats, error) {
 	stats := RefetchStats{ShardIdx: cfg.ShardIdx}
 
-	// Phase 1: download WARC and extract URLs from record headers.
+	// Phase 1: open the WARC (cache hit or live download) and extract URLs from
+	// record headers.
 	t0 := time.Now()
-	warcURL := FileURL(cfg.WARCPath, SourceHTTPS)
-	resp, err := h.GetDownload(ctx, warcURL)
+	src, cached, nbytes, err := openWARCShard(ctx, h, cfg)
 	if err != nil {
-		return stats, fmt.Errorf("shard %d: download warc: %w", cfg.ShardIdx, err)
+		return stats, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
-		return stats, fmt.Errorf("shard %d: download warc: HTTP %d", cfg.ShardIdx, resp.StatusCode)
-	}
-	if resp.ContentLength > 0 {
-		stats.WARCBytes = resp.ContentLength
+	defer func() { _ = src.Close() }()
+	if nbytes > 0 {
+		stats.WARCBytes = nbytes
 	}
 
-	urlRecords, err := extractWARCURLs(ctx, resp.Body)
+	urlRecords, err := extractWARCURLs(ctx, src)
 	if err != nil {
+		// On a failed extract the streamed-to-cache .part (if any) is incomplete;
+		// drop it so the next run re-downloads cleanly rather than reusing a
+		// truncated file.
+		src.Discard()
 		return stats, fmt.Errorf("shard %d: extract urls: %w", cfg.ShardIdx, err)
+	}
+	// Promote the freshly downloaded .part into the cache now that the whole
+	// stream read cleanly. A cache hit has nothing to commit.
+	if !cached {
+		if cerr := src.Commit(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "refetch: shard %d: cache write failed: %v\n", cfg.ShardIdx, cerr)
+		}
 	}
 	stats.URLsFound = int64(len(urlRecords))
 	stats.DurExtract = time.Since(t0)
@@ -134,6 +157,15 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	for i, r := range urlRecords {
 		urls[i] = r.URL
 	}
+	// CC WARC shards arrive in SURT order, so a shard is heavily host-clustered:
+	// hundreds of consecutive URLs share one host. Fed to the fetch engine in
+	// that order, the worker pool stalls on the per-host connection cap while a
+	// handful of hosts monopolize the in-flight slots, and effective concurrency
+	// collapses far below the worker count. ami's own engine has a reorder buffer
+	// for exactly this, but the FetchBatch entry point does not apply it, so we
+	// spread the URLs across hosts here before handing them over. This keeps a
+	// wide host set in flight regardless of the input ordering.
+	urls = spreadByHost(urls)
 
 	// Phase 2: ami refetch.
 	t1 := time.Now()
@@ -219,6 +251,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	for row := range rows {
 		if row.Error != "" {
 			stats.Failed++
+			classifyFetchErr(row.Error, &stats)
 		} else {
 			stats.Fetched++
 			stats.FetchBytes += row.BodyLength
@@ -260,6 +293,70 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	}
 	stats.MemRSSBytes = currentRSSBytes()
 	return stats, nil
+}
+
+// spreadByHost reorders a host-clustered URL list so consecutive entries land
+// on different hosts. It groups the input by host (preserving each host's
+// internal order so a server still sees its pages in a sensible sequence), then
+// emits one URL per host round-robin until every group is drained. The result
+// holds exactly the same URLs as the input, only interleaved, so the fetch
+// engine keeps as many distinct hosts in flight as it has workers instead of
+// piling a single host's pages onto one capped connection pool.
+func spreadByHost(urls []string) []string {
+	if len(urls) < 2 {
+		return urls
+	}
+	groups := make(map[string][]string)
+	order := make([]string, 0, len(urls)) // first-seen host order, for determinism
+	for _, u := range urls {
+		host := urlHostname(u)
+		if _, ok := groups[host]; !ok {
+			order = append(order, host)
+		}
+		groups[host] = append(groups[host], u)
+	}
+	if len(order) == 1 {
+		return urls // single host: nothing to spread
+	}
+	out := make([]string, 0, len(urls))
+	for len(out) < len(urls) {
+		for _, host := range order {
+			g := groups[host]
+			if len(g) == 0 {
+				continue
+			}
+			out = append(out, g[0])
+			groups[host] = g[1:]
+		}
+	}
+	return out
+}
+
+// classifyFetchErr buckets a fetch error string into the RefetchStats failure
+// counters. It reads the rendered error text rather than the typed error
+// because the row carries only the string; the substrings below are stable
+// across the Go net stack and the ami engine's sentinels.
+func classifyFetchErr(errText string, stats *RefetchStats) {
+	e := strings.ToLower(errText)
+	switch {
+	case strings.Contains(e, "no such host"),
+		strings.Contains(e, "server misbehaving"),
+		strings.Contains(e, "name resolution"):
+		stats.ErrDNS++
+	case strings.Contains(e, "timeout"),
+		strings.Contains(e, "deadline exceeded"),
+		strings.Contains(e, "timed out"):
+		stats.ErrTimeout++
+	case strings.Contains(e, "connection refused"),
+		strings.Contains(e, "connection reset"),
+		strings.Contains(e, "no route to host"),
+		strings.Contains(e, "network is unreachable"):
+		stats.ErrRefused++
+	case strings.Contains(e, "skip"), strings.Contains(e, "congested"):
+		stats.ErrSkip++
+	default:
+		stats.ErrOther++
+	}
 }
 
 // extractWARCURLs iterates a WARC gzip stream and collects all HTTP 200 HTML
