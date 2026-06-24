@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -77,6 +78,11 @@ type MarkdownPackConfig struct {
 	// Workers is the number of goroutines for HTML→Markdown conversion.
 	// 0 selects runtime.NumCPU().
 	Workers int
+	// MaxRecords, when > 0, stops the shard after this many HTML response
+	// records have been queued for conversion. 0 means convert the whole shard.
+	// It exists for the throughput benchmark, which needs a fixed, fast slice of
+	// a shard; production export leaves it at 0.
+	MaxRecords int
 	// ConvertSem, when non-nil, caps the number of conversions running at once
 	// across every shard that shares it. The orchestrator passes one semaphore
 	// sized to the CPU count so several shards can be in flight (hiding download
@@ -143,6 +149,8 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 	var readErr error
 	go func() {
 		defer close(records)
+		queued := 0
+		errStop := errors.New("record limit reached")
 		readErr = IterateWARC(body, func(rec WARCRecord) error {
 			select {
 			case <-ctx.Done():
@@ -165,8 +173,15 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 				recordID: rec.Header.RecordID,
 				html:     body,
 			}
+			queued++
+			if cfg.MaxRecords > 0 && queued >= cfg.MaxRecords {
+				return errStop
+			}
 			return nil
 		})
+		if readErr == errStop {
+			readErr = nil // a deliberate early stop is not a read failure
+		}
 	}()
 
 	tConvert := time.Now()

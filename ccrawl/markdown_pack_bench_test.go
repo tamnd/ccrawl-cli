@@ -36,6 +36,13 @@ func TestPackShardThroughput(t *testing.T) {
 		}
 	}
 
+	maxRecords := 0
+	if v := os.Getenv("CCRAWL_LIMIT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxRecords = n
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open WARC: %v", err)
@@ -66,6 +73,7 @@ func TestPackShardThroughput(t *testing.T) {
 		ShardIdx:   0,
 		OutPath:    out,
 		Workers:    workers,
+		MaxRecords: maxRecords,
 		ConvertSem: sem,
 	}
 
