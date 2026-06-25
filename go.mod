@@ -7,7 +7,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/tamnd/ami v0.3.0
-	github.com/tamnd/h2m v0.2.0
+	github.com/tamnd/h2m v0.2.1
 	github.com/tamnd/yomi v0.3.1
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
