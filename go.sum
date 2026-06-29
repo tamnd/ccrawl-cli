@@ -151,8 +151,6 @@ github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOf
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/tamnd/ami v0.3.0 h1:bSem2cAwxguFErX210Lp/l5tW8T7bFsC/5ufZdMikKA=
 github.com/tamnd/ami v0.3.0/go.mod h1:fwyRjwThYRb/l3bYyY2extexEJxKI4CVBDZH5A5ChPE=
-github.com/tamnd/any-cli v0.4.0 h1:ngyRJBvjZ2X1iBlwlmDLvY2S9aQWlDjVE7CiOwxtt5Y=
-github.com/tamnd/any-cli v0.4.0/go.mod h1:lns3VfQVrC9hMy7YKBzIQoYpobnfSDIzJ8c27H2ILmk=
 github.com/tamnd/any-cli v0.4.1 h1:YvhK0nkmd64UBXv4QHoEddWICjnmnW07tu6ki40Mrm0=
 github.com/tamnd/any-cli v0.4.1/go.mod h1:lns3VfQVrC9hMy7YKBzIQoYpobnfSDIzJ8c27H2ILmk=
 github.com/tamnd/go-trafilatura v1.15.0 h1:D1uDXkR7gbJ0XjKxBOVjh+Plzujc2fXILmn9KUV2Zao=
