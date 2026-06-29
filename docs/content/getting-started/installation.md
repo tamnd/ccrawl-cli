@@ -30,7 +30,7 @@ make build        # produces ./bin/ccrawl
 
 ## Optional: DuckDB
 
-The columnar index commands (`ccrawl table`, `ccrawl db`) run SQL against the public Parquet index.
+The columnar index commands (`ccrawl columnar`, `ccrawl db`) run SQL against the public Parquet index.
 If a `duckdb` binary is on your `PATH`, ccrawl uses it to run the queries directly.
 With no `duckdb` on your `PATH`, ccrawl prints the SQL so you can paste it into DuckDB, Athena, Spark, or Trino yourself.
 Either way the ccrawl binary never links DuckDB, so the install stays small and pure Go.

@@ -71,6 +71,27 @@ ccrawl convert ./warc/ --to parquet --out ./parquet   # a whole directory
 Add `--markdown` to convert HTML response bodies to Markdown as they are written.
 Parquet output makes a crawl slice queryable in DuckDB, Athena, or Spark without any further plumbing.
 
+## Exporting a WARC subset
+
+Whole-file download gives you the crawl's files as published.
+When you want only the captures that match a query, `ccrawl export` writes them into fresh `.warc.gz` files instead.
+Each file opens with a `warcinfo` record carrying provenance (the tool and version, the prefix, and the exact command line), so the output is self-describing and reproducible.
+
+```bash
+ccrawl export 'example.com/*' --status 200 --prefix example
+ccrawl export '*.gov/*' --mime application/pdf --size 100000000   # rotate every 100 MB
+```
+
+It takes the same filters as `search` (`--match`, `--from`, `--to`, `--status`, `--mime`, `--lang`, `--filter`) plus URL filters `--url-fgrep` and `--url-fgrepv`.
+Files rotate once they pass `--size` bytes (1 GB by default), named `<prefix>-NNNNNN.extracted.warc.gz`.
+You can also feed it locations on stdin, exactly what `search --locations` and `columnar locations` emit:
+
+```bash
+ccrawl search example.com --locations | ccrawl export - --prefix example
+```
+
+The exported records are the original gzip members fetched by byte range, so they round-trip through `ccrawl parse` unchanged.
+
 ## Building a dataset library
 
 For volume work you want the files in one tidy, browsable place rather than scattered across ad-hoc `--out` dirs.

@@ -17,6 +17,7 @@ ccrawl search example.com -o csv     # spreadsheet friendly
 ccrawl search example.com -o tsv     # tab-separated
 ccrawl search example.com -o url     # just the URL column
 ccrawl search example.com -o raw     # the underlying bytes, unformatted
+ccrawl search example.com -o parquet > out.parquet   # columnar, for analytics
 ```
 
 | Format | Best for |
@@ -27,6 +28,15 @@ ccrawl search example.com -o raw     # the underlying bytes, unformatted
 | `csv` / `tsv` | Spreadsheets and quick column math |
 | `url` | Feeding URLs into other commands |
 | `raw` | The unformatted bytes (response bodies, file contents) |
+| `parquet` | Columnar output for analytics, written to a file or pipe |
+
+`parquet` writes a zstd-compressed Parquet stream where every projected column is a UTF-8 string.
+It works with any list command, so you can turn a search or a host listing straight into a Parquet file for DuckDB, Spark, or pandas:
+
+```bash
+ccrawl search '*.gov/*' --status 200 -o parquet > gov.parquet
+ccrawl host top -n 100000 -o parquet > top_hosts.parquet
+```
 
 ## Narrowing columns
 
