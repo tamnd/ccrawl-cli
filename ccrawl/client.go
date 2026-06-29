@@ -10,7 +10,7 @@ import (
 )
 
 // HTTPClient is a polite, retrying HTTP client for Common Crawl. It rate-limits
-// requests, retries on 429/5xx with linear backoff, and supports byte-range
+// requests, retries on 403/429/5xx with linear backoff, and supports byte-range
 // requests for single-record retrieval.
 type HTTPClient struct {
 	c         *http.Client
@@ -127,7 +127,14 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			last = err
 			continue
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		// 403 is treated as retryable. Common Crawl's S3/CloudFront fronting
+		// returns it as a transient throttle or availability signal under load,
+		// not only as a hard "forbidden", so a genuinely forbidden URL will burn
+		// all attempts before failing. That is the right trade for a polite bulk
+		// client and matches what cdx_toolkit does.
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusForbidden ||
+			resp.StatusCode >= 500 {
 			_ = resp.Body.Close()
 			last = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 			continue
