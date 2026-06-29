@@ -22,6 +22,7 @@ func registerEscapeHatches(app *kit.App) {
 
 	app.AddCommand(newGetCmd())
 	app.AddCommand(newFetchCmd())
+	app.AddCommand(newExportCmd())
 	app.AddCommand(newDownloadCmd())
 	app.AddCommand(newPathsCmd())
 	app.AddCommand(newParseCmd())
