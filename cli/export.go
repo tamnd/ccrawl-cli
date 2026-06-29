@@ -46,7 +46,7 @@ pass --size bytes.
 
 Give a URL or wildcard pattern to run a query, or pass "-" to read location
 records (filename, offset, length) as JSONL on stdin, exactly what
-"ccrawl search --locations" and "ccrawl table locations" produce.
+"ccrawl search --locations" and "ccrawl columnar locations" produce.
 
 Examples:
   ccrawl export example.com/* --prefix example
