@@ -57,7 +57,7 @@ func TestStreamingParquetWriterRoundTrips(t *testing.T) {
 		t.Fatal("url column not found in schema")
 	}
 	rr := pf.RowGroups()[0].Rows()
-	defer rr.Close()
+	defer func() { _ = rr.Close() }()
 	got := make([]parquet.Row, len(rows))
 	n, err := rr.ReadRows(got)
 	if err != nil && n == 0 {
