@@ -16,28 +16,32 @@ import "syscall"
 // It returns the soft limit now in effect (the value after the raise, or the
 // original value if the raise was not possible), so callers can size their
 // worker pool to what the OS will actually allow.
+// The uint64 conversions on the returns matter for portability: Rlimit.Cur is
+// uint64 on Linux and Darwin but int64 on the BSDs, so returning it bare fails
+// to cross-compile for FreeBSD. Converting is a no-op where it is already
+// uint64 and a safe widening elsewhere.
 func RaiseFileLimit() (uint64, error) {
 	var lim syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
 		return 0, err
 	}
 	if lim.Cur >= lim.Max {
-		return lim.Cur, nil
+		return uint64(lim.Cur), nil
 	}
 	want := lim
 	want.Cur = want.Max
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &want); err != nil {
 		// Leave the original soft limit in place and report it; the caller can
 		// still run, just with a lower concurrency ceiling.
-		return lim.Cur, err
+		return uint64(lim.Cur), err
 	}
 	// Re-read: some kernels clamp the granted value (notably macOS caps at
 	// OPEN_MAX), so report what actually took effect rather than what we asked
 	// for.
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
-		return want.Cur, nil
+		return uint64(want.Cur), nil
 	}
-	return lim.Cur, nil
+	return uint64(lim.Cur), nil
 }
 
 // FileLimit reports the current open-file soft limit without changing it.
@@ -46,5 +50,5 @@ func FileLimit() uint64 {
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
 		return 0
 	}
-	return lim.Cur
+	return uint64(lim.Cur)
 }
