@@ -16,7 +16,7 @@ import (
 type StreamingParquetWriter struct {
 	dest io.Writer
 
-	w        *parquet.Writer
+	w        *parquet.GenericWriter[any]
 	colIndex map[string]int // column name to its position in the schema
 	width    int            // number of columns, fixed after the first row
 }
@@ -43,7 +43,7 @@ func (s *StreamingParquetWriter) start(cols []string) {
 		}
 	}
 	s.width = len(s.colIndex)
-	s.w = parquet.NewWriter(s.dest, schema, parquet.Compression(&zstd.Codec{}))
+	s.w = parquet.NewGenericWriter[any](s.dest, schema, parquet.Compression(&zstd.Codec{}))
 }
 
 // EmitRow writes one projected row. The first call defines the schema from cols.
