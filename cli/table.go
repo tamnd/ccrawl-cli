@@ -48,8 +48,8 @@ func (tf *tableFlags) bind(f *kit.FlagSet) {
 
 func newTableCmd() kit.Command {
 	return kit.Command{
-		Use:     "table",
-		Aliases: []string{"columnar", "athena"},
+		Use:     "columnar",
+		Aliases: []string{"table", "athena"},
 		Short:   "Query the columnar Parquet index",
 		Long: `Query Common Crawl's columnar (Parquet) index, the fastest way to answer bulk
 questions like "every PDF on .gov domains" without touching a single WARC.
@@ -59,11 +59,11 @@ files. With --engine print (or no duckdb installed) the ready-to-run SQL is
 printed so you can paste it into Athena, Spark, Trino, or DuckDB yourself.
 
 Examples:
-  ccrawl table urls --domain example.com --status 200 -o url
-  ccrawl table count --tld gov -c 2024-51
-  ccrawl table locations --domain example.com -o jsonl | ccrawl fetch -
-  ccrawl table sql --tld gov --mime application/pdf --print
-  ccrawl table query "SELECT url FROM ccindex LIMIT 10"`,
+  ccrawl columnar urls --domain example.com --status 200 -o url
+  ccrawl columnar count --tld gov -c 2024-51
+  ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch -
+  ccrawl columnar sql --tld gov --mime application/pdf --print
+  ccrawl columnar query "SELECT url FROM ccindex LIMIT 10"`,
 		Sub: []kit.Command{
 			newTableURLsCmd(),
 			newTableLocationsCmd(),

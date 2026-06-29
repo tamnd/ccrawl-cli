@@ -49,7 +49,7 @@ Quick start:
   ccrawl crawls latest                 newest crawl ID
   ccrawl search example.com/*          captures under a path
   ccrawl get example.com --text        the page text Common Crawl captured
-  ccrawl table urls --tld gov -o url   bulk URLs from the columnar index`,
+  ccrawl columnar urls --tld gov -o url   bulk URLs from the columnar index`,
 		Site: "https://commoncrawl.org",
 		Repo: "https://github.com/tamnd/ccrawl-cli",
 	}, kit.WithDefaults(b.defaults))

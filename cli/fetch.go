@@ -32,12 +32,12 @@ func newFetchCmd() kit.Command {
 
 Give an explicit --file/--offset/--length, or pass "-" to read location records
 (filename, offset, length) as JSONL on stdin, which is exactly what
-"ccrawl search --locations" and "ccrawl table locations" produce.
+"ccrawl search --locations" and "ccrawl columnar locations" produce.
 
 Examples:
   ccrawl fetch --file crawl-data/.../x.warc.gz --offset 123 --length 4567 --text
   ccrawl search example.com --locations | ccrawl fetch - --markdown
-  ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
+  ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
 		Flags: c.flags,
 		Run:   c.run,
 	}
@@ -146,7 +146,7 @@ func runFetchStdin(ctx context.Context, app *App, mode contentMode, outDir strin
 }
 
 // parseLocationLine reads one JSON object and pulls out a record location. It
-// accepts both the typed locations from "ccrawl table locations" and the raw CDX
+// accepts both the typed locations from "ccrawl columnar locations" and the raw CDX
 // rows from "ccrawl search -o jsonl", where offset and length arrive as quoted
 // strings. The "warc_filename"/"warc_record_offset" columnar names are honoured too.
 func parseLocationLine(line string) (ccrawl.Location, bool) {
