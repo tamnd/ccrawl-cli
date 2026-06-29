@@ -48,6 +48,8 @@ jobs:
       contents: write # create the GitHub release
       packages: write # push the image to ghcr.io
       id-token: write # keyless cosign signing
+    env:
+      LINUX_REPO_DISPATCH_TOKEN: ${{ secrets.LINUX_REPO_DISPATCH_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -67,7 +69,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Tools GoReleaser shells out to for signing and SBOMs.
+      # Pin cosign to the 2.x line. cosign 3.x makes the new bundle format the
+      # default, which ignores the --output-signature/--output-certificate flags
+      # the signs block uses and aborts. Pinning keeps the .sig/.pem outputs and
+      # stops the release from floating to a breaking latest.
       - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.6.3"
       - uses: anchore/sbom-action/download-syft@v0.24.0
 
       - uses: goreleaser/goreleaser-action@v6
@@ -83,3 +91,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+
+      # Rebuild the shared apt/dnf repository so `apt install ccrawl` and
+      # `dnf install ccrawl` pick up the packages this release just attached.
+      # Skipped when the dispatch token is unset, so the release never depends
+      # on it being configured.
+      - name: Refresh the Linux package repository
+        if: env.LINUX_REPO_DISPATCH_TOKEN != ''
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $LINUX_REPO_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/tamnd/linux-repo/dispatches \
+            -d '{"event_type":"package-released"}' || true)
+          if [ "$code" = "204" ]; then
+            echo "Linux repo refresh triggered"
+          else
+            echo "Linux repo refresh not accepted (HTTP $code); skipping"
+          fi
