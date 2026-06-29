@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,7 +40,111 @@ func ListCrawls(ctx context.Context, h *HTTPClient, cache *Cache) ([]Crawl, erro
 	return crawls, nil
 }
 
-var reCrawlYearWeek = regexp.MustCompile(`^(\d{4})-(\d{2})$`)
+var (
+	reCrawlYearWeek = regexp.MustCompile(`^(\d{4})-(\d{2})$`)
+	reCrawlYear     = regexp.MustCompile(`^(\d{4})$`)
+	reCrawlInt      = regexp.MustCompile(`^\d+$`)
+)
+
+// crawlIDs returns every available crawl ID, newest first.
+func crawlIDs(ctx context.Context, h *HTTPClient, cache *Cache) ([]string, error) {
+	crawls, err := ListCrawls(ctx, h, cache)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(crawls))
+	for i, c := range crawls {
+		ids[i] = c.ID
+	}
+	return ids, nil
+}
+
+// ResolveCrawls expands a crawl reference into the ordered list of crawl IDs a
+// multi-crawl command (search, get --all) should operate over, newest first.
+//
+//	"latest" / ""        -> the newest crawl
+//	"all"                -> every crawl
+//	"6"                  -> the newest 6 crawls
+//	"2023"               -> every crawl in 2023
+//	"CC-MAIN-2024-51"    -> itself
+//	"2024-51"            -> "CC-MAIN-2024-51"
+//	"a,b,2023"           -> each element expanded in turn, duplicates dropped
+//
+// A bare four-digit year expands to every crawl of that year here, unlike the
+// single-crawl ResolveCrawl which picks the newest crawl of the year. Commands
+// that operate on exactly one crawl use ResolveCrawl; commands that iterate use
+// this.
+func ResolveCrawls(ctx context.Context, h *HTTPClient, cache *Cache, ref string) ([]string, error) {
+	ref = strings.TrimSpace(ref)
+
+	if strings.Contains(ref, ",") {
+		var out []string
+		seen := map[string]bool{}
+		for _, part := range strings.Split(ref, ",") {
+			ids, err := ResolveCrawls(ctx, h, cache, part)
+			if err != nil {
+				return nil, err
+			}
+			for _, id := range ids {
+				if !seen[id] {
+					seen[id] = true
+					out = append(out, id)
+				}
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("empty crawl reference")
+		}
+		return out, nil
+	}
+
+	if strings.EqualFold(ref, "all") {
+		return crawlIDs(ctx, h, cache)
+	}
+
+	// A bare year selects every crawl in that year. Check before the integer
+	// form so "2023" is read as a year, not a request for the latest 2023 crawls.
+	if reCrawlYear.MatchString(ref) {
+		ids, err := crawlIDs(ctx, h, cache)
+		if err != nil {
+			return nil, err
+		}
+		prefix := "CC-MAIN-" + ref + "-"
+		var out []string
+		for _, id := range ids {
+			if strings.HasPrefix(id, prefix) {
+				out = append(out, id)
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("no crawl found for year %s", ref)
+		}
+		return out, nil
+	}
+
+	// An integer selects the newest N crawls.
+	if reCrawlInt.MatchString(ref) {
+		n, _ := strconv.Atoi(ref)
+		if n <= 0 {
+			return nil, fmt.Errorf("crawl count must be positive, got %d", n)
+		}
+		ids, err := crawlIDs(ctx, h, cache)
+		if err != nil {
+			return nil, err
+		}
+		if n > len(ids) {
+			n = len(ids)
+		}
+		return ids[:n], nil
+	}
+
+	// Anything else is a single crawl reference (latest, full ID, or YYYY-WW).
+	id, err := ResolveCrawl(ctx, h, cache, ref)
+	if err != nil {
+		return nil, err
+	}
+	return []string{id}, nil
+}
 
 // ResolveCrawl turns a loose reference into a canonical crawl ID.
 //

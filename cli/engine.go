@@ -124,24 +124,19 @@ func (a *App) Crawl(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// AllCrawls returns the crawl IDs to operate over when -c all/year is given,
-// newest first, otherwise the single resolved crawl.
+// AllCrawls returns the crawl IDs to operate over, newest first. It honors the
+// multi-crawl forms of -c: "all", a year (every crawl that year), an integer
+// (the newest N crawls), and comma-separated lists of any reference. A single
+// reference yields one ID.
 func (a *App) AllCrawls(ctx context.Context) ([]string, error) {
-	ref := a.Cfg.CrawlID
-	if ref == "all" {
-		crawls, err := ccrawl.ListCrawls(ctx, a.HTTP, a.Cache)
-		if err != nil {
-			return nil, err
-		}
-		ids := make([]string, len(crawls))
-		for i, c := range crawls {
-			ids[i] = c.ID
-		}
-		return ids, nil
-	}
-	id, err := a.Crawl(ctx)
+	ids, err := ccrawl.ResolveCrawls(ctx, a.HTTP, a.Cache, a.Cfg.CrawlID)
 	if err != nil {
 		return nil, err
 	}
-	return []string{id}, nil
+	// When exactly one crawl is in play, cache it so a later Crawl() call is
+	// consistent and skips a second resolve.
+	if len(ids) == 1 {
+		a.crawl = ids[0]
+	}
+	return ids, nil
 }

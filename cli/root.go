@@ -77,7 +77,7 @@ func (b *builder) defaults(c *kit.Config) {
 // globals registers the ccrawl-specific persistent flags, on top of the kit
 // framework globals.
 func (b *builder) globals(f *kit.FlagSet) {
-	f.StringVarP(&b.dom.crawl, "crawl", "c", "latest", "crawl ID, year, or 'latest'/'all'")
+	f.StringVarP(&b.dom.crawl, "crawl", "c", "latest", "crawl: ID, year, latest, all, an integer for the newest N, or a comma list")
 	f.StringVar(&b.dom.source, "source", "https", "bulk data source: https|s3")
 	f.IntVarP(&b.dom.workers, "workers", "j", b.def.Workers, "concurrency")
 	f.BoolVar(&b.dom.library, "library", false, "read and write under the structured dataset library")

@@ -61,7 +61,9 @@ Examples:
   ccrawl search example.com --match exact          one URL, every timestamp
   ccrawl search example.com -o url                 just the URLs, for a pipeline
   ccrawl search example.com --locations | ccrawl fetch -
-  ccrawl search example.com -c all -n 50           every crawl, newest first`,
+  ccrawl search example.com -c all -n 50           every crawl, newest first
+  ccrawl search example.com -c 6                   the newest 6 crawls
+  ccrawl search example.com -c 2023                every crawl from 2023`,
 		Args: []kit.Arg{{Name: "url-or-pattern", Help: "URL or wildcard pattern"}},
 	}, func(ctx context.Context, in searchIn, emit func(any) error) error {
 		app := in.App
