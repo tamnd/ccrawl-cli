@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -76,6 +78,11 @@ type MarkdownPackConfig struct {
 	// Workers is the number of goroutines for HTML→Markdown conversion.
 	// 0 selects runtime.NumCPU().
 	Workers int
+	// MaxRecords, when > 0, stops the shard after this many HTML response
+	// records have been queued for conversion. 0 means convert the whole shard.
+	// It exists for the throughput benchmark, which needs a fixed, fast slice of
+	// a shard; production export leaves it at 0.
+	MaxRecords int
 	// ConvertSem, when non-nil, caps the number of conversions running at once
 	// across every shard that shares it. The orchestrator passes one semaphore
 	// sized to the CPU count so several shards can be in flight (hiding download
@@ -97,11 +104,6 @@ type MarkdownPackConfig struct {
 // N workers parallelise the h2m extraction and markdown rendering.
 // The single writer keeps the parquet output sequential.
 func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
-	workers := cfg.Workers
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-
 	stats := MarkdownStats{ShardIdx: cfg.ShardIdx}
 
 	t0 := time.Now()
@@ -116,6 +118,20 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	}
 	if resp.ContentLength > 0 {
 		stats.WARCBytes = resp.ContentLength
+	}
+
+	return packStream(ctx, resp.Body, cfg, stats, t0)
+}
+
+// packStream runs the conversion pipeline over an already-open WARC byte stream
+// and writes the parquet file at cfg.OutPath. It is the core shared by the
+// network path (PackMarkdownShard) and the local-file benchmark, so both
+// exercise identical extract and encode work. t0 marks when the download
+// started so DurDownload covers the time until the first records flow.
+func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, stats MarkdownStats, t0 time.Time) (MarkdownStats, error) {
+	workers := cfg.Workers
+	if workers <= 0 {
+		workers = runtime.NumCPU()
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.OutPath), 0o755); err != nil {
@@ -133,7 +149,9 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	var readErr error
 	go func() {
 		defer close(records)
-		readErr = IterateWARC(resp.Body, func(rec WARCRecord) error {
+		queued := 0
+		errStop := errors.New("record limit reached")
+		readErr = IterateWARC(body, func(rec WARCRecord) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -155,8 +173,15 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 				recordID: rec.Header.RecordID,
 				html:     body,
 			}
+			queued++
+			if cfg.MaxRecords > 0 && queued >= cfg.MaxRecords {
+				return errStop
+			}
 			return nil
 		})
+		if readErr == errStop {
+			readErr = nil // a deliberate early stop is not a read failure
+		}
 	}()
 
 	tConvert := time.Now()
