@@ -42,17 +42,35 @@ Narrow the matches with the capture fields:
 ```bash
 ccrawl search 'example.com/*' --mime application/pdf   # only PDFs
 ccrawl search 'example.com/*' --status 200             # only successful fetches
+ccrawl search 'example.com/*' --from 2023 --to 2024    # captures in a date range
+ccrawl search 'example.com/*' --url-contains /blog/    # URL substring match
+ccrawl search 'example.com/*' --url-not-contains /tag/ # skip a URL substring
+```
+
+Pick the capture closest to a moment in time with `--at`, and order the results with `--sort`:
+
+```bash
+ccrawl search example.com --at 2023-06            # the capture nearest June 2023
+ccrawl search 'example.com/*' --sort oldest       # oldest captures first
+```
+
+To size a result before pulling it, ask for an estimate instead of the rows:
+
+```bash
+ccrawl search 'example.com/*' --estimate          # rough page and record counts
 ```
 
 ## Choosing a crawl
 
 `search` runs against the latest crawl unless you say otherwise.
-`-c` takes a full ID, a year (resolved to that year's newest crawl), or `latest`:
+`-c` takes a full crawl ID, a year (every crawl of that year), `latest`, `all`, an integer for the newest N crawls, or a comma-separated list:
 
 ```bash
-ccrawl search example.com -c 2024-51   # one specific crawl
-ccrawl search example.com -c 2024      # the newest 2024 crawl
-ccrawl search example.com -c all       # across every crawl
+ccrawl search example.com -c 2024-51        # one specific crawl
+ccrawl search example.com -c 2024           # every 2024 crawl
+ccrawl search example.com -c 3              # the three newest crawls
+ccrawl search example.com -c 2024-51,2023-50 # an explicit list
+ccrawl search example.com -c all            # across every crawl
 ```
 
 ## Shaping the rows

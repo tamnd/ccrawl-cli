@@ -8,14 +8,14 @@ Most of these come down to network reality or an optional dependency, not a bug.
 
 ## "no duckdb binary found"
 
-The columnar commands (`ccrawl table`, `ccrawl db`) run SQL with a local `duckdb`.
+The columnar commands (`ccrawl columnar`, `ccrawl db`) run SQL with a local `duckdb`.
 When there is none on your `PATH`, ccrawl prints the SQL instead of running it, so you can paste it into DuckDB, Athena, Spark, or Trino.
 To run locally, install DuckDB from [duckdb.org](https://duckdb.org/docs/installation).
 The ccrawl binary itself never links DuckDB.
 
 ## A columnar query is slow
 
-A cold `ccrawl table` query with no domain or TLD filter reads across every Parquet shard of the crawl over HTTPS.
+A cold `ccrawl columnar` query with no domain or TLD filter reads across every Parquet shard of the crawl over HTTPS.
 That is bandwidth-bound: seconds on a well-connected host, minutes on home broadband.
 Narrow it with `--domain` or `--tld` so DuckDB can prune shards, run it from a better-connected machine, or `--print` the SQL and run it in Athena where the compute sits next to the data.
 
@@ -23,7 +23,7 @@ Narrow it with `--domain` or `--tld` so DuckDB can prune shards, run it from a b
 
 The Common Crawl S3 bucket denies anonymous listing, and HTTPS cannot list a directory, so a raw `*.parquet` glob has nothing to expand against.
 ccrawl handles this for you by reading the crawl's shard manifest and turning the glob into an explicit file list before it runs DuckDB.
-If you copied a printed SQL query (which keeps the glob on purpose for Athena and Spark) into a plain local DuckDB, expand the glob yourself or let `ccrawl table` run it instead.
+If you copied a printed SQL query (which keeps the glob on purpose for Athena and Spark) into a plain local DuckDB, expand the glob yourself or let `ccrawl columnar` run it instead.
 
 ## A rank table returns 404
 
@@ -41,6 +41,12 @@ Use `-n` to stop once you have enough, raise `--workers` to scan more files at o
 
 Common Crawl is a sample, not a mirror; not every page is captured in every crawl.
 Widen the search with a path pattern (`'example.com/*'`), try another crawl with `-c <year>`, or search across all of them with `-c all`.
+
+## Requests fail with 403 or 5xx across the board
+
+ccrawl retries 403, 429, and 5xx responses with a linear backoff, so a transient throttle on `data.commoncrawl.org` usually recovers on its own.
+`--retries` sets how many attempts (default 5) and `--rate` adds delay between requests to stay polite.
+If errors persist for everything, the data service may be having an outage: check the [Common Crawl status page](https://status.commoncrawl.org) before digging further.
 
 ## Checking what ccrawl resolved
 

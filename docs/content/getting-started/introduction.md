@@ -37,4 +37,7 @@ ccrawl is a read-only client over data Common Crawl already publishes.
 It reads that public data and shapes it for you, and stops there: no crawling the web, no building or serving an index, no running any part of the Common Crawl pipeline.
 That narrow scope is what keeps it a single small binary with no database, no daemon, and no setup.
 
+Common Crawl is the only data source.
+Other web archives, including the Internet Archive and its CDX server, are out of scope: ccrawl speaks Common Crawl's layout and conventions on purpose, and a second backend would dilute that focus.
+
 Next: [install it](/getting-started/installation/), then take the [quick start](/getting-started/quick-start/).

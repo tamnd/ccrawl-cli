@@ -50,13 +50,13 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-c, --crawl` | `latest` | Crawl ID, a year, or `latest`/`all` |
-| `-o, --output` | auto | `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, `raw` |
+| `-c, --crawl` | `latest` | Crawl ID, a year (all crawls of that year), `latest`, `all`, an integer for the newest N, or a comma list |
+| `-o, --output` | auto | `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, `raw`, `parquet` |
 | `-n, --limit` | `0` | Maximum results; `0` is unlimited |
 | `-j, --workers` | per command | Concurrency for downloads and scans |
 | `--source` | `https` | Bulk data source: `https` or `s3` |
 | `--rate` | `200ms` | Minimum delay between requests, to stay polite |
-| `--retries` | `5` | Retry attempts on 429 and 5xx |
+| `--retries` | `5` | Retry attempts on 403, 429, and 5xx |
 | `--timeout` | `2m` | Per-request timeout |
 | `--no-cache` | off | Bypass the on-disk cache for this run |
 | `--data-dir` | `~/data/ccrawl` | Root data directory |

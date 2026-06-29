@@ -18,13 +18,14 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `search` | Query the URL index (CDX) for captures of a URL or pattern |
 | `get` | Fetch what Common Crawl captured for a URL |
 | `fetch` | Retrieve WARC records by explicit location, or from stdin |
+| `export` | Write matching captures into WARC files with provenance |
 | `download` | Download whole archive files for a crawl |
 | `paths` | List the archive file paths for a crawl |
 | `parse` | Decode a local WARC/WAT/WET file into records |
 | `extract` | Pull text, links, title, or Markdown from a captured page |
 | `content` | Live-fetch content signals: text, outlinks, quality |
 | `news` | Work with the continuous CC-NEWS dataset |
-| `table` | Query the columnar Parquet index |
+| `columnar` | Query the columnar Parquet index |
 | `rank` | Look up host and domain ranks from the web graph |
 | `host` | Enumerate and enrich hosts from the CC web graph |
 | `crawl` | Recrawl engine: seed, fetch, and write WARC output |
@@ -58,7 +59,11 @@ ccrawl search <url|pattern> [flags]
 ```
 
 A trailing `/*` matches everything under a path.
-Filters: `--mime`, `--status`.
+Filters: `--mime`, `--status`, `--from`, `--to`, `--filter`.
+URL filters: `--url-contains`, `--url-not-contains`.
+Pick the capture closest to a date with `--at` (for example `--at 2023-06`).
+Order with `--sort newest|oldest`.
+Estimate the size of a result instead of listing it with `--estimate`.
 Shaping: `--fields`, `--template`, `-o`, `-n`.
 Alias: `cdx`.
 
@@ -84,6 +89,28 @@ ccrawl fetch [-] [flags]
 Locate a record with `--file`, `--offset`, `--length`, or stream JSONL locations on stdin with `-`.
 Content flags: `--body` (default), `--text`, `--markdown`, `--links`, `--headers`, `--meta`.
 Write one file per record with `--dir` and `--out-dir`.
+
+---
+
+## export
+
+```
+ccrawl export <url-or-pattern|-> [flags]
+```
+
+Run a query, pull each matching capture, and write them into one or more `.warc.gz` files.
+Each file opens with a `warcinfo` record carrying provenance (the tool and version, the prefix, and the exact command line), so the output is self-describing.
+Pass a URL or wildcard pattern to run a query, or `-` to read location records (filename, offset, length) as JSONL on stdin, exactly what `search --locations` and `columnar locations` produce.
+
+Naming: `--prefix`, `--subprefix`. Rotation: `--size` (bytes, default 1 GB). Destination: `--out-dir`.
+Provenance: `--creator`, `--operator`.
+Query filters mirror `search`: `--match`, `--from`, `--to`, `--status`, `--mime`, `--lang`, `--filter`.
+URL filters: `--url-fgrep`, `--url-fgrepv`.
+
+```sh
+ccrawl export example.com/* --prefix example
+ccrawl search example.com --locations | ccrawl export - --prefix example
+```
 
 ---
 
@@ -163,20 +190,20 @@ ccrawl content outlinks https://news.ycombinator.com/ -n 20
 
 ---
 
-## table
+## columnar
 
-Aliases: `columnar`, `athena`.
+Aliases: `table`, `athena`.
 
 | Subcommand | Does |
 |---|---|
-| `table urls` | Matching URLs |
-| `table locations` | Record locations, ready for `fetch` |
-| `table count` | Count of matching captures |
-| `table langs` | Breakdown by content language |
-| `table mimes` | Breakdown by MIME type |
-| `table sql` | Build the SQL from the filter flags and print it |
-| `table query <sql>` | Run raw SQL (`ccindex` is the source) |
-| `table schema` | The columns of the index |
+| `columnar urls` | Matching URLs |
+| `columnar locations` | Record locations, ready for `fetch` |
+| `columnar count` | Count of matching captures |
+| `columnar langs` | Breakdown by content language |
+| `columnar mimes` | Breakdown by MIME type |
+| `columnar sql` | Build the SQL from the filter flags and print it |
+| `columnar query <sql>` | Run raw SQL (`ccindex` is the source) |
+| `columnar schema` | The columns of the index |
 
 Filters: `--domain`, `--host`, `--tld`, `--mime`, `--status`, `--lang`, `--path-prefix`, `--subset`.
 Engine: `--engine` (`auto|duckdb|print`).
@@ -494,8 +521,8 @@ These apply to every command.
 
 | Flag | Short | Meaning | Default |
 |---|---|---|---|
-| `--crawl` | `-c` | Crawl ID, year, or `latest`/`all` | `latest` |
-| `--output` | `-o` | Output format: `auto`, `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, `raw` | `auto` |
+| `--crawl` | `-c` | Crawl ID, year (all crawls of that year), `latest`, `all`, an integer for the newest N, or a comma list | `latest` |
+| `--output` | `-o` | Output format: `auto`, `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, `raw`, `parquet` | `auto` |
 | `--limit` | `-n` | Maximum records (0 = unlimited) | `0` |
 | `--workers` | `-j` | Concurrency for downloads and scans | `8` |
 | `--source` | | Bulk data source: `https` or `s3` | `https` |

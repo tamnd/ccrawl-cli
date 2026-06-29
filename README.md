@@ -76,12 +76,13 @@ That is what makes `ccrawl get` feel instant.
 | `search` | Query the URL index (CDX) for captures of a URL or pattern |
 | `get` | Fetch what Common Crawl captured for a URL (curl for Common Crawl) |
 | `fetch` | Retrieve WARC records by explicit location, or from stdin |
+| `export` | Write matching captures into WARC files with provenance |
 | `download` | Download whole archive files for a crawl |
 | `paths` | List the archive file paths for a crawl |
 | `parse` | Decode a local WARC/WAT/WET file into records |
 | `extract` | Pull text, links, title, or Markdown from a captured page |
 | `news` | Work with the continuous CC-NEWS dataset |
-| `table` | Query the columnar Parquet index (alias `columnar`, `athena`) |
+| `columnar` | Query the columnar Parquet index (alias `table`, `athena`) |
 | `rank` | Look up host and domain ranks from the web graph |
 | `db` | Build and query a local DuckDB database |
 | `convert` | Convert WARC/WAT/WET archives to Parquet or JSONL |
@@ -116,6 +117,12 @@ Search one specific crawl instead of the latest:
 
 ```sh
 ccrawl search example.com -c 2024-51
+```
+
+Export a reproducible WARC subset with provenance baked into each file:
+
+```sh
+ccrawl export 'example.com/*' --status 200 --prefix example
 ```
 
 Stream a local WARC you already downloaded:
@@ -169,6 +176,7 @@ ccrawl search example.com -o jsonl   # one JSON object per line, for piping
 ccrawl search example.com -o json    # a single JSON array
 ccrawl search example.com -o csv     # spreadsheet friendly
 ccrawl search example.com -o url     # just the URL column
+ccrawl search example.com -o parquet > out.parquet  # columnar, for analytics
 ```
 
 Narrow the columns with `--fields`, or template each row:
@@ -184,9 +192,9 @@ The columnar (Parquet) index is the fastest way to answer bulk questions across 
 whole crawl without touching a single WARC. ccrawl builds the SQL for you.
 
 ```sh
-ccrawl table urls --tld gov --mime application/pdf -o url
-ccrawl table count --domain example.com
-ccrawl table langs --tld jp
+ccrawl columnar urls --tld gov --mime application/pdf -o url
+ccrawl columnar count --domain example.com
+ccrawl columnar langs --tld jp
 ```
 
 These run against the public Parquet files using a local `duckdb` binary if one
@@ -194,7 +202,7 @@ is on your PATH. If DuckDB is not installed, ccrawl prints ready-to-run SQL so y
 can paste it into DuckDB, Athena, Spark, or Trino yourself:
 
 ```sh
-ccrawl table sql --tld gov --mime application/pdf --print
+ccrawl columnar sql --tld gov --mime application/pdf --print
 ```
 
 Install DuckDB from [duckdb.org](https://duckdb.org/docs/installation) to run the
@@ -205,7 +213,7 @@ The `locations` subcommand emits exactly the records `ccrawl fetch` reads, so th
 columnar index and the byte-range fetcher compose:
 
 ```sh
-ccrawl table locations --domain example.com -o jsonl | ccrawl fetch - --text
+ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch - --text
 ```
 
 ## Configuration
@@ -225,8 +233,8 @@ Useful global flags (all have sensible defaults):
 
 | Flag | Meaning |
 | --- | --- |
-| `-c, --crawl` | Crawl ID, year, or `latest`/`all` (default `latest`) |
-| `-o, --output` | Output format (default auto) |
+| `-c, --crawl` | Crawl ID, year, `latest`, `all`, an integer for the newest N, or a comma list (default `latest`) |
+| `-o, --output` | Output format, including `parquet` (default auto) |
 | `-n, --limit` | Maximum results (`0` means unlimited) |
 | `-j, --workers` | Concurrency for downloads and scans |
 | `--source` | Bulk data source: `https` or `s3` |

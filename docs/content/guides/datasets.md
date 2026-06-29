@@ -10,7 +10,7 @@ When you are going to ask the same data many questions, pull it local once and q
 ## Loading
 
 `ccrawl db load` reads matching records from the columnar index and writes them into a table in your local DuckDB file (`<data-dir>/ccrawl.duckdb` by default).
-The same filter flags as `ccrawl table` apply:
+The same filter flags as `ccrawl columnar` apply:
 
 ```bash
 ccrawl db load --domain example.com        # load one domain's captures

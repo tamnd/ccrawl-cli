@@ -13,7 +13,7 @@ ccrawl puts all of it behind one tool with sensible defaults, real output format
 ```bash
 ccrawl get example.com --text          # the readable text of the latest capture
 ccrawl search 'example.com/*' -o url   # every captured URL under a path
-ccrawl table count --tld gov           # how many .gov pages are in the crawl
+ccrawl columnar count --tld gov           # how many .gov pages are in the crawl
 ccrawl rank domain example.com         # where the domain sits in the web graph
 ```
 
