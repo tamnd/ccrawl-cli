@@ -7,7 +7,7 @@ import (
 
 func TestColumnarSQL(t *testing.T) {
 	q := ColumnarQuery{
-		Crawl:  "CC-MAIN-2024-51",
+		Crawl:  "CC-MAIN-2026-25",
 		Domain: "example.com",
 		TLD:    "gov",
 		MIME:   "application/pdf",
@@ -20,7 +20,7 @@ func TestColumnarSQL(t *testing.T) {
 		"url_host_tld = 'gov'",
 		"content_mime_detected = 'application/pdf'",
 		"fetch_status = 200",
-		"crawl=CC-MAIN-2024-51",
+		"crawl=CC-MAIN-2026-25",
 		"subset=warc",
 		"LIMIT 10",
 	} {
@@ -31,7 +31,7 @@ func TestColumnarSQL(t *testing.T) {
 }
 
 func TestColumnarSQLEscaping(t *testing.T) {
-	q := ColumnarQuery{Crawl: "CC-MAIN-2024-51", Domain: "o'brien.example"}
+	q := ColumnarQuery{Crawl: "CC-MAIN-2026-25", Domain: "o'brien.example"}
 	sql := q.SQL(SourceHTTPS)
 	if !strings.Contains(sql, "o''brien.example") {
 		t.Errorf("single quote not escaped: %s", sql)
@@ -42,7 +42,7 @@ func TestColumnarSQLEscaping(t *testing.T) {
 // row groups, covering the apex and every subdomain without matching a
 // look-alike domain like example2.com.
 func TestColumnarSQLSurtkeyDomain(t *testing.T) {
-	q := ColumnarQuery{Crawl: "CC-MAIN-2024-51", Domain: "example.com"}
+	q := ColumnarQuery{Crawl: "CC-MAIN-2026-25", Domain: "example.com"}
 	sql := q.SQL(SourceHTTPS)
 	for _, want := range []string{
 		"url_surtkey LIKE 'com,example)%'",
@@ -59,7 +59,7 @@ func TestColumnarSQLSurtkeyDomain(t *testing.T) {
 }
 
 func TestColumnarSQLSurtkeyHost(t *testing.T) {
-	q := ColumnarQuery{Crawl: "CC-MAIN-2024-51", Host: "www.example.co.uk"}
+	q := ColumnarQuery{Crawl: "CC-MAIN-2026-25", Host: "www.example.co.uk"}
 	sql := q.SQL(SourceHTTPS)
 	if want := "url_surtkey LIKE 'uk,co,example,www)%'"; !strings.Contains(sql, want) {
 		t.Errorf("SQL missing %q in:\n%s", want, sql)
@@ -82,7 +82,7 @@ func TestSurtHostKey(t *testing.T) {
 }
 
 func TestColumnarSourceS3(t *testing.T) {
-	src := ColumnarSource("CC-MAIN-2024-51", "warc", SourceS3)
+	src := ColumnarSource("CC-MAIN-2026-25", "warc", SourceS3)
 	if !strings.HasPrefix(src, "s3://commoncrawl/") {
 		t.Errorf("S3 source = %q", src)
 	}
