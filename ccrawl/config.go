@@ -26,6 +26,12 @@ const (
 	DefaultTimeout = 120 * time.Second
 	DefaultRetries = 5
 	DefaultDelay   = 200 * time.Millisecond
+
+	// DefaultBackoff is the base wait before the first retry; later retries grow
+	// it exponentially. DefaultBackoffMax caps a single wait so a long stall or a
+	// large Retry-After never blocks a run indefinitely.
+	DefaultBackoff    = 1 * time.Second
+	DefaultBackoffMax = 30 * time.Second
 )
 
 // Source selects the transport used for bulk data files.
@@ -39,32 +45,36 @@ const (
 // Config controls library behaviour. The zero value is not usable; call
 // DefaultConfig and adjust.
 type Config struct {
-	DataDir   string
-	CacheDir  string
-	DBPath    string
-	Source    Source
-	Workers   int
-	Timeout   time.Duration
-	Delay     time.Duration
-	Retries   int
-	UserAgent string
-	CrawlID   string
+	DataDir    string
+	CacheDir   string
+	DBPath     string
+	Source     Source
+	Workers    int
+	Timeout    time.Duration
+	Delay      time.Duration
+	Retries    int
+	Backoff    time.Duration
+	BackoffMax time.Duration
+	UserAgent  string
+	CrawlID    string
 }
 
 // DefaultConfig returns a Config rooted at the XDG data/cache directories, with
 // the most recent crawl resolved lazily (CrawlID == "latest").
 func DefaultConfig() Config {
 	return Config{
-		DataDir:   dataDir(),
-		CacheDir:  cacheDir(),
-		DBPath:    filepath.Join(dataDir(), "ccrawl.duckdb"),
-		Source:    SourceHTTPS,
-		Workers:   defaultWorkers(),
-		Timeout:   DefaultTimeout,
-		Delay:     DefaultDelay,
-		Retries:   DefaultRetries,
-		UserAgent: UserAgent,
-		CrawlID:   "latest",
+		DataDir:    dataDir(),
+		CacheDir:   cacheDir(),
+		DBPath:     filepath.Join(dataDir(), "ccrawl.duckdb"),
+		Source:     SourceHTTPS,
+		Workers:    defaultWorkers(),
+		Timeout:    DefaultTimeout,
+		Delay:      DefaultDelay,
+		Retries:    DefaultRetries,
+		Backoff:    DefaultBackoff,
+		BackoffMax: DefaultBackoffMax,
+		UserAgent:  UserAgent,
+		CrawlID:    "latest",
 	}
 }
 

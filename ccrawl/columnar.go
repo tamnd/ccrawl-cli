@@ -48,9 +48,24 @@ func (q ColumnarQuery) SQL(src Source) string {
 	var where []string
 	if q.Domain != "" {
 		where = append(where, eq("url_host_registered_domain", q.Domain))
+		// url_surtkey is the column the Parquet files are sorted on, so a prefix
+		// predicate on it lets the engine skip whole row groups by their min/max
+		// stats instead of scanning every file. The registered-domain equality
+		// above keeps the result exact; this only narrows the bytes read. The two
+		// patterns cover the apex (com,example)/...) and every subdomain
+		// (com,example,www)...) without also matching example2.com.
+		if rev := surtHostKey(q.Domain); rev != "" {
+			r := sqlEscape(rev)
+			where = append(where, fmt.Sprintf("(url_surtkey LIKE '%s)%%' OR url_surtkey LIKE '%s,%%')", r, r))
+		}
 	}
 	if q.Host != "" {
 		where = append(where, eq("url_host_name", q.Host))
+		// Same row-group pruning for an exact host: its surtkey is the reversed
+		// host followed by ')'.
+		if rev := surtHostKey(q.Host); rev != "" {
+			where = append(where, fmt.Sprintf("url_surtkey LIKE '%s)%%'", sqlEscape(rev)))
+		}
 	}
 	if q.TLD != "" {
 		where = append(where, eq("url_host_tld", q.TLD))
@@ -81,6 +96,22 @@ func (q ColumnarQuery) SQL(src Source) string {
 
 func eq(col, val string) string { return fmt.Sprintf("%s = '%s'", col, sqlEscape(val)) }
 func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// surtHostKey reverses a host's labels into the comma-separated form that begins
+// every url_surtkey: "www.example.com" -> "com,example,www". Unlike SURT it
+// keeps a leading "www." because Common Crawl's url_surtkey does too, and it
+// returns just the host portion (no trailing ')').
+func surtHostKey(host string) string {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return ""
+	}
+	labels := strings.Split(host, ".")
+	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
+		labels[i], labels[j] = labels[j], labels[i]
+	}
+	return strings.Join(labels, ",")
+}
 
 // DuckDBPrelude is prepended to every statement ccrawl sends to the duckdb
 // binary. httpfs reads remote Parquet over HTTPS; the progress bar is noise

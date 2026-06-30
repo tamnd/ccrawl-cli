@@ -81,3 +81,6 @@ See [output formats](/reference/output/) for the full set.
 ccrawl caches small index responses and manifests on disk so repeated commands do not re-fetch them.
 `--rate` keeps a minimum gap between requests so a busy session stays a good citizen against the public data.
 `cache info`, `cache dir`, and `cache clear` manage the cache.
+
+When a request is throttled, ccrawl retries 403, 429, and 5xx responses with exponential backoff and jitter, and honors a `Retry-After` header when the CDN sends one.
+`--retries` sets the attempt count; the wait grows from `backoff` (1s) up to `backoff_max` (30s), both of which `ccrawl config show` reports.
