@@ -44,7 +44,7 @@ Widen the search with a path pattern (`'example.com/*'`), try another crawl with
 
 ## Requests fail with 403 or 5xx across the board
 
-ccrawl retries 403, 429, and 5xx responses with a linear backoff, so a transient throttle on `data.commoncrawl.org` usually recovers on its own.
+ccrawl retries 403, 429, and 5xx responses with exponential backoff and jitter, honoring a `Retry-After` header when the CDN sends one, so a transient throttle on `data.commoncrawl.org` usually recovers on its own.
 `--retries` sets how many attempts (default 5) and `--rate` adds delay between requests to stay polite.
 If errors persist for everything, the data service may be having an outage: check the [Common Crawl status page](https://status.commoncrawl.org) before digging further.
 

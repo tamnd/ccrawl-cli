@@ -10,6 +10,8 @@ heroPrimaryText: "Get started"
 Working with Common Crawl usually means stitching together the CDX API, S3 paths, multi-member gzip WARC files, and a pile of Python.
 ccrawl puts all of it behind one tool with sensible defaults, real output formats, and pipelines that compose.
 
+![ccrawl resolving the latest crawl, reading a page as text, searching the URL index, and generating columnar SQL](/demo.gif)
+
 ```bash
 ccrawl get example.com --text          # the readable text of the latest capture
 ccrawl search 'example.com/*' -o url   # every captured URL under a path

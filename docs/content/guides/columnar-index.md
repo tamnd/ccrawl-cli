@@ -22,6 +22,8 @@ ccrawl columnar schema                        # the columns of the index
 
 The filter flags map onto the index columns: `--domain`, `--host`, `--tld`, `--mime`, `--status`, `--lang`, and `--path-prefix`.
 They combine, and they let DuckDB skip Parquet shards it does not need.
+A `--domain` or `--host` filter also adds a bound on `url_surtkey`, the reversed-host key the index is physically sorted by, so the engine prunes whole row groups by their min and max key instead of reading them just to test the equality.
+That makes a `*.example.com` query noticeably faster on a cold scan.
 
 ## Running it: DuckDB or print
 
