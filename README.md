@@ -3,15 +3,7 @@
 A fast, friendly command line for [Common Crawl](https://commoncrawl.org).
 One binary that finds pages in the URL index, fetches the exact bytes Common Crawl saw, streams WARC/WAT/WET archives, queries the columnar Parquet index, looks up domain ranks, and builds datasets.
 
-```sh
-ccrawl get example.com --text
-```
-
-```
-Example Domain
-This domain is for use in documentation examples without needing permission.
-Learn more
-```
+![ccrawl resolving the latest crawl, reading a page as text, searching the URL index, and generating columnar SQL](docs/static/demo.gif)
 
 Full documentation: [ccrawl-cli.tamnd.com](https://ccrawl-cli.tamnd.com).
 
@@ -25,9 +17,10 @@ That last part is the catch.
 Using the data by hand means juggling the [CDX index API](https://index.commoncrawl.org), S3 paths, multi-member gzip WARC files, and a pile of glue code.
 ccrawl puts all of it behind one tool with sane defaults, real output formats, and commands that pipe into each other.
 
-This project is an independent client.
-It is not affiliated with or endorsed by the Common Crawl Foundation.
-Please read and follow the [Common Crawl terms of use](https://commoncrawl.org/terms-of-use) when you use the data.
+> [!IMPORTANT]
+> This project is an independent client.
+> It is not affiliated with or endorsed by the Common Crawl Foundation.
+> Please read and follow the [Common Crawl terms of use](https://commoncrawl.org/terms-of-use) when you use the data.
 
 ## Install
 
@@ -59,6 +52,10 @@ ccrawl search 'example.com/*' -o url  # just the URLs, one per line
 
 Run `ccrawl <command> --help` for the full flag list on any command.
 Every command speaks the same global flags, so `-o`, `-c`, `-n`, and `--fields` work everywhere.
+
+> [!TIP]
+> ccrawl is built to compose.
+> Any command that lists records can pipe into another, so `search` finds captures, `fetch` pulls their bytes, and a shell pipe (`|`) is the glue.
 
 ## Find a page: `get`
 
@@ -141,7 +138,11 @@ ccrawl columnar langs --tld jp
 ccrawl columnar mimes --domain example.com
 ```
 
-If DuckDB is not installed, ccrawl prints ready-to-run SQL instead, so you can paste it into [DuckDB](https://duckdb.org), Athena, Spark, or Trino yourself:
+> [!NOTE]
+> DuckDB is optional.
+> If it is not on your `PATH`, ccrawl prints ready-to-run SQL instead of running it, so nothing is required to get a useful answer.
+
+Ask for the SQL directly with `--print`, then paste it into [DuckDB](https://duckdb.org), Athena, Spark, or Trino:
 
 ```sh
 ccrawl columnar sql --tld gov --mime application/pdf --print
@@ -224,7 +225,9 @@ That is what makes `ccrawl get` feel instant even though the file it lives in ma
 
 ccrawl is also a polite client.
 It rate-limits itself and retries 403, 429, and 5xx responses with exponential backoff, honoring a `Retry-After` header when the CDN sends one.
-If requests keep failing, check the [Common Crawl status page](https://status.commoncrawl.org) to see whether the data service is having problems before digging into your own setup.
+
+> [!TIP]
+> If requests keep failing, check the [Common Crawl status page](https://status.commoncrawl.org) to see whether the data service is having problems before digging into your own setup.
 
 ## Configuration
 
