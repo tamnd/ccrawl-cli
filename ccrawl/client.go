@@ -4,20 +4,26 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 // HTTPClient is a polite, retrying HTTP client for Common Crawl. It rate-limits
-// requests, retries on 403/429/5xx with linear backoff, and supports byte-range
-// requests for single-record retrieval.
+// requests, retries on 403/429/5xx with exponential backoff (honoring a
+// Retry-After header when the CDN sends one), and supports byte-range requests
+// for single-record retrieval.
 type HTTPClient struct {
-	c         *http.Client
-	download  *http.Client // no timeout, for large file bodies
-	retries   int
-	delay     time.Duration
-	userAgent string
+	c          *http.Client
+	download   *http.Client // no timeout, for large file bodies
+	retries    int
+	delay      time.Duration
+	backoff    time.Duration // base wait before the first retry
+	backoffMax time.Duration // ceiling for a single retry wait
+	userAgent  string
 
 	mu   sync.Mutex
 	next time.Time // earliest time the next request may start
@@ -29,13 +35,22 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 	if ua == "" {
 		ua = UserAgent
 	}
-	retries := max(cfg.Retries, 0)
+	backoff := cfg.Backoff
+	if backoff <= 0 {
+		backoff = DefaultBackoff
+	}
+	backoffMax := cfg.BackoffMax
+	if backoffMax <= 0 {
+		backoffMax = DefaultBackoffMax
+	}
 	return &HTTPClient{
-		c:         &http.Client{Timeout: cfg.Timeout},
-		download:  &http.Client{},
-		retries:   retries,
-		delay:     cfg.Delay,
-		userAgent: ua,
+		c:          &http.Client{Timeout: cfg.Timeout},
+		download:   &http.Client{},
+		retries:    max(cfg.Retries, 0),
+		delay:      cfg.Delay,
+		backoff:    backoff,
+		backoffMax: backoffMax,
+		userAgent:  ua,
 	}
 }
 
@@ -98,13 +113,14 @@ func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error)
 
 func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, rangeHdr string) (*http.Response, error) {
 	var last error
-	for i := 0; i <= h.retries; i++ {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(h.delay * time.Duration(i*i+1)):
+	var retryAfter time.Duration // server-advised wait carried from the prior attempt
+	var serverWait bool          // whether the prior attempt sent a Retry-After
+	for attempt := 0; attempt <= h.retries; attempt++ {
+		if attempt > 0 {
+			if err := h.sleepBackoff(ctx, attempt, retryAfter, serverWait); err != nil {
+				return nil, err
 			}
+			retryAfter, serverWait = 0, false
 		}
 		if err := h.throttle(ctx); err != nil {
 			return nil, err
@@ -127,14 +143,9 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			last = err
 			continue
 		}
-		// 403 is treated as retryable. Common Crawl's S3/CloudFront fronting
-		// returns it as a transient throttle or availability signal under load,
-		// not only as a hard "forbidden", so a genuinely forbidden URL will burn
-		// all attempts before failing. That is the right trade for a polite bulk
-		// client and matches what cdx_toolkit does.
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode == http.StatusForbidden ||
-			resp.StatusCode >= 500 {
+		if retryableStatus(resp.StatusCode) {
+			// A 503/429 commonly carries Retry-After; honor it on the next loop.
+			retryAfter, serverWait = parseRetryAfter(resp.Header.Get("Retry-After"))
 			_ = resp.Body.Close()
 			last = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 			continue
@@ -142,4 +153,71 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 		return resp, nil
 	}
 	return nil, fmt.Errorf("all %d attempts failed for %s: %w", h.retries+1, url, last)
+}
+
+// retryableStatus reports whether an HTTP status is worth retrying. 403 is
+// included because Common Crawl's S3/CloudFront fronting returns it as a
+// transient throttle or availability signal under load, not only as a hard
+// "forbidden", so a genuinely forbidden URL burns all attempts before failing.
+// That is the right trade for a polite bulk client and matches cdx_toolkit.
+func retryableStatus(code int) bool {
+	return code == http.StatusForbidden ||
+		code == http.StatusTooManyRequests ||
+		code >= 500
+}
+
+// sleepBackoff waits before the given retry attempt (1-based), returning early
+// if the context is cancelled.
+func (h *HTTPClient) sleepBackoff(ctx context.Context, attempt int, retryAfter time.Duration, serverWait bool) error {
+	wait := h.backoffDelay(attempt, retryAfter, serverWait)
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// backoffDelay computes the wait before a retry. A server Retry-After wins when
+// present (serverWait), clamped to [0, backoffMax] so the server can ask us to
+// retry immediately but a huge value cannot stall a run. Otherwise it is
+// exponential: the base doubles each attempt up to backoffMax, then equal
+// jitter splits the window into a fixed half (a guaranteed minimum wait) plus a
+// random half, so many concurrent workers do not retry in lockstep.
+func (h *HTTPClient) backoffDelay(attempt int, retryAfter time.Duration, serverWait bool) time.Duration {
+	if serverWait {
+		return min(max(retryAfter, 0), h.backoffMax)
+	}
+	window := h.backoff
+	for i := 1; i < attempt && window < h.backoffMax; i++ {
+		window *= 2
+	}
+	window = min(window, h.backoffMax)
+	half := window / 2
+	return half + time.Duration(rand.Int63n(int64(half)+1))
+}
+
+// parseRetryAfter parses an HTTP Retry-After header, which is either an integer
+// number of seconds or an HTTP-date. It returns the delay and whether the header
+// was present and valid.
+func parseRetryAfter(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(time.Until(t), 0), true
+	}
+	return 0, false
 }

@@ -37,6 +37,8 @@ func runConfigShow(ctx context.Context, _ []string) error {
 		{"rate", cfg.Delay.String()},
 		{"timeout", cfg.Timeout.String()},
 		{"retries", itoa(cfg.Retries)},
+		{"backoff", cfg.Backoff.String()},
+		{"backoff_max", cfg.BackoffMax.String()},
 		{"user_agent", cfg.UserAgent},
 		{"duckdb", boolWord(ccrawl.DuckDBAvailable())},
 	}
