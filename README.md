@@ -241,6 +241,12 @@ Useful global flags (all have sensible defaults):
 | `--rate` | Minimum delay between requests, to stay polite |
 | `--no-cache` | Bypass the on-disk cache |
 
+ccrawl rate-limits itself and retries 403, 429, and 5xx responses with
+exponential backoff, honoring a `Retry-After` header when the CDN sends one. If
+requests keep failing, check the [Common Crawl status page](https://status.commoncrawl.org)
+to see whether the data service is having problems before digging into your own
+setup.
+
 ## Development
 
 ```sh
