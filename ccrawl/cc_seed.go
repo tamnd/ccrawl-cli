@@ -41,6 +41,11 @@ type CCSeedOptions struct {
 	Workers   int   // concurrent index files in flight
 	Whole     bool  // download whole shard then read locally, instead of ranged column reads
 
+	// FileRetries bounds how many extra passes are made over index files that failed
+	// their first read. A whole pull of ~300 files will hit an occasional 503 or torn
+	// range read; a failed file is retried into the same shard set (0 = default 2).
+	FileRetries int
+
 	// Progress, if set, is called after each index file finishes with the running totals.
 	Progress func(CCSeedProgress)
 }
@@ -51,13 +56,15 @@ type CCSeedProgress struct {
 	FilesTotal   int
 	URLs         int64
 	BytesFetched int64
+	Failed       int
 	Elapsed      time.Duration
 }
 
 // CCSeedStats is the final outcome of a run.
 type CCSeedStats struct {
 	Crawl        string
-	Files        int
+	Files        int      // index files read to completion
+	FailedFiles  []string // index files still failing after all retries (empty on a clean run)
 	Scanned      int64
 	Written      int64
 	BytesFetched int64
@@ -120,57 +127,79 @@ func BuildCCSeed(ctx context.Context, h *HTTPClient, cache *Cache, src Source, o
 		written   atomic.Int64 // live global count, incremented per routed url
 		fetched   atomic.Int64
 		filesDone atomic.Int64
-		firstErr  error
-		errOnce   sync.Once
 	)
 	limitHit := func() bool { return opt.Limit > 0 && written.Load() >= opt.Limit }
 
-	work := make(chan string)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for u := range work {
-				if ctx.Err() != nil || limitHit() {
-					continue
+	// processFiles runs one worker per file over the given list and returns the
+	// files that failed. A single file's failure is never fatal: over a 300-file,
+	// half-hour pull a lone 503 or a torn range read must not abort the whole run,
+	// so the file is recorded and the rest keep going. Re-running a failed file is
+	// safe because BulkLoad dedupes on ingest, so a file that half-routed before it
+	// tore leaves duplicates the store folds away, not corruption.
+	processFiles := func(files []string) []string {
+		var failMu sync.Mutex
+		var failed []string
+		work := make(chan string)
+		var wg sync.WaitGroup
+		for range workers {
+			wg.Go(func() {
+				for u := range work {
+					if ctx.Err() != nil || limitHit() {
+						continue
+					}
+					sc, bytes, ferr := ingestIndexFile(ctx, h, set, u, opt.Whole, opt.OutDir, &written, opt.Limit)
+					scanned.Add(sc)
+					fetched.Add(bytes)
+					if ferr != nil && !errors.Is(ferr, context.Canceled) && !errors.Is(ferr, errSeedLimit) {
+						failMu.Lock()
+						failed = append(failed, u)
+						failMu.Unlock()
+					}
+					filesDone.Add(1)
+					if opt.Progress != nil {
+						opt.Progress(CCSeedProgress{
+							FilesDone:    int(filesDone.Load()),
+							FilesTotal:   len(urls),
+							URLs:         written.Load(),
+							BytesFetched: fetched.Load(),
+							Failed:       len(failed),
+							Elapsed:      time.Since(start),
+						})
+					}
+					if limitHit() {
+						cancel()
+					}
 				}
-				sc, bytes, ferr := ingestIndexFile(ctx, h, set, u, opt.Whole, opt.OutDir, &written, opt.Limit)
-				scanned.Add(sc)
-				fetched.Add(bytes)
-				if ferr != nil && !errors.Is(ferr, context.Canceled) && !errors.Is(ferr, errSeedLimit) {
-					errOnce.Do(func() { firstErr = fmt.Errorf("index file %s: %w", u, ferr) })
-					cancel()
-				}
-				filesDone.Add(1)
-				if opt.Progress != nil {
-					opt.Progress(CCSeedProgress{
-						FilesDone:    int(filesDone.Load()),
-						FilesTotal:   len(urls),
-						URLs:         written.Load(),
-						BytesFetched: fetched.Load(),
-						Elapsed:      time.Since(start),
-					})
-				}
-				if limitHit() {
-					cancel()
-				}
-			}
-		})
-	}
-	for _, u := range urls {
-		if ctx.Err() != nil || limitHit() {
-			break
+			})
 		}
-		work <- u
+		for _, u := range files {
+			if ctx.Err() != nil || limitHit() {
+				break
+			}
+			work <- u
+		}
+		close(work)
+		wg.Wait()
+		return failed
 	}
-	close(work)
-	wg.Wait()
+
+	failed := processFiles(urls)
+
+	// Retry the failed files a bounded number of times. filesDone is not rolled
+	// back for a retry, so it can exceed len(urls); the honest counts are Scanned,
+	// Written, and the final Failed list. A limit run skips retries because it may
+	// have stopped mid-list on purpose.
+	retries := opt.FileRetries
+	if retries <= 0 {
+		retries = 2
+	}
+	for r := 0; r < retries && len(failed) > 0 && !limitHit() && ctx.Err() == nil; r++ {
+		failed = processFiles(failed)
+	}
 
 	man, cerr := set.Close()
-	if cerr != nil && firstErr == nil {
-		firstErr = cerr
-	}
-	if firstErr != nil {
-		return CCSeedStats{}, firstErr
+	if cerr != nil {
+		return CCSeedStats{}, cerr
 	}
 
 	var seedBytes int64
@@ -183,7 +212,8 @@ func BuildCCSeed(ctx context.Context, h *HTTPClient, cache *Cache, src Source, o
 	}
 	return CCSeedStats{
 		Crawl:        crawlID,
-		Files:        int(filesDone.Load()),
+		Files:        len(urls) - len(failed),
+		FailedFiles:  failed,
 		Scanned:      scanned.Load(),
 		Written:      written.Load(),
 		BytesFetched: fetched.Load(),

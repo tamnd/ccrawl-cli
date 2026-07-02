@@ -29,6 +29,7 @@ type seedCCCmd struct {
 	maxFiles  int
 	whole     bool
 	polite    bool
+	retries   int
 }
 
 func newSeedCCCmd() kit.Command {
@@ -81,6 +82,7 @@ func (v *seedCCCmd) flags(f *kit.FlagSet) {
 	f.IntVar(&v.maxFiles, "max-files", 0, "process at most this many index files (0 = all)")
 	f.BoolVar(&v.whole, "whole", false, "download each index file whole, then read locally")
 	f.BoolVar(&v.polite, "polite", false, "keep the configured --rate delay (default: no throttle)")
+	f.IntVar(&v.retries, "file-retries", 2, "extra passes over index files that failed their first read")
 }
 
 func (v *seedCCCmd) run(ctx context.Context, _ []string) error {
@@ -112,21 +114,26 @@ func (v *seedCCCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	opt := ccrawl.CCSeedOptions{
-		Crawl:     v.crawl,
-		Subset:    v.subset,
-		Shards:    v.shards,
-		BlockSize: v.blockSize,
-		Codec:     codec,
-		OutDir:    v.out,
-		Limit:     v.limit,
-		SkipFiles: v.skipFiles,
-		MaxFiles:  v.maxFiles,
-		Workers:   v.workers,
-		Whole:     v.whole,
+		Crawl:       v.crawl,
+		Subset:      v.subset,
+		Shards:      v.shards,
+		BlockSize:   v.blockSize,
+		Codec:       codec,
+		OutDir:      v.out,
+		Limit:       v.limit,
+		SkipFiles:   v.skipFiles,
+		MaxFiles:    v.maxFiles,
+		Workers:     v.workers,
+		Whole:       v.whole,
+		FileRetries: v.retries,
 		Progress: func(p ccrawl.CCSeedProgress) {
 			rate := float64(p.URLs) / p.Elapsed.Seconds()
-			logf("file %d/%d: %s URLs, %s fetched, %.0f URLs/s",
-				p.FilesDone, p.FilesTotal, humanCount(p.URLs), humanBytes(p.BytesFetched), rate)
+			failed := ""
+			if p.Failed > 0 {
+				failed = fmt.Sprintf(", %d failed", p.Failed)
+			}
+			logf("file %d/%d: %s URLs, %s fetched, %.0f URLs/s%s",
+				p.FilesDone, p.FilesTotal, humanCount(p.URLs), humanBytes(p.BytesFetched), rate, failed)
 		},
 	}
 
@@ -140,6 +147,12 @@ func (v *seedCCCmd) run(ctx context.Context, _ []string) error {
 
 	logf("done: crawl=%s files=%d scanned=%s URLs=%s shards=%d",
 		st.Crawl, st.Files, humanCount(st.Scanned), humanCount(st.Written), st.Shards)
+	if len(st.FailedFiles) > 0 {
+		logf("warning: %d index files still failed after retries (seed is short by those files):", len(st.FailedFiles))
+		for _, f := range st.FailedFiles {
+			logf("  failed: %s", f)
+		}
+	}
 	logf("network: fetched %s of index; seed on disk: %s in %s",
 		humanBytes(st.BytesFetched), humanBytes(st.SeedBytes), st.Elapsed.Round(time.Second))
 	if st.Elapsed.Seconds() > 0 {
