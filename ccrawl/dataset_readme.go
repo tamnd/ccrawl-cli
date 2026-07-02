@@ -134,10 +134,10 @@ The text comes from the Common Crawl %s archives for crawl `+"`%s`"+`. The downl
 		strings.ToUpper(subset), kind.contains, // what is it (2)
 		s.CrawlID, fmtInt(s.Rows), fmtInt(int64(s.TotalFiles)), partial, "", // counts
 		s.CrawlID, exampleFileName(subset), // layout tree
-		schemaTable(subset),  // schema
-		s.Repo, subset,       // datasets load
-		s.Repo, s.CrawlID,    // duckdb
-		s.Repo, s.CrawlID,    // pull
+		schemaTable(subset), // schema
+		s.Repo, subset,      // datasets load
+		s.Repo, s.CrawlID, // duckdb
+		s.Repo, s.CrawlID, // pull
 		strings.ToUpper(subset), s.CrawlID, // provenance
 	)
 
