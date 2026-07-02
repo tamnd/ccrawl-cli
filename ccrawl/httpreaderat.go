@@ -26,9 +26,9 @@ type httpReaderAt struct {
 	block int64
 	cap   int // max cached blocks
 
-	mu     sync.Mutex
-	cache  map[int64][]byte // block index -> bytes
-	order  []int64          // LRU order, oldest first
+	mu      sync.Mutex
+	cache   map[int64][]byte // block index -> bytes
+	order   []int64          // LRU order, oldest first
 	fetched atomic.Int64
 }
 
