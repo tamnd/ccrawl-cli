@@ -19,6 +19,7 @@ func registerEscapeHatches(app *kit.App) {
 
 	registerSeed(app)
 	registerMarkdown(app)
+	registerDataset(app)
 
 	app.AddCommand(newGetCmd())
 	app.AddCommand(newFetchCmd())
