@@ -20,6 +20,8 @@ import (
 func registerSeed(app *kit.App) {
 	app.CommandGroup("seed", "Export a recrawl seed from a CDX URL-index shard")
 	app.AddCommandUnder("seed", newSeedExportCmd())
+	app.AddCommandUnder("seed", newSeedCCCmd())
+	app.AddCommandUnder("seed", newSeedPublishCmd())
 }
 
 // seedExportCmd holds the flags for `ccrawl seed export`.

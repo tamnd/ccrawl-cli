@@ -83,6 +83,16 @@ func (p *ParquetWriter[T]) Write(row T) error {
 	return err
 }
 
+// WriteRows appends a batch of rows in one call. Batching amortizes the
+// per-call overhead of Write, which matters when a shard holds millions of
+// rows: transcoding a full-crawl seed touches billions of URLs, and a row at a
+// time is dominated by the generic writer's per-call bookkeeping.
+func (p *ParquetWriter[T]) WriteRows(rows []T) error {
+	n, err := p.w.Write(rows)
+	p.n += int64(n)
+	return err
+}
+
 // Rows returns the number of rows written.
 func (p *ParquetWriter[T]) Rows() int64 { return p.n }
 

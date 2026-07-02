@@ -98,6 +98,30 @@ func (h *HTTPClient) GetDownload(ctx context.Context, url string) (*http.Respons
 	return h.doWith(ctx, h.download, url, "")
 }
 
+// ContentLength returns the total size of url. It sends a one-byte range request
+// and reads the total out of the Content-Range header, which every Common Crawl
+// data host answers, falling back to a full-response Content-Length when the host
+// ignores the range. It is how a remote Parquet reader learns the file size before
+// opening the footer.
+func (h *HTTPClient) ContentLength(ctx context.Context, url string) (int64, error) {
+	resp, err := h.GetRange(ctx, url, 0, 1)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if cr := resp.Header.Get("Content-Range"); cr != "" {
+		if i := strings.LastIndex(cr, "/"); i >= 0 && i+1 < len(cr) {
+			if total, perr := strconv.ParseInt(strings.TrimSpace(cr[i+1:]), 10, 64); perr == nil && total > 0 {
+				return total, nil
+			}
+		}
+	}
+	if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
+		return resp.ContentLength, nil
+	}
+	return 0, fmt.Errorf("cannot determine size of %s (status %d)", url, resp.StatusCode)
+}
+
 // FetchBytes fetches url and returns the whole body.
 func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error) {
 	resp, err := h.Get(ctx, url)

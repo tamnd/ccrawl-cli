@@ -8,6 +8,7 @@ require (
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/tamnd/ami v0.3.0
 	github.com/tamnd/h2m v0.2.1
+	github.com/tamnd/meguri v0.1.1-0.20260702133838-b5c9d63aa7bf
 	github.com/tamnd/yomi v0.3.1
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
@@ -20,6 +21,7 @@ require (
 	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/fang v1.0.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/pie/v2 v2.9.0 // indirect
