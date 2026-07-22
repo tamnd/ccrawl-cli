@@ -1,6 +1,7 @@
 package ccrawl
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +241,32 @@ func TestHFResolveURL(t *testing.T) {
 	want := "https://huggingface.co/datasets/open-index/ccrawl-urls/resolve/main/data/CC-MAIN-2026-25/part-00042.parquet"
 	if got != want {
 		t.Errorf("hfResolveURL = %q want %q", got, want)
+	}
+}
+
+func TestIncompleteAction(t *testing.T) {
+	cases := []struct {
+		name      string
+		doCommit  bool
+		newly     int
+		remaining int
+		wantErr   bool
+	}{
+		{"whole crawl", true, 300, 0, false},
+		{"progress with gaps retries", true, 128, 5, true},
+		{"no progress with gaps gives up", true, 0, 5, false},
+		{"dry run never retries", false, 0, 5, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := incompleteAction(tc.doCommit, tc.newly, tc.remaining)
+			if tc.wantErr && !errors.Is(err, ErrIncomplete) {
+				t.Errorf("want ErrIncomplete, got %v", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("want nil, got %v", err)
+			}
+		})
 	}
 }
 

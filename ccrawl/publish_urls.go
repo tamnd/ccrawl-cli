@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -105,27 +106,57 @@ func PublishURLs(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFClient,
 	clock := newStallClock(o.MaxStall, cancel)
 	go clock.watch(runCtx)
 
+	var totalNew, totalRemaining int
 	for _, crawl := range o.CrawlIDs {
 		if err := runCtx.Err(); err != nil {
 			break
 		}
-		if err := publishURLCrawl(runCtx, h, cache, hf, o, crawl, statsPath, progressPath, clock); err != nil {
+		newly, remaining, err := publishURLCrawl(runCtx, h, cache, hf, o, crawl, statsPath, progressPath, clock)
+		if err != nil {
 			if clock.stalled() {
 				return ErrCommitStall
 			}
 			return fmt.Errorf("crawl %s: %w", crawl, err)
 		}
+		totalNew += newly
+		totalRemaining += remaining
 	}
 	if clock.stalled() {
 		return ErrCommitStall
 	}
+
+	// Some parts were skipped this run, so the dataset is not yet whole. If the run
+	// still made progress, ask for a supervised retry: the resume will fetch only
+	// the missing parts. If it made none, the remaining parts are persistently
+	// failing, so stop rather than spin the supervisor and surface them loudly.
+	if o.DoCommit && totalRemaining > 0 {
+		if totalNew > 0 {
+			o.Logf("incomplete: %d shard(s) still missing, %d committed this run; exiting for a supervised retry", totalRemaining, totalNew)
+		} else {
+			o.Logf("incomplete: %d shard(s) still missing and none committed this run; not retrying. Re-run `ccrawl urls publish` to fill the gap.", totalRemaining)
+		}
+	}
+	return incompleteAction(o.DoCommit, totalNew, totalRemaining)
+}
+
+// incompleteAction decides whether a finished run should ask the supervisor for a
+// retry. It returns ErrIncomplete only when parts are still missing and the run
+// committed at least one shard, so a run that makes zero progress against a dead
+// source stops instead of looping forever.
+func incompleteAction(doCommit bool, totalNew, totalRemaining int) error {
+	if doCommit && totalRemaining > 0 && totalNew > 0 {
+		return ErrIncomplete
+	}
 	return nil
 }
 
-func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFClient, o URLPublishOptions, crawl, statsPath, progressPath string, clock *stallClock) error {
+// publishURLCrawl publishes one crawl and reports how many shards it newly
+// committed this run and how many are still missing from the hub, so the caller
+// can decide whether the crawl is whole or needs a supervised retry.
+func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFClient, o URLPublishOptions, crawl, statsPath, progressPath string, clock *stallClock) (newly, remaining int, err error) {
 	urls, err := ColumnarParquetURLs(ctx, h, cache, crawl, o.Subset, o.Source)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	total := len(urls)
 
@@ -133,12 +164,12 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 	repoPaths := make([]string, 0, total)
 	crawlDir := filepath.Join(o.StageDir, "data", crawl)
 	if err := os.MkdirAll(crawlDir, 0o755); err != nil {
-		return err
+		return 0, 0, err
 	}
 	for _, u := range urls {
 		idx, ok := partIndexFromURL(u)
 		if !ok {
-			return fmt.Errorf("cannot parse part index from %q", u)
+			return 0, 0, fmt.Errorf("cannot parse part index from %q", u)
 		}
 		repoPath := fmt.Sprintf("data/%s/part-%05d.parquet", crawl, idx)
 		repoPaths = append(repoPaths, repoPath)
@@ -155,7 +186,7 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 	if o.DoCommit {
 		done, err = hf.PathsExist(ctx, o.Repo, repoPaths)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 	}
 	work := make([]urlPartJob, 0, total)
@@ -194,12 +225,15 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 		return ops, err
 	}
 
+	skipped := 0
 	if len(work) > 0 {
-		if err := runURLWorkers(ctx, h, o, work, c); err != nil {
-			return err
+		s, err := runURLWorkers(ctx, h, o, work, c)
+		if err != nil {
+			return 0, 0, err
 		}
+		skipped = s
 		if err := c.flush(ctx); err != nil {
-			return err
+			return 0, 0, err
 		}
 	}
 
@@ -208,20 +242,32 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 	// resume where every shard was already on the hub, so the card still reflects
 	// the crawl.
 	if c.flushes == 0 {
-		return finalizeURLCrawl(ctx, hf, o, crawl, total, c, statsPath, base)
+		if err := finalizeURLCrawl(ctx, hf, o, crawl, total, c, statsPath, base); err != nil {
+			return 0, 0, err
+		}
 	}
-	return nil
+
+	// Only a committing run can reason about hub coverage. Everything in work that
+	// did not skip was committed, so the still-missing count is exactly the skips.
+	if o.DoCommit {
+		newly = len(work) - skipped
+		remaining = skipped
+	}
+	return newly, remaining, nil
 }
 
 // runURLWorkers projects the work list concurrently and feeds finished shards to
-// the single committer running on this goroutine.
-func runURLWorkers(ctx context.Context, h *HTTPClient, o URLPublishOptions, work []urlPartJob, c *committer) error {
+// the single committer running on this goroutine. It returns the number of parts
+// that were skipped because their projection failed (a transient download error,
+// say), so the caller can tell whether the crawl is still whole.
+func runURLWorkers(ctx context.Context, h *HTTPClient, o URLPublishOptions, work []urlPartJob, c *committer) (int, error) {
 	jobs := make(chan urlPartJob)
 	shards := make(chan shard)
 
 	var wg sync.WaitGroup
 	var once sync.Once
 	var firstErr error
+	var skipped atomic.Int64
 	fail := func(err error) {
 		once.Do(func() { firstErr = err })
 	}
@@ -241,9 +287,11 @@ func runURLWorkers(ctx context.Context, h *HTTPClient, o URLPublishOptions, work
 				rows, bytes, err := projectURLPart(ctx, h, j, o.Whole)
 				if err != nil {
 					// A single bad part is not fatal: it is retried on the next
-					// run because its target still does not exist on the hub.
+					// run because its target still does not exist on the hub. Count
+					// it so the caller knows the crawl is not yet whole.
 					o.Logf("skip %s: %v", j.repoPath, err)
 					_ = os.Remove(j.tmpPath)
+					skipped.Add(1)
 					continue
 				}
 				select {
@@ -282,7 +330,7 @@ func runURLWorkers(ctx context.Context, h *HTTPClient, o URLPublishOptions, work
 			break
 		}
 	}
-	return firstErr
+	return int(skipped.Load()), firstErr
 }
 
 // projectURLPart reads one columnar part, projecting only the URLRow columns,

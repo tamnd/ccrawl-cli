@@ -116,10 +116,11 @@ func (v *urlsPublishCmd) run(ctx context.Context, args []string) error {
 		MaxStall:    v.maxStall,
 		Logf:        func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
-	if errors.Is(err, ccrawl.ErrCommitStall) {
+	if errors.Is(err, ccrawl.ErrCommitStall) || errors.Is(err, ccrawl.ErrIncomplete) {
 		// The kit framework owns exit codes 0 to 8, so signal a temp-fail
-		// restart to the supervisor directly.
-		fmt.Fprintln(os.Stderr, "commit stall: exiting 75 for supervised restart")
+		// restart to the supervisor directly. A stall or a still-incomplete crawl
+		// both want the same remote-truth resume on the next run.
+		fmt.Fprintln(os.Stderr, "exiting 75 for supervised restart")
 		os.Exit(75)
 	}
 	if err != nil {

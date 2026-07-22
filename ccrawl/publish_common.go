@@ -19,6 +19,14 @@ import (
 // supervisor restarts the command and the remote-truth resume picks up cleanly.
 var ErrCommitStall = errors.New("commit stall: no forward progress within the stall window")
 
+// ErrIncomplete is returned when a run finishes with parts still missing from the
+// hub but made forward progress this pass, for example when transient download
+// timeouts skipped a few parts. The CLI maps it to exit code 75 so the supervisor
+// re-runs and the remote-truth resume retries only the missing parts, until the
+// unit is whole. A run that makes zero progress does not return this, so a truly
+// dead source cannot spin the supervisor forever.
+var ErrIncomplete = errors.New("incomplete: parts still missing from the hub after a run that made progress")
+
 // DefaultMinFreeGB is the free-disk floor that gates new downloads.
 const DefaultMinFreeGB = 30
 
