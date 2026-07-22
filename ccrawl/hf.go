@@ -137,6 +137,43 @@ func (c *HFClient) PathsExist(ctx context.Context, repoID string, paths []string
 	return existing, nil
 }
 
+// PathsInfo returns the byte size of each given path that exists in the repo at
+// "main". Missing paths are simply absent from the map. It reads the same
+// paths-info endpoint as PathsExist, keeping the exact on-hub size the API
+// reports so a caller can total bytes without downloading anything.
+func (c *HFClient) PathsInfo(ctx context.Context, repoID string, paths []string) (map[string]int64, error) {
+	sizes := make(map[string]int64)
+	for start := 0; start < len(paths); start += 100 {
+		end := start + 100
+		if end > len(paths) {
+			end = len(paths)
+		}
+		body, _ := json.Marshal(map[string]interface{}{"paths": paths[start:end]})
+		url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/paths-info/main", repoID)
+		req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("paths-info: %w", err)
+		}
+		if resp.StatusCode == 404 {
+			_ = resp.Body.Close()
+			continue
+		}
+		var infos []struct {
+			Path string `json:"path"`
+			Size int64  `json:"size"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&infos)
+		_ = resp.Body.Close()
+		for _, info := range infos {
+			sizes[info.Path] = info.Size
+		}
+	}
+	return sizes, nil
+}
+
 // CreateCommit uploads files to HuggingFace via uv+Python and returns the commit URL.
 // The Python helper (hf_commit.py) is extracted to ~/.cache/ccrawl/ on first use.
 func (c *HFClient) CreateCommit(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {

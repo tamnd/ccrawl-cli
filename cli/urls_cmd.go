@@ -21,6 +21,7 @@ const defaultURLsRepo = "open-index/ccrawl-urls"
 func registerURLs(app *kit.App) {
 	app.CommandGroup("urls", "Publish the Common Crawl URL index to HuggingFace")
 	app.AddCommandUnder("urls", newURLsPublishCmd())
+	app.AddCommandUnder("urls", newURLsRecountCmd())
 }
 
 type urlsPublishCmd struct {
@@ -128,6 +129,71 @@ func (v *urlsPublishCmd) run(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "dataset: https://huggingface.co/datasets/%s\n", v.repo)
 	}
 	return nil
+}
+
+type urlsRecountCmd struct {
+	repo    string
+	workers int
+	noPush  bool
+}
+
+func newURLsRecountCmd() kit.Command {
+	v := &urlsRecountCmd{}
+	return kit.Command{
+		Use:   "recount",
+		Short: "Recompute a crawl's URL and byte totals from the shards already on the hub",
+		Long: `Recount reads the footer of every published shard for the selected crawls and
+rewrites the ledger row and dataset card with exact URL and byte totals. It is a
+repair tool: a normal run keeps the totals current as it publishes, but totals
+can drift when shards were committed before any ledger existed on the hub, for
+example the first batches of a crawl. Only stats.csv and README.md are rewritten;
+the shard files are never touched.
+
+Footers are fetched with small range requests, so this is cheap even over a full
+crawl. Pick the crawls with the global -c flag.
+
+  ccrawl urls recount -c CC-MAIN-2026-25
+  ccrawl urls recount -c CC-MAIN-2026-25 --no-push   # report the totals, commit nothing`,
+		Args: kit.NoArgs,
+		Flags: func(f *kit.FlagSet) {
+			f.StringVar(&v.repo, "repo", envOr("CCRAWL_URLS_REPO", defaultURLsRepo), "HuggingFace dataset repo (org/name)")
+			f.IntVar(&v.workers, "workers", 0, "footer-read workers (0 picks a default from CPU count)")
+			f.BoolVar(&v.noPush, "no-push", false, "read and report totals but skip the commit")
+		},
+		Run: v.run,
+	}
+}
+
+func (v *urlsRecountCmd) run(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	if v.repo == "" {
+		return usageErr("--repo is required (or set CCRAWL_URLS_REPO)")
+	}
+
+	crawls, err := app.AllCrawls(ctx)
+	if err != nil {
+		return err
+	}
+	if len(crawls) == 0 {
+		return noResults("no crawls resolved from -c")
+	}
+
+	push := !v.noPush && !app.dryRun
+	hf := ccrawl.NewHFClient("")
+	if push && !hf.Valid() {
+		return errs.New(errs.KindNeedAuth, "HF_TOKEN (or HUGGINGFACE_TOKEN) is not set; set it or pass --no-push")
+	}
+
+	stageDir := filepath.Join(app.Cfg.DataDir, "publish", "urls")
+	return ccrawl.RecountURLs(ctx, app.HTTP, app.Cache, hf, ccrawl.URLPublishOptions{
+		Repo:     v.repo,
+		CrawlIDs: crawls,
+		Source:   app.Cfg.Source,
+		StageDir: stageDir,
+		Workers:  v.workers,
+		DoCommit: push,
+		Logf:     func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+	})
 }
 
 // envOr returns the environment value for key, or def when it is unset or empty.

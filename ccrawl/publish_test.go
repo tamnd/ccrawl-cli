@@ -235,6 +235,14 @@ func TestRefreshDomainCardIncremental(t *testing.T) {
 	}
 }
 
+func TestHFResolveURL(t *testing.T) {
+	got := hfResolveURL("open-index/ccrawl-urls", "data/CC-MAIN-2026-25/part-00042.parquet")
+	want := "https://huggingface.co/datasets/open-index/ccrawl-urls/resolve/main/data/CC-MAIN-2026-25/part-00042.parquet"
+	if got != want {
+		t.Errorf("hfResolveURL = %q want %q", got, want)
+	}
+}
+
 func mustContain(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
