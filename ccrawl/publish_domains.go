@@ -19,6 +19,7 @@ type DomainPublishOptions struct {
 	Graph       WebGraph // web-graph release to publish
 	ShardRows   int      // rows per output shard
 	StageDir    string   // local staging root
+	Workers     int      // footer-read workers for recount (0 picks a default)
 	CommitEvery int      // shards per commit
 	Private     bool     // create the repo private
 	Keep        bool     // keep local shards after commit
