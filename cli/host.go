@@ -18,7 +18,6 @@ func registerHost(app *kit.App) {
 	registerHostDegrees(app)
 	registerHostCDX(app)
 	app.AddCommandUnder("host", newHostEnrichCmd())
-	app.AddCommandUnder("host", newHostDatasetCmd())
 }
 
 // ── host top ──────────────────────────────────────────────────────────────────

@@ -270,6 +270,8 @@ Useful global flags (all have sensible defaults):
 | `columnar` | Query the columnar Parquet index (alias `table`, `athena`) |
 | `news` | Work with the continuous CC-NEWS dataset |
 | `rank` | Look up host and domain ranks from the web graph |
+| `urls` | Publish the Common Crawl URL index to a HuggingFace dataset |
+| `domains` | Publish the Common Crawl domain ranks to a HuggingFace dataset |
 | `db` | Build and query a local DuckDB database |
 | `stats` | Show the shape of a crawl: file counts per archive kind |
 | `config` | Show resolved configuration and data paths |
