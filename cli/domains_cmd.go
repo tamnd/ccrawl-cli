@@ -48,8 +48,10 @@ with the rank order preserved: part-000 holds the top-ranked domains. The only
 change to the data is un-reversing the source's host key into a plain domain.
 
 The run is idempotent: a release already on the hub is left alone, and each
-local shard is deleted right after it commits. By default it publishes the
-latest release; pass --graph to pick one.
+local shard is deleted right after it commits. By default it discovers every
+published web-graph release and publishes the most recent one that actually has
+a domain-ranks table, since a release is listed before its domain ranks land;
+pass --graph to pick one.
 
 HF_TOKEN (or HUGGINGFACE_TOKEN) must be set to push. Examples:
 
@@ -64,7 +66,7 @@ HF_TOKEN (or HUGGINGFACE_TOKEN) must be set to push. Examples:
 
 func (v *domainsPublishCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
-	f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest)")
+	f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest with a domain-ranks table)")
 	f.IntVar(&v.shardRows, "shard-rows", ccrawl.DefaultShardRows, "rows per output shard")
 	f.IntVar(&v.commitEvery, "commit-every", 4, "shards per HuggingFace commit")
 	f.BoolVar(&v.private, "private", false, "create the dataset repo private")
@@ -84,9 +86,9 @@ func (v *domainsPublishCmd) run(ctx context.Context, args []string) error {
 	if v.graph != "" {
 		graph = ccrawl.WebGraph{ID: v.graph, BaseURL: ccrawl.WebGraphBaseURL(v.graph)}
 	} else {
-		g, err := ccrawl.LatestWebGraph(ctx, app.HTTP, app.Cache)
+		g, err := ccrawl.LatestDomainWebGraph(ctx, app.HTTP, app.Cache)
 		if err != nil {
-			return fmt.Errorf("resolve latest web graph (pass --graph): %w", err)
+			return fmt.Errorf("resolve latest web graph with domain ranks (pass --graph): %w", err)
 		}
 		graph = g
 	}
@@ -150,14 +152,15 @@ example the first batches of a release. Only stats.csv and README.md are
 rewritten; the shard files are never touched.
 
 Footers are fetched with small range requests, so this is cheap even over a whole
-release. By default it recounts the latest release; pass --graph to pick one.
+release. By default it recounts the latest release that has a domain-ranks
+table; pass --graph to pick one.
 
   ccrawl domains recount
   ccrawl domains recount --graph cc-main-2026-mar-apr-may --no-push   # report only`,
 		Args: kit.NoArgs,
 		Flags: func(f *kit.FlagSet) {
 			f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
-			f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest)")
+			f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest with a domain-ranks table)")
 			f.IntVar(&v.workers, "workers", 0, "footer-read workers (0 picks a default from CPU count)")
 			f.BoolVar(&v.noPush, "no-push", false, "read and report totals but skip the commit")
 		},
@@ -175,9 +178,9 @@ func (v *domainsRecountCmd) run(ctx context.Context, args []string) error {
 	if v.graph != "" {
 		graph = ccrawl.WebGraph{ID: v.graph, BaseURL: ccrawl.WebGraphBaseURL(v.graph)}
 	} else {
-		g, err := ccrawl.LatestWebGraph(ctx, app.HTTP, app.Cache)
+		g, err := ccrawl.LatestDomainWebGraph(ctx, app.HTTP, app.Cache)
 		if err != nil {
-			return fmt.Errorf("resolve latest web graph (pass --graph): %w", err)
+			return fmt.Errorf("resolve latest web graph with domain ranks (pass --graph): %w", err)
 		}
 		graph = g
 	}
