@@ -37,11 +37,18 @@ type DomainGraphStat struct {
 	SourceBytes  int64
 	ShardRows    int
 	CommittedAt  string
+	// Complete is true only once the release has been streamed to its end. The
+	// domain source is a single object with no shard count known ahead of time,
+	// so a partial run cannot be told from a finished one by shard presence alone.
+	// The resume path trusts this flag, not the mere existence of the last shard.
+	Complete bool
 }
 
+// complete is appended after committed_at so a stats.csv written before the flag
+// existed still parses: its rows lack the column and read as not complete.
 var domainStatsHeader = []string{
 	"graph", "shards", "domains", "parquet_bytes", "source_bytes",
-	"shard_rows", "committed_at",
+	"shard_rows", "committed_at", "complete",
 }
 
 // ReadURLStats reads the ccrawl-urls stats.csv ledger. A missing file is an empty
@@ -109,7 +116,8 @@ func ReadDomainStats(path string) ([]DomainGraphStat, error) {
 	}
 	var rows []DomainGraphStat
 	for _, r := range recs {
-		if len(r) < len(domainStatsHeader) {
+		// Seven fields is the pre-complete layout; the eighth is optional.
+		if len(r) < 7 {
 			continue
 		}
 		rows = append(rows, DomainGraphStat{
@@ -120,6 +128,7 @@ func ReadDomainStats(path string) ([]DomainGraphStat, error) {
 			SourceBytes:  atoi64(r[4]),
 			ShardRows:    atoi(r[5]),
 			CommittedAt:  r[6],
+			Complete:     len(r) >= 8 && r[7] == "true",
 		})
 	}
 	return rows, nil
@@ -138,6 +147,7 @@ func WriteDomainStats(path string, rows []DomainGraphStat) error {
 			strconv.FormatInt(r.SourceBytes, 10),
 			strconv.Itoa(r.ShardRows),
 			r.CommittedAt,
+			strconv.FormatBool(r.Complete),
 		})
 	}
 	return writeCSV(path, recs)

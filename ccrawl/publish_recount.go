@@ -175,7 +175,9 @@ func RecountDomainGraph(ctx context.Context, h *HTTPClient, hf *HFClient, o Doma
 		}
 	}
 
-	stat, ops, err := refreshDomainCard(o, graph, len(published), domains, bytes, srcBytes, statsPath)
+	// Recount only re-totals the shards on the hub; it cannot tell whether the
+	// release was streamed to its end, so it preserves the ledger's complete flag.
+	stat, ops, err := refreshDomainCard(o, graph, len(published), domains, bytes, srcBytes, base.Complete, statsPath)
 	if err != nil {
 		return err
 	}

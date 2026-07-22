@@ -76,8 +76,11 @@ func PublishDomains(ctx context.Context, h *HTTPClient, hf *HFClient, o DomainPu
 	// count ahead of the stream; the ledger is the resume signal.
 	if !o.DoCommit {
 		// Dry runs always re-stream.
-	} else if base := findDomainStat(statsPath, graph); base.Shards > 0 && base.CommittedAt != "" {
-		// Confirm the last shard is really on the hub before declaring done.
+	} else if base := findDomainStat(statsPath, graph); base.Complete && base.Shards > 0 {
+		// The release is done only when it was streamed to its end, recorded by the
+		// complete flag. A partial run leaves it false, so its last shard existing
+		// on the hub does not short-circuit the resume. Confirm the last shard is
+		// really present before trusting the flag.
 		last := fmt.Sprintf("data/%s/part-%03d.parquet", graph, base.Shards-1)
 		exist, err := hf.PathsExist(ctx, o.Repo, []string{last})
 		if err != nil {
@@ -137,13 +140,12 @@ func PublishDomains(ctx context.Context, h *HTTPClient, hf *HFClient, o DomainPu
 		return ErrCommitStall
 	}
 
-	// The per-batch sidecar already refreshed the card as shards landed. Only run
-	// a standalone finalize when nothing was committed this run, so the card still
-	// reflects the release.
-	if c.flushes == 0 {
-		return finalizeDomainGraph(runCtx, hf, o, graph, c, statsPath, srcBytes, domains)
-	}
-	return nil
+	// The stream drained to its end, so the release is now whole. The per-batch
+	// sidecar committed each batch with complete=false, since mid-stream there is
+	// no way to know the end is near; this final refresh flips the ledger to
+	// complete and commits the card so a later run can trust the resume short
+	// circuit. It runs even when shards landed this run, unlike the url path.
+	return finalizeDomainGraph(runCtx, hf, o, graph, c, statsPath, srcBytes, domains)
 }
 
 // streamDomainShards reads the gzipped ranks table line by line, writing a new
@@ -180,7 +182,8 @@ func streamDomainShards(ctx context.Context, h *HTTPClient, hf *HFClient, o Doma
 	// Now that the source size is known, refresh the ledger and card with every
 	// batch so the hub reflects current coverage as shards land.
 	c.sidecar = func(shards int, rows, bytes int64) ([]HFOperation, error) {
-		_, ops, err := refreshDomainCard(o, graph, shards, rows, bytes, srcBytes, statsPath)
+		// Mid-stream: the end is not yet known, so this batch is not complete.
+		_, ops, err := refreshDomainCard(o, graph, shards, rows, bytes, srcBytes, false, statsPath)
 		return ops, err
 	}
 
@@ -327,7 +330,7 @@ func parseDomainLine(line string) (DomainRow, bool) {
 // refreshDomainCard rewrites the release ledger row and the dataset card for the
 // given progress and returns the ops to commit them (stats.csv, README.md). It
 // backs both the per-batch sidecar refresh and the standalone finalize refresh.
-func refreshDomainCard(o DomainPublishOptions, graph string, shards int, domains, bytes, srcBytes int64, statsPath string) (DomainGraphStat, []HFOperation, error) {
+func refreshDomainCard(o DomainPublishOptions, graph string, shards int, domains, bytes, srcBytes int64, complete bool, statsPath string) (DomainGraphStat, []HFOperation, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	stat := DomainGraphStat{
 		Graph:        graph,
@@ -337,6 +340,7 @@ func refreshDomainCard(o DomainPublishOptions, graph string, shards int, domains
 		SourceBytes:  srcBytes,
 		ShardRows:    o.ShardRows,
 		CommittedAt:  now,
+		Complete:     complete,
 	}
 
 	ledger, err := ReadDomainStats(statsPath)
@@ -359,10 +363,10 @@ func refreshDomainCard(o DomainPublishOptions, graph string, shards int, domains
 }
 
 // finalizeDomainGraph refreshes the release ledger row and card and commits
-// them. The per-batch sidecar handles this as shards land, so finalize only runs
-// when a run committed nothing and the card still needs to reflect the release.
+// them, marking the release complete. It runs once the source has been streamed
+// to its end, so it is the point that flips the ledger's complete flag to true.
 func finalizeDomainGraph(ctx context.Context, hf *HFClient, o DomainPublishOptions, graph string, c *committer, statsPath string, srcBytes, domains int64) error {
-	stat, ops, err := refreshDomainCard(o, graph, c.committed, domains, c.bytes, srcBytes, statsPath)
+	stat, ops, err := refreshDomainCard(o, graph, c.committed, domains, c.bytes, srcBytes, true, statsPath)
 	if err != nil {
 		return err
 	}

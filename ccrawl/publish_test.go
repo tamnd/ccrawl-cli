@@ -214,12 +214,16 @@ func TestRefreshDomainCardIncremental(t *testing.T) {
 	statsPath := filepath.Join(dir, "stats.csv")
 	o := DomainPublishOptions{Repo: "open-index/ccrawl-domains", StageDir: dir, ShardRows: DefaultShardRows}
 
-	stat, ops, err := refreshDomainCard(o, "cc-main-2026-mar-apr-may", 4, 20_000_000, 1<<29, 1<<32, statsPath)
+	// Mid-stream batch: not complete, since the end of the source is unknown.
+	stat, ops, err := refreshDomainCard(o, "cc-main-2026-mar-apr-may", 4, 20_000_000, 1<<29, 1<<32, false, statsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stat.Shards != 4 || stat.Domains != 20_000_000 {
 		t.Fatalf("stat wrong: %+v", stat)
+	}
+	if stat.Complete {
+		t.Error("a mid-stream batch must not be marked complete")
 	}
 	if len(ops) != 2 || ops[0].PathInRepo != "stats.csv" || ops[1].PathInRepo != "README.md" {
 		t.Fatalf("want stats.csv + README.md ops, got %+v", ops)
@@ -231,8 +235,46 @@ func TestRefreshDomainCardIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Shards != 4 {
-		t.Fatalf("ledger should have a single 4-shard row, got %+v", rows)
+	if len(rows) != 1 || rows[0].Shards != 4 || rows[0].Complete {
+		t.Fatalf("ledger should have a single incomplete 4-shard row, got %+v", rows)
+	}
+
+	// Final refresh at end of stream: same row flips to complete.
+	if _, _, err := refreshDomainCard(o, "cc-main-2026-mar-apr-may", 5, 24_000_000, 1<<30, 1<<32, true, statsPath); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = ReadDomainStats(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].Complete {
+		t.Fatalf("ledger should upsert to a single complete row, got %+v", rows)
+	}
+}
+
+func TestReadDomainStatsPreCompleteRow(t *testing.T) {
+	// A stats.csv written before the complete column existed has seven fields per
+	// row. It must still parse, reading as not complete so a partial release is not
+	// mistaken for a finished one on resume.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.csv")
+	old := "graph,shards,domains,parquet_bytes,source_bytes,shard_rows,committed_at\n" +
+		"cc-main-2026-apr-may-jun,3,15000000,198370539,2388634678,5000000,2026-07-22T15:26:46Z\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ReadDomainStats(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].Shards != 3 || rows[0].Domains != 15_000_000 {
+		t.Errorf("row parsed wrong: %+v", rows[0])
+	}
+	if rows[0].Complete {
+		t.Error("a pre-complete row must read as not complete")
 	}
 }
 
