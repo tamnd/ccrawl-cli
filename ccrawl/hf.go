@@ -104,35 +104,97 @@ func (c *HFClient) CreateDatasetRepo(ctx context.Context, repoID string, private
 	return fmt.Errorf("create dataset repo HTTP %d", resp.StatusCode)
 }
 
-// PathsExist returns which of the given paths already exist in the repo at "main".
-func (c *HFClient) PathsExist(ctx context.Context, repoID string, paths []string) (map[string]bool, error) {
-	existing := make(map[string]bool)
-	for start := 0; start < len(paths); start += 100 {
-		end := start + 100
-		if end > len(paths) {
-			end = len(paths)
+// pathInfoEntry is one entry of a paths-info response. Size is zero for the
+// existence-only caller, which ignores it.
+type pathInfoEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+// pathsInfoBatch POSTs one batch of up to 100 paths to the paths-info endpoint
+// and returns the entries for those that exist. A 404 means the whole batch is
+// absent (empty repo or none present), which is a normal empty answer. Transient
+// failures (429 and 5xx and network errors) are retried with backoff so a passing
+// rate-limit cannot make the caller believe nothing exists; a persistent or 4xx
+// failure is returned so the run stops rather than silently re-uploading
+// everything the resume should have skipped.
+func (c *HFClient) pathsInfoBatch(ctx context.Context, repoID string, paths []string) ([]pathInfoEntry, error) {
+	body, _ := json.Marshal(map[string]any{"paths": paths})
+	url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/paths-info/main", repoID)
+	var lastErr error
+	for attempt := range 5 {
+		if attempt > 0 {
+			backoff := time.Duration(attempt*attempt) * 5 * time.Second
+			var rl *RateLimitError
+			if errors.As(lastErr, &rl) && rl.RetryAfter > backoff {
+				backoff = rl.RetryAfter
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
 		}
-		body, _ := json.Marshal(map[string]interface{}{"paths": paths[start:end]})
-		url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/paths-info/main", repoID)
 		req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("paths-info: %w", err)
+			lastErr = fmt.Errorf("paths-info: %w", err)
+			continue
 		}
 		if resp.StatusCode == 404 {
 			_ = resp.Body.Close()
-			continue
+			return nil, nil
 		}
-		var infos []struct {
-			Path string `json:"path"`
+		if resp.StatusCode == 200 {
+			var infos []pathInfoEntry
+			derr := json.NewDecoder(resp.Body).Decode(&infos)
+			_ = resp.Body.Close()
+			if derr != nil {
+				return nil, fmt.Errorf("paths-info decode: %w", derr)
+			}
+			return infos, nil
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&infos)
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		_ = resp.Body.Close()
-		for _, info := range infos {
-			existing[info.Path] = true
+		msg := strings.TrimSpace(string(snippet))
+		switch {
+		case resp.StatusCode == 429:
+			lastErr = &RateLimitError{Msg: msg}
+		case resp.StatusCode >= 500:
+			lastErr = fmt.Errorf("paths-info HTTP %d: %s", resp.StatusCode, msg)
+		default:
+			return nil, fmt.Errorf("paths-info HTTP %d: %s", resp.StatusCode, msg)
 		}
+	}
+	return nil, fmt.Errorf("paths-info after retries: %w", lastErr)
+}
+
+// pathsInfoAll walks paths in batches of 100 through pathsInfoBatch and returns
+// every entry that exists.
+func (c *HFClient) pathsInfoAll(ctx context.Context, repoID string, paths []string) ([]pathInfoEntry, error) {
+	var all []pathInfoEntry
+	for start := 0; start < len(paths); start += 100 {
+		end := min(start+100, len(paths))
+		infos, err := c.pathsInfoBatch(ctx, repoID, paths[start:end])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, infos...)
+	}
+	return all, nil
+}
+
+// PathsExist returns which of the given paths already exist in the repo at "main".
+func (c *HFClient) PathsExist(ctx context.Context, repoID string, paths []string) (map[string]bool, error) {
+	infos, err := c.pathsInfoAll(ctx, repoID, paths)
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		existing[info.Path] = true
 	}
 	return existing, nil
 }
@@ -142,34 +204,13 @@ func (c *HFClient) PathsExist(ctx context.Context, repoID string, paths []string
 // paths-info endpoint as PathsExist, keeping the exact on-hub size the API
 // reports so a caller can total bytes without downloading anything.
 func (c *HFClient) PathsInfo(ctx context.Context, repoID string, paths []string) (map[string]int64, error) {
-	sizes := make(map[string]int64)
-	for start := 0; start < len(paths); start += 100 {
-		end := start + 100
-		if end > len(paths) {
-			end = len(paths)
-		}
-		body, _ := json.Marshal(map[string]interface{}{"paths": paths[start:end]})
-		url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/paths-info/main", repoID)
-		req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+c.token)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("paths-info: %w", err)
-		}
-		if resp.StatusCode == 404 {
-			_ = resp.Body.Close()
-			continue
-		}
-		var infos []struct {
-			Path string `json:"path"`
-			Size int64  `json:"size"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&infos)
-		_ = resp.Body.Close()
-		for _, info := range infos {
-			sizes[info.Path] = info.Size
-		}
+	infos, err := c.pathsInfoAll(ctx, repoID, paths)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(infos))
+	for _, info := range infos {
+		sizes[info.Path] = info.Size
 	}
 	return sizes, nil
 }
