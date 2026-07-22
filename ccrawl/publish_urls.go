@@ -52,11 +52,11 @@ func partIndexFromURL(url string) (int, bool) {
 
 // urlPartJob is one part to project into an output shard.
 type urlPartJob struct {
-	index    int
+	index     int
 	sourceURL string
-	repoPath string // data/<crawl>/part-NNNNN.parquet
-	tmpPath  string // local staged temp
-	outPath  string // local staged final
+	repoPath  string // data/<crawl>/part-NNNNN.parquet
+	tmpPath   string // local staged temp
+	outPath   string // local staged final
 }
 
 // PublishURLs runs the ccrawl-urls pipeline: for each crawl it projects every

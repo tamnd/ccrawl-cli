@@ -87,18 +87,18 @@ func (s *stallClock) watch(ctx context.Context) {
 // finished shards, commits every commitEvery, deletes the local files after a
 // successful real commit, and persists shard-level progress.
 type committer struct {
-	hf          *HFClient
-	repo        string
-	scope       string // crawl or graph id, blank if a batch can span units
-	kind        string // "url" | "domain"
-	width       int    // zero-pad width of the shard index (5 urls, 3 domains)
-	commitEvery int
-	keep        bool
-	doCommit    bool // false = dry run, stage and print but never touch the hub
-	progressKey string
+	hf           *HFClient
+	repo         string
+	scope        string // crawl or graph id, blank if a batch can span units
+	kind         string // "url" | "domain"
+	width        int    // zero-pad width of the shard index (5 urls, 3 domains)
+	commitEvery  int
+	keep         bool
+	doCommit     bool // false = dry run, stage and print but never touch the hub
+	progressKey  string
 	progressPath string
-	clock       *stallClock
-	logf        func(string, ...any)
+	clock        *stallClock
+	logf         func(string, ...any)
 
 	batch     []shard
 	committed int

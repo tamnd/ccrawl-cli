@@ -15,15 +15,15 @@ import (
 
 // DomainPublishOptions configures a ccrawl-domains publish run.
 type DomainPublishOptions struct {
-	Repo        string    // target dataset repo, org/name
-	Graph       WebGraph  // web-graph release to publish
-	ShardRows   int       // rows per output shard
-	StageDir    string    // local staging root
-	CommitEvery int       // shards per commit
-	Private     bool      // create the repo private
-	Keep        bool      // keep local shards after commit
-	DoCommit    bool      // false is a dry run
-	MinFreeGB   int       // free-disk floor
+	Repo        string   // target dataset repo, org/name
+	Graph       WebGraph // web-graph release to publish
+	ShardRows   int      // rows per output shard
+	StageDir    string   // local staging root
+	CommitEvery int      // shards per commit
+	Private     bool     // create the repo private
+	Keep        bool     // keep local shards after commit
+	DoCommit    bool     // false is a dry run
+	MinFreeGB   int      // free-disk floor
 	MaxStall    time.Duration
 	Logf        func(string, ...any)
 }

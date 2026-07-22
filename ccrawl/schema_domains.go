@@ -6,12 +6,12 @@ package ccrawl
 // dropped, added, or reordered; the source is already sorted by harmonic
 // centrality so part-000 holds the top-ranked domains.
 type DomainRow struct {
-	Domain       string  `parquet:"domain"`
-	HarmonicPos  int64   `parquet:"harmonic_pos"`
-	HarmonicVal  float64 `parquet:"harmonic_val"`
-	PagerankPos  int64   `parquet:"pagerank_pos"`
-	PagerankVal  float64 `parquet:"pagerank_val"`
-	NHosts       int64   `parquet:"n_hosts"`
+	Domain      string  `parquet:"domain"`
+	HarmonicPos int64   `parquet:"harmonic_pos"`
+	HarmonicVal float64 `parquet:"harmonic_val"`
+	PagerankPos int64   `parquet:"pagerank_pos"`
+	PagerankVal float64 `parquet:"pagerank_val"`
+	NHosts      int64   `parquet:"n_hosts"`
 }
 
 // DomainColumns is the ordered list of output column names.
