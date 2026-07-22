@@ -169,6 +169,20 @@ huggingface-cli download {{.Repo}} \
 {{else}}
 The first release is publishing now. This table fills in as releases commit.
 {{end}}
+## How this dataset is built
+
+The pipeline is a single Go binary. It streams the release's one gzipped ranks table top to bottom, un-reverses each host key into a plain domain, cuts a new Zstandard Parquet shard at a fixed row count in exact rank order, and commits shards to the hub in batches, deleting each local file right after its commit so disk stays flat. The parse, shard, and commit stages run concurrently as the stream flows, so the elapsed figure below is end-to-end publish wall-clock for the release, not the sum of isolated phase timings. The source has no shard count known ahead of the stream, so the run learns the release is whole only when the stream reaches its end.
+{{with .Build}}
+Live numbers for the newest release `{{.Latest}}`:
+
+- Input: {{.Input}} of gzipped source ranks, streamed once, never buffered whole
+- Output: {{.Output}} of Zstandard Parquet across {{.Shards}}{{if .Ratio}}, so {{.Ratio}}{{end}}
+- Domains: {{.Domains}}
+- Elapsed: {{.Elapsed}} of publish wall-clock, from the first shard commit to the latest{{if .Rate}}
+- Speed: {{.Rate}}{{end}}{{if .Complete}}
+- Status: complete, the stream was read to its end{{else}}
+- Status: streaming, {{.Note}}{{end}}
+{{end}}
 # Dataset card for Common Crawl Domain Ranks
 
 ## Dataset summary

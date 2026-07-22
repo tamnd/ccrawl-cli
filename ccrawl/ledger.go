@@ -42,13 +42,18 @@ type DomainGraphStat struct {
 	// so a partial run cannot be told from a finished one by shard presence alone.
 	// The resume path trusts this flag, not the mere existence of the last shard.
 	Complete bool
+	// FirstCommitted is the timestamp of the release's first shard commit, kept so
+	// the card can report elapsed publish wall-clock (CommittedAt minus this). It
+	// survives resumes: a partial run seeds it once and later runs preserve it.
+	FirstCommitted string
 }
 
-// complete is appended after committed_at so a stats.csv written before the flag
-// existed still parses: its rows lack the column and read as not complete.
+// complete and first_committed are appended after committed_at so a stats.csv
+// written before either column existed still parses: its rows lack the columns
+// and read as not complete with an empty first-committed stamp.
 var domainStatsHeader = []string{
 	"graph", "shards", "domains", "parquet_bytes", "source_bytes",
-	"shard_rows", "committed_at", "complete",
+	"shard_rows", "committed_at", "complete", "first_committed",
 }
 
 // ReadURLStats reads the ccrawl-urls stats.csv ledger. A missing file is an empty
@@ -129,6 +134,12 @@ func ReadDomainStats(path string) ([]DomainGraphStat, error) {
 			ShardRows:    atoi(r[5]),
 			CommittedAt:  r[6],
 			Complete:     len(r) >= 8 && r[7] == "true",
+			FirstCommitted: func() string {
+				if len(r) >= 9 {
+					return r[8]
+				}
+				return ""
+			}(),
 		})
 	}
 	return rows, nil
@@ -148,6 +159,7 @@ func WriteDomainStats(path string, rows []DomainGraphStat) error {
 			strconv.Itoa(r.ShardRows),
 			r.CommittedAt,
 			strconv.FormatBool(r.Complete),
+			r.FirstCommitted,
 		})
 	}
 	return writeCSV(path, recs)

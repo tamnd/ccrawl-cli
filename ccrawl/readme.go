@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"embed"
+	"fmt"
 	"sort"
 	"strings"
 	"text/template"
@@ -82,6 +83,7 @@ func GenerateURLsREADME(repo string, stats []URLCrawlStat) string {
 		Bars:           bars,
 		Stats:          table,
 		Columns:        urlColumnDocs,
+		Build:          urlBuild(rows, totalBytes),
 		Updated:        updatedStamp(),
 	}
 	return render("urls_card.md", data)
@@ -143,6 +145,7 @@ func GenerateDomainsREADME(repo string, stats []DomainGraphStat) string {
 		Bars:            bars,
 		Stats:           table,
 		Columns:         domainColumnDocs,
+		Build:           domainBuild(rows),
 		Updated:         updatedStamp(),
 	}
 	return render("domains_card.md", data)
@@ -163,6 +166,66 @@ func render(name string, data any) string {
 // updatedStamp is the "Last updated" line both cards carry.
 func updatedStamp() string {
 	return time.Now().UTC().Format("2006-01-02 15:04 UTC")
+}
+
+// parseStamp parses an RFC3339 ledger timestamp. An empty or malformed stamp is
+// reported as not-ok so the caller can drop the build block rather than render a
+// bogus duration.
+func parseStamp(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// humanDuration renders a duration as a short "2d 3h" / "3h 42m" / "8m" string,
+// rounded to the minute above a minute and to the second below it.
+func humanDuration(d time.Duration) string {
+	if d < time.Minute {
+		s := max(int(d.Seconds()), 1)
+		return fmt.Sprintf("%ds", s)
+	}
+	d = d.Round(time.Minute)
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	mins := d / time.Minute
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	default:
+		return fmt.Sprintf("%dm", mins)
+	}
+}
+
+// perHour renders n items per hour over elapsed as a short count like "5.2M".
+func perHour(n int64, elapsed time.Duration) string {
+	h := elapsed.Hours()
+	if h <= 0 {
+		return "0"
+	}
+	return humanCountShort(int64(float64(n) / h))
+}
+
+// shardsPerHour renders the shard rate, with one decimal below ten so a slow run
+// does not round to zero.
+func shardsPerHour(shards int, elapsed time.Duration) string {
+	h := elapsed.Hours()
+	if h <= 0 {
+		return "0"
+	}
+	r := float64(shards) / h
+	if r >= 10 {
+		return fmt.Sprintf("%.0f", r)
+	}
+	return fmt.Sprintf("%.1f", r)
 }
 
 // rankBar renders a fixed-width filled/empty bar for a fraction in [0,1], the
@@ -201,10 +264,65 @@ type urlsCard struct {
 	Bars                                            []string
 	Stats                                           []urlTableRow
 	Columns                                         [][3]string
+	Build                                           *urlBuildStats
 }
 
 type urlTableRow struct {
 	Crawl, Shards, URLs, Size, State string
+}
+
+// urlBuildStats are the live build metrics for the newest crawl: what it read,
+// what it wrote, how long it has taken, how fast it is going, and when it should
+// finish at the current rate. It is nil until the first shard commits, since the
+// numbers come from the ledger timestamps that only exist after a commit.
+type urlBuildStats struct {
+	Latest      string // crawl id
+	InputParts  string // "300 columnar source parts"
+	Output      string // Parquet bytes committed for this crawl so far
+	TotalOutput string // Parquet bytes across the whole dataset
+	Coverage    string // "144 / 300 shards"
+	Complete    bool
+	Rows        string // "12,345,678 URLs"
+	Elapsed     string // publish wall-clock, first commit to latest
+	Rate        string // "39 shards/hour, 5.2M URLs/hour", empty when too early
+	ETA         string // remaining-time estimate, empty when complete or too early
+}
+
+// urlBuild computes the live build metrics for the newest crawl from the ledger.
+func urlBuild(rows []URLCrawlStat, totalBytes int64) *urlBuildStats {
+	if len(rows) == 0 {
+		return nil
+	}
+	r := rows[0]
+	first, ok := parseStamp(r.FirstCommitted)
+	if !ok {
+		return nil
+	}
+	last, ok := parseStamp(r.LastCommitted)
+	if !ok {
+		last = first
+	}
+	elapsed := last.Sub(first)
+	b := &urlBuildStats{
+		Latest:      r.Crawl,
+		InputParts:  fmtInt(int64(r.TotalShards)) + " columnar source parts",
+		Output:      humanBytes(r.ParquetBytes),
+		TotalOutput: humanBytes(totalBytes),
+		Coverage:    fmtInt(int64(r.Shards)) + " / " + fmtInt(int64(r.TotalShards)) + " shards",
+		Complete:    r.Complete,
+		Rows:        fmtInt(r.Rows) + " URLs",
+		Elapsed:     humanDuration(elapsed),
+	}
+	if elapsed >= time.Minute && r.Shards > 0 {
+		b.Rate = shardsPerHour(r.Shards, elapsed) + " shards/hour, " + perHour(r.Rows, elapsed) + " URLs/hour"
+	}
+	if !r.Complete && r.Shards > 0 && r.TotalShards > r.Shards && elapsed >= time.Minute {
+		perShard := elapsed / time.Duration(r.Shards)
+		eta := perShard * time.Duration(r.TotalShards-r.Shards)
+		finish := last.Add(eta).UTC().Format("2006-01-02 15:04 UTC")
+		b.ETA = "about " + humanDuration(eta) + " remaining at the current rate, finishing around " + finish
+	}
+	return b
 }
 
 // domainsCard is the template data for the domain-ranks card.
@@ -217,10 +335,67 @@ type domainsCard struct {
 	Bars                                                 []string
 	Stats                                                []domainTableRow
 	Columns                                              [][3]string
+	Build                                                *domainBuildStats
 }
 
 type domainTableRow struct {
 	Graph, Shards, Domains, Size, Source string
+}
+
+// domainBuildStats are the live build metrics for the newest release. Unlike the
+// url side there is no known shard total mid-stream, so it reports throughput and
+// elapsed instead of a finish estimate, and says so in Note.
+type domainBuildStats struct {
+	Latest   string // graph id
+	Input    string // gzipped source size
+	Output   string // Parquet bytes written
+	Shards   string // "7 shards"
+	Ratio    string // compression story, source vs Parquet
+	Domains  string // "34,000,000 domains"
+	Elapsed  string // publish wall-clock, first commit to latest
+	Rate     string // "12 shards/hour, 61M domains/hour", empty when too early
+	Complete bool
+	Note     string // why no finish estimate is given mid-stream
+}
+
+// domainBuild computes the live build metrics for the newest release.
+func domainBuild(rows []DomainGraphStat) *domainBuildStats {
+	if len(rows) == 0 {
+		return nil
+	}
+	r := rows[0]
+	first, ok := parseStamp(r.FirstCommitted)
+	if !ok {
+		return nil
+	}
+	last, ok := parseStamp(r.CommittedAt)
+	if !ok {
+		last = first
+	}
+	elapsed := last.Sub(first)
+	b := &domainBuildStats{
+		Latest:   r.Graph,
+		Input:    humanBytes(r.SourceBytes),
+		Output:   humanBytes(r.ParquetBytes),
+		Shards:   plural(r.Shards, "shard"),
+		Domains:  fmtInt(r.Domains) + " domains",
+		Elapsed:  humanDuration(elapsed),
+		Complete: r.Complete,
+		Note:     "the source is a single pre-sorted stream whose total length is not known until it ends, so a finish time is not projected mid-run",
+	}
+	if r.SourceBytes > 0 && r.ParquetBytes > 0 {
+		factor := float64(r.SourceBytes) / float64(r.ParquetBytes)
+		pct := float64(r.ParquetBytes) / float64(r.SourceBytes) * 100
+		if factor >= 1 {
+			b.Ratio = fmt.Sprintf("the Parquet is about %.1fx smaller than the gzipped source, %.0f%% of its size", factor, pct)
+		} else {
+			b.Ratio = fmt.Sprintf("the Parquet is about %.0f%% of the gzipped source size", pct)
+		}
+	}
+	if elapsed >= time.Minute && r.Shards > 0 {
+		b.Rate = shardsPerHour(r.Shards, elapsed) + " shards/hour, " + perHour(r.Domains, elapsed) + " domains/hour"
+	}
+	return b
 }
 
 // urlColumnDocs documents the URL-index output schema in source order.

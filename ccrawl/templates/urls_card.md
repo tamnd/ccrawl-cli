@@ -178,6 +178,23 @@ huggingface-cli download {{.Repo}} \
 {{else}}
 The first crawl is publishing now. This table fills in as crawls commit.
 {{end}}
+## How this dataset is built
+
+The pipeline is a single Go binary that works one crawl at a time. It enumerates the crawl's columnar parts, projects the published columns out of each part with ranged HTTP reads, writes one Zstandard Parquet shard per part, and commits shards to the hub in batches, deleting each local file right after its commit so disk stays flat. The fetch, project, and commit stages run concurrently across a worker pool rather than as three separate global passes, so the elapsed figure below is end-to-end publish wall-clock for the crawl, not the sum of isolated phase timings.
+{{with .Build}}
+Live numbers for the newest crawl `{{.Latest}}`:
+
+- Input: {{.InputParts}}, each streamed and projected without downloading the whole part
+- Output: {{.Output}} of Zstandard Parquet committed so far, out of {{.TotalOutput}} across the whole dataset
+- Coverage: {{.Coverage}}
+- URLs: {{.Rows}}
+- Elapsed: {{.Elapsed}} of publish wall-clock, from the first shard commit to the latest{{if .Rate}}
+- Speed: {{.Rate}}{{end}}{{if .ETA}}
+- Estimated completion: {{.ETA}}{{end}}{{if .Complete}}
+- Status: complete, every shard is on the hub{{end}}
+
+Each output shard keeps a projected subset of the source columns, so its Parquet size is smaller than the source part by design, and that gap is column projection plus compression rather than compression alone. The WARC pointer columns are kept intact so you can still range-fetch the original response.
+{{end}}
 # Dataset card for Common Crawl URL Index
 
 ## Dataset summary

@@ -332,20 +332,29 @@ func parseDomainLine(line string) (DomainRow, bool) {
 // backs both the per-batch sidecar refresh and the standalone finalize refresh.
 func refreshDomainCard(o DomainPublishOptions, graph string, shards int, domains, bytes, srcBytes int64, complete bool, statsPath string) (DomainGraphStat, []HFOperation, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	stat := DomainGraphStat{
-		Graph:        graph,
-		Shards:       shards,
-		Domains:      domains,
-		ParquetBytes: bytes,
-		SourceBytes:  srcBytes,
-		ShardRows:    o.ShardRows,
-		CommittedAt:  now,
-		Complete:     complete,
-	}
 
 	ledger, err := ReadDomainStats(statsPath)
 	if err != nil {
-		return stat, nil, err
+		return DomainGraphStat{}, nil, err
+	}
+	// Carry the release's first-commit stamp forward so elapsed publish time on the
+	// card spans the whole release, not just this run. A fresh release stamps now.
+	first := now
+	for _, r := range ledger {
+		if r.Graph == graph && r.FirstCommitted != "" {
+			first = r.FirstCommitted
+		}
+	}
+	stat := DomainGraphStat{
+		Graph:          graph,
+		Shards:         shards,
+		Domains:        domains,
+		ParquetBytes:   bytes,
+		SourceBytes:    srcBytes,
+		ShardRows:      o.ShardRows,
+		CommittedAt:    now,
+		Complete:       complete,
+		FirstCommitted: first,
 	}
 	ledger = UpsertDomainStat(ledger, stat)
 	if err := WriteDomainStats(statsPath, ledger); err != nil {
