@@ -28,6 +28,9 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `columnar` | Query the columnar Parquet index |
 | `rank` | Look up host and domain ranks from the web graph |
 | `host` | Enumerate and enrich hosts from the CC web graph |
+| `urls` | Mirror the Common Crawl URL index to a HuggingFace dataset |
+| `domains` | Mirror the Common Crawl domain ranks to a HuggingFace dataset |
+| `publish` | Maintenance for the published Common Crawl datasets |
 | `crawl` | Recrawl engine: seed, fetch, and write WARC output |
 | `sched` | Recrawl scheduling: tier assignment and differential CDX analysis |
 | `index` | Build and query a local BM25 full-text search index |
@@ -235,7 +238,6 @@ All subcommands accept `--graph <release-id>` to pin a specific web-graph releas
 | `host degrees` | Compute in-degree and out-degree from edge files (~7.7 GB) |
 | `host cdx` | Aggregate CDX statistics per host via DuckDB |
 | `host enrich` | Full enrichment pipeline: rank + degrees + CDX |
-| `host dataset` | Build all 262M hosts as partitioned Parquet shards |
 
 ### host top
 
@@ -296,32 +298,79 @@ ccrawl host enrich --degrees --cdx -o jsonl > enriched.jsonl
 | `--degrees` | Phase 3: compute in/out-degree from edge files (~7.7 GB) |
 | `--cdx` | Phase 4: aggregate CDX statistics via DuckDB (~184 GB) |
 
-### host dataset
+## urls
 
-Builds a complete host dataset from scratch: ~184 GB of CDX Parquet + the rank table, joined and written as 28 per-prefix Parquet shards.
-Uses pure-Go parallel download (no DuckDB dependency) with per-phase resume markers.
+Mirror the Common Crawl columnar URL index to a HuggingFace dataset, one output Parquet shard per original source part.
+Nothing is aggregated, deduplicated, or filtered: the rows and their order match the source, projected down to the URL-level columns.
+The run is idempotent from remote truth, so shards already on the hub are skipped and each local shard is deleted right after it commits.
+
+| Subcommand | Does |
+|---|---|
+| `urls publish` | Mirror the URL index to a HuggingFace dataset, shard for shard |
+| `urls recount` | Repair drifted URL and byte totals in `stats.csv` from the hub |
+
+### urls publish
 
 ```sh
-ccrawl host dataset --work-dir /data/cc-work --out-dir /data/cc-shards
-ccrawl host dataset --prefix a --work-dir /data/cc-work --out-dir /data/cc-shards
-ccrawl host dataset --upload --hf-repo your-org/cc-host-dataset --work-dir /data --out-dir /data/shards
+ccrawl urls publish -c CC-MAIN-2026-25
+ccrawl urls publish -c 2 --commit-every 32
+ccrawl urls publish -c CC-MAIN-2026-25 --no-push   # scan and report, upload nothing
+```
+
+`HF_TOKEN` (or `HUGGINGFACE_TOKEN`) must be set to push.
+
+| Flag | Meaning |
+|---|---|
+| `--repo` | HuggingFace dataset repo (default: `open-index/ccrawl-urls`, or `CCRAWL_URLS_REPO`) |
+| `--commit-every` | Shards per HuggingFace commit (default 16) |
+| `--workers` | Download-and-convert workers (0 picks a default from CPU count) |
+| `--whole` | Download each part whole before reading (fallback for range-hostile mirrors) |
+| `--private` | Create the dataset repo private |
+| `--keep` | Keep local shards after commit instead of deleting them |
+| `--min-free-gb` | Pause new downloads when free disk is under this many GB |
+| `--max-stall` | Restart the run (exit 75) after this long with no progress |
+| `--no-push` | Scan and stage but skip the upload |
+
+## domains
+
+Stream the web-graph domain ranks top to bottom and republish them as rank-ordered Parquet shards on a HuggingFace dataset.
+The one edit to the data is un-reversing the source host key (`com.example` becomes `example.com`); rows stay in rank order, so `part-000` holds the highest-centrality domains.
+
+| Subcommand | Does |
+|---|---|
+| `domains publish` | Mirror the domain ranks to a HuggingFace dataset, in rank order |
+| `domains recount` | Repair drifted release totals in `stats.csv` from the hub |
+
+### domains publish
+
+```sh
+ccrawl domains publish
+ccrawl domains publish --no-push   # scan and report, upload nothing
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--work-dir` | Directory for intermediate per-prefix files (default: `~/.ccrawl/dataset`) |
-| `--out-dir` | Directory for output Parquet shards (default: `.`) |
-| `--prefix` | Process only this prefix (a–z, 0, misc); empty = all 28 |
-| `--cdx-workers` | Concurrent CDX Parquet download workers (default 8) |
-| `--cdx-limit` | Stop after N CDX files; 0 = all (benchmarking only) |
-| `--skip-cdx-raw` | Skip CDX extract phase (assume `cdx-raw-*.jsonl.gz` present) |
-| `--skip-cdx-agg` | Skip CDX aggregate phase (assume `cdx-agg-*.jsonl.gz` present) |
-| `--skip-rank-split` | Skip rank-split phase (assume `rank-*.tsv.gz` present) |
-| `--upload` | Upload each shard to HuggingFace after building |
-| `--hf-repo` | HuggingFace dataset repository (default: `open-index/cc-host-dataset`) |
-| `--graph` | Web-graph release ID (default: latest) |
+| `--repo` | HuggingFace dataset repo (default: `open-index/ccrawl-domains`, or `CCRAWL_DOMAINS_REPO`) |
+| `--commit-every` | Shards per HuggingFace commit |
+| `--private` | Create the dataset repo private |
+| `--keep` | Keep local shards after commit instead of deleting them |
+| `--min-free-gb` | Pause new work when free disk is under this many GB |
+| `--max-stall` | Restart the run (exit 75) after this long with no progress |
+| `--no-push` | Scan and stage but skip the upload |
 
----
+## publish
+
+Maintenance for the published Common Crawl datasets.
+
+### publish delete-obsolete
+
+Delete the obsolete dataset repos that the `ccrawl-urls` and `ccrawl-domains` datasets replaced.
+It removes `open-index/cc-host-dataset` and `open-index/commoncrawl-urls`, and asks for confirmation unless `--yes` is passed.
+
+```sh
+ccrawl publish delete-obsolete          # prompt before deleting
+ccrawl publish delete-obsolete --yes    # delete without prompting
+```
 
 ## crawl
 
