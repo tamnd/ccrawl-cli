@@ -187,6 +187,12 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 		rows:         base.Rows,
 		bytes:        base.ParquetBytes,
 	}
+	// Refresh the ledger and card with every batch so the hub shows current
+	// coverage as shards land, not only when the whole crawl finishes.
+	c.sidecar = func(shards int, rows, bytes int64) ([]HFOperation, error) {
+		_, ops, err := refreshURLCard(o, crawl, total, shards, rows, bytes, base, statsPath)
+		return ops, err
+	}
 
 	if len(work) > 0 {
 		if err := runURLWorkers(ctx, h, o, work, c); err != nil {
@@ -197,7 +203,14 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 		}
 	}
 
-	return finalizeURLCrawl(ctx, hf, o, crawl, total, c, statsPath, base)
+	// Each committed batch already refreshed the card through the sidecar. Only
+	// commit a standalone refresh when nothing landed this run, for example a
+	// resume where every shard was already on the hub, so the card still reflects
+	// the crawl.
+	if c.flushes == 0 {
+		return finalizeURLCrawl(ctx, hf, o, crawl, total, c, statsPath, base)
+	}
+	return nil
 }
 
 // runURLWorkers projects the work list concurrently and feeds finished shards to
@@ -373,10 +386,10 @@ func withWholeFile(ctx context.Context, h *HTTPClient, url, tmp string, fn func(
 	return fn(pf)
 }
 
-// finalizeURLCrawl upserts the crawl's ledger row, regenerates the dataset card,
-// and commits both. On a fresh crawl with nothing new it still refreshes the
-// card so the hub reflects the current state.
-func finalizeURLCrawl(ctx context.Context, hf *HFClient, o URLPublishOptions, crawl string, total int, c *committer, statsPath string, base URLCrawlStat) error {
+// refreshURLCard rewrites the crawl's ledger row and the dataset card for the
+// given progress and returns the ops to commit them (stats.csv, README.md). It
+// backs both the per-batch sidecar refresh and the standalone finalize refresh.
+func refreshURLCard(o URLPublishOptions, crawl string, total, shards int, rows, bytes int64, base URLCrawlStat, statsPath string) (URLCrawlStat, []HFOperation, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	first := base.FirstCommitted
 	if first == "" {
@@ -384,26 +397,41 @@ func finalizeURLCrawl(ctx context.Context, hf *HFClient, o URLPublishOptions, cr
 	}
 	stat := URLCrawlStat{
 		Crawl:          crawl,
-		Shards:         c.committed,
+		Shards:         shards,
 		TotalShards:    total,
-		Rows:           c.rows,
-		ParquetBytes:   c.bytes,
-		Complete:       c.committed >= total && total > 0,
+		Rows:           rows,
+		ParquetBytes:   bytes,
+		Complete:       shards >= total && total > 0,
 		FirstCommitted: first,
 		LastCommitted:  now,
 	}
 
-	rows, err := ReadURLStats(statsPath)
+	ledger, err := ReadURLStats(statsPath)
 	if err != nil {
-		return err
+		return stat, nil, err
 	}
-	rows = UpsertURLStat(rows, stat)
-	if err := WriteURLStats(statsPath, rows); err != nil {
-		return err
+	ledger = UpsertURLStat(ledger, stat)
+	if err := WriteURLStats(statsPath, ledger); err != nil {
+		return stat, nil, err
 	}
 
 	readmePath := filepath.Join(o.StageDir, "README.md")
-	if err := os.WriteFile(readmePath, []byte(GenerateURLsREADME(o.Repo, rows)), 0o644); err != nil {
+	if err := os.WriteFile(readmePath, []byte(GenerateURLsREADME(o.Repo, ledger)), 0o644); err != nil {
+		return stat, nil, err
+	}
+	return stat, []HFOperation{
+		{LocalPath: statsPath, PathInRepo: "stats.csv"},
+		{LocalPath: readmePath, PathInRepo: "README.md"},
+	}, nil
+}
+
+// finalizeURLCrawl refreshes the crawl's ledger row and card and commits them.
+// The per-batch sidecar handles this while shards land, so finalize only runs
+// when a run committed nothing (for example a resume where every shard already
+// existed) and the card still needs to reflect the crawl.
+func finalizeURLCrawl(ctx context.Context, hf *HFClient, o URLPublishOptions, crawl string, total int, c *committer, statsPath string, base URLCrawlStat) error {
+	stat, ops, err := refreshURLCard(o, crawl, total, c.committed, c.rows, c.bytes, base, statsPath)
+	if err != nil {
 		return err
 	}
 
@@ -412,10 +440,6 @@ func finalizeURLCrawl(ctx context.Context, hf *HFClient, o URLPublishOptions, cr
 	if !o.DoCommit {
 		o.Logf("[dry-run] would update ledger and card for %s", crawl)
 		return nil
-	}
-	ops := []HFOperation{
-		{LocalPath: statsPath, PathInRepo: "stats.csv"},
-		{LocalPath: readmePath, PathInRepo: "README.md"},
 	}
 	if _, err := hf.CommitWithRetry(ctx, o.Repo, finalizeURLMessage(stat), ops, 5); err != nil {
 		return err

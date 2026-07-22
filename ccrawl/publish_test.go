@@ -1,6 +1,7 @@
 package ccrawl
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,6 +158,80 @@ func TestGenerateDomainsREADME(t *testing.T) {
 	mustContain(t, md, "part-000.parquet")
 	if strings.Contains(md, "graph=") {
 		t.Error("domains card must not use Hive-partitioned key=value paths")
+	}
+}
+
+func TestRefreshURLCardIncremental(t *testing.T) {
+	dir := t.TempDir()
+	statsPath := filepath.Join(dir, "stats.csv")
+	o := URLPublishOptions{Repo: "open-index/ccrawl-urls", StageDir: dir}
+	base := URLCrawlStat{Crawl: "CC-MAIN-2026-25"}
+
+	// First batch: 16 of 300 shards. The card and ledger must publish now, and
+	// the crawl must read as in-progress, not complete.
+	stat, ops, err := refreshURLCard(o, "CC-MAIN-2026-25", 300, 16, 150_000_000, 9<<30, base, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Complete {
+		t.Error("16/300 shards must not be marked complete")
+	}
+	if len(ops) != 2 || ops[0].PathInRepo != "stats.csv" || ops[1].PathInRepo != "README.md" {
+		t.Fatalf("want stats.csv + README.md ops, got %+v", ops)
+	}
+	for _, op := range ops {
+		if _, err := os.Stat(op.LocalPath); err != nil {
+			t.Errorf("op file not written: %s: %v", op.LocalPath, err)
+		}
+	}
+	card, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, string(card), "16/300")
+
+	// Final batch: all 300 shards. The same ledger row is updated in place and
+	// now reads complete.
+	stat, _, err = refreshURLCard(o, "CC-MAIN-2026-25", 300, 300, 2_800_000_000, 1<<40, base, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stat.Complete {
+		t.Error("300/300 shards must be complete")
+	}
+	rows, err := ReadURLStats(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Shards != 300 {
+		t.Fatalf("ledger should upsert to a single 300-shard row, got %+v", rows)
+	}
+}
+
+func TestRefreshDomainCardIncremental(t *testing.T) {
+	dir := t.TempDir()
+	statsPath := filepath.Join(dir, "stats.csv")
+	o := DomainPublishOptions{Repo: "open-index/ccrawl-domains", StageDir: dir, ShardRows: DefaultShardRows}
+
+	stat, ops, err := refreshDomainCard(o, "cc-main-2026-mar-apr-may", 4, 20_000_000, 1<<29, 1<<32, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat.Shards != 4 || stat.Domains != 20_000_000 {
+		t.Fatalf("stat wrong: %+v", stat)
+	}
+	if len(ops) != 2 || ops[0].PathInRepo != "stats.csv" || ops[1].PathInRepo != "README.md" {
+		t.Fatalf("want stats.csv + README.md ops, got %+v", ops)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
+		t.Errorf("README.md not written: %v", err)
+	}
+	rows, err := ReadDomainStats(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Shards != 4 {
+		t.Fatalf("ledger should have a single 4-shard row, got %+v", rows)
 	}
 }
 

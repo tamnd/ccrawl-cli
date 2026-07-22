@@ -100,10 +100,18 @@ type committer struct {
 	clock        *stallClock
 	logf         func(string, ...any)
 
+	// sidecar, when set, is called during flush with the shard, row, and byte
+	// totals the batch will bring the unit to. It refreshes the ledger and
+	// dataset card for that progress and returns the extra files (stats.csv,
+	// README.md) to commit alongside the shards, so the hub shows current
+	// coverage after every batch instead of only when the whole run finishes.
+	sidecar func(shards int, rows, bytes int64) ([]HFOperation, error)
+
 	batch     []shard
 	committed int
 	rows      int64
 	bytes     int64
+	flushes   int // real commits made, so the finalize refresh can be skipped
 }
 
 // add appends a finished shard and flushes when the batch is full.
@@ -127,23 +135,39 @@ func (c *committer) flush(ctx context.Context) error {
 		msg = summary + "\n\n" + body
 	}
 
+	// Totals this batch will bring the unit to once committed. The card and
+	// ledger are generated for this projected state and committed with the
+	// shards, so a reader always sees a coherent snapshot.
+	shards := c.committed + len(batch)
+	rows, bytes := c.rows, c.bytes
+	for _, s := range batch {
+		rows += s.Rows
+		bytes += s.Bytes
+	}
+
 	if c.doCommit {
-		ops := make([]HFOperation, len(batch))
-		for i, s := range batch {
-			ops[i] = HFOperation{LocalPath: s.Local, PathInRepo: s.RepoPath}
+		ops := make([]HFOperation, 0, len(batch)+2)
+		for _, s := range batch {
+			ops = append(ops, HFOperation{LocalPath: s.Local, PathInRepo: s.RepoPath})
+		}
+		if c.sidecar != nil {
+			extra, err := c.sidecar(shards, rows, bytes)
+			if err != nil {
+				return fmt.Errorf("refresh card %q: %w", summary, err)
+			}
+			ops = append(ops, extra...)
 		}
 		if _, err := c.hf.CommitWithRetry(ctx, c.repo, msg, ops, 5); err != nil {
 			return fmt.Errorf("commit %q: %w", summary, err)
 		}
+		c.flushes++
 	} else {
 		c.logf("[dry-run] would commit: %s", summary)
 	}
 
-	for _, s := range batch {
-		c.committed++
-		c.rows += s.Rows
-		c.bytes += s.Bytes
-	}
+	c.committed = shards
+	c.rows = rows
+	c.bytes = bytes
 	// Delete local shards right after a real commit so disk stays flat. On a dry
 	// run the files are kept for inspection.
 	if c.doCommit && !c.keep {
