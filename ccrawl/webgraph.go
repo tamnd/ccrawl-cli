@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,9 @@ func (g WebGraph) HostEdgesManifestURL() string {
 // graphBaseURL is the root of all hyperlinkgraph releases.
 const graphBaseURL = "https://data.commoncrawl.org/projects/hyperlinkgraph/"
 
+// webGraphsIndexURL is the page that lists every web-graph release, newest first.
+const webGraphsIndexURL = "https://commoncrawl.org/web-graphs"
+
 // WebGraphBaseURL returns the release directory URL for a web-graph id, so a
 // caller that names a release explicitly can build a WebGraph without a resolve.
 func WebGraphBaseURL(id string) string { return graphBaseURL + id + "/" }
@@ -44,6 +48,47 @@ func WebGraphBaseURL(id string) string { return graphBaseURL + id + "/" }
 // (e.g. href="https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2026-mar-apr-may/...")
 // or from a relative path (e.g. href="cc-main-.../").
 var reGraphID = regexp.MustCompile(`hyperlinkgraph/(cc-main-[^/"]+)[/"]`)
+
+// reGraphDate pulls the year and the first month token out of a release id like
+// cc-main-2026-apr-may-jun, which is enough to order releases by recency.
+var reGraphDate = regexp.MustCompile(`^cc-main-(\d{4})-([a-z]{3})`)
+
+// monthOrd maps Common Crawl's three-letter month abbreviations to their number.
+var monthOrd = map[string]int{
+	"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+	"jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+// graphRank turns a release id into a sortable integer (year times 100 plus the
+// first month), so a newer release ranks higher. An id that does not parse ranks
+// 0 and sorts last, which keeps a stray match from ever winning the newest slot.
+func graphRank(id string) int {
+	m := reGraphDate.FindStringSubmatch(id)
+	if m == nil {
+		return 0
+	}
+	year, _ := strconv.Atoi(m[1])
+	return year*100 + monthOrd[m[2]]
+}
+
+// parseWebGraphIDs extracts every distinct cc-main release id from an index page
+// and returns them sorted newest first. Sorting by parsed release date rather
+// than trusting the page order means a re-themed or reordered index still yields
+// the right "latest" without a code change.
+func parseWebGraphIDs(data []byte) []string {
+	ms := reGraphID.FindAllSubmatch(data, -1)
+	seen := make(map[string]bool, len(ms))
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
+		id := string(m[1])
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	sort.SliceStable(ids, func(i, j int) bool { return graphRank(ids[i]) > graphRank(ids[j]) })
+	return ids
+}
 
 // LatestWebGraph fetches the CC web-graphs index page and returns the most recent
 // host-level graph release. Results are cached for 24 hours.
@@ -61,27 +106,90 @@ func LatestWebGraph(ctx context.Context, h *HTTPClient, cache *Cache) (WebGraph,
 		}
 	}
 
-	data, err := h.FetchBytes(ctx, "https://commoncrawl.org/web-graphs")
+	ids, err := allWebGraphIDs(ctx, h)
 	if err != nil {
-		return WebGraph{}, fmt.Errorf("fetch web-graphs page: %w", err)
+		return WebGraph{}, err
 	}
-
-	// Extract release URLs from the page; they appear ordered newest-first.
-	ms := reGraphID.FindAllSubmatch(data, -1)
-	if len(ms) == 0 {
-		// Fallback: parse the index page from data.commoncrawl.org
-		data2, err2 := h.FetchBytes(ctx, graphBaseURL)
-		if err2 == nil {
-			ms = reGraphID.FindAllSubmatch(data2, -1)
-		}
-	}
-	if len(ms) == 0 {
-		return WebGraph{}, fmt.Errorf("no web-graph releases found")
-	}
-	id := string(ms[0][1])
+	id := ids[0]
 	g := WebGraph{ID: id, BaseURL: graphBaseURL + id + "/"}
 	if cache != nil {
 		cache.Put(cacheKey, []byte(id+"\n"))
+	}
+	return g, nil
+}
+
+// allWebGraphIDs reads the web-graphs index and returns every release id, newest
+// first. It reads the marketing page and falls back to the data host's directory
+// listing, so a hiccup on either source still resolves a release.
+func allWebGraphIDs(ctx context.Context, h *HTTPClient) ([]string, error) {
+	data, err := h.FetchBytes(ctx, webGraphsIndexURL)
+	ids := parseWebGraphIDs(data)
+	if len(ids) == 0 {
+		if data2, err2 := h.FetchBytes(ctx, graphBaseURL); err2 == nil {
+			ids = parseWebGraphIDs(data2)
+		}
+	}
+	if len(ids) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("fetch web-graphs page: %w", err)
+		}
+		return nil, fmt.Errorf("no web-graph releases found")
+	}
+	return ids, nil
+}
+
+// selectDomainGraph walks release ids newest first and returns the first whose
+// domain-ranks table probe reports a positive size. probe returns the table's
+// size in bytes, or an error when it cannot tell; a zero size or an error moves
+// on to the next-older release. When nothing has a table, the last probe error
+// is surfaced so the caller sees why rather than just "none found".
+func selectDomainGraph(ids []string, probe func(WebGraph) (int64, error)) (WebGraph, error) {
+	var lastErr error
+	for _, id := range ids {
+		g := WebGraph{ID: id, BaseURL: graphBaseURL + id + "/"}
+		n, err := probe(g)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if n > 0 {
+			return g, nil
+		}
+	}
+	if lastErr != nil {
+		return WebGraph{}, fmt.Errorf("no web-graph release has a published domain-ranks table: %w", lastErr)
+	}
+	return WebGraph{}, fmt.Errorf("no web-graph release has a published domain-ranks table")
+}
+
+// LatestDomainWebGraph enumerates every advertised web-graph release and returns
+// the most recent one whose domain-level ranks table is actually published.
+// Common Crawl lists a release as soon as the host-level graph is out, sometimes
+// before the domain ranks land, so the single newest id can point at a domain
+// table that 404s; probing newest first and stopping at the first table that
+// exists picks the nearest release that can really be published. The resolved id
+// is cached for 24 hours.
+func LatestDomainWebGraph(ctx context.Context, h *HTTPClient, cache *Cache) (WebGraph, error) {
+	const cacheKey = "webgraph:latest-domain"
+	if cache != nil {
+		if data, ok := cache.Get(cacheKey, 24*time.Hour); ok {
+			if id := strings.TrimSpace(string(data)); id != "" {
+				return WebGraph{ID: id, BaseURL: graphBaseURL + id + "/"}, nil
+			}
+		}
+	}
+	ids, err := allWebGraphIDs(ctx, h)
+	if err != nil {
+		return WebGraph{}, err
+	}
+	g, err := selectDomainGraph(ids, func(wg WebGraph) (int64, error) {
+		return h.ContentLength(ctx, wg.DomainRankURL())
+	})
+	if err != nil {
+		return WebGraph{}, err
+	}
+	if cache != nil {
+		cache.Put(cacheKey, []byte(g.ID))
 	}
 	return g, nil
 }
