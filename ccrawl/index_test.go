@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -189,7 +190,7 @@ func TestForwardIndexWriter(t *testing.T) {
 	if len(data) == 0 {
 		t.Error("forward index file should not be empty")
 	}
-	if !contains(string(data), "example.com") {
+	if !strings.Contains(string(data), "example.com") {
 		t.Error("forward index should contain host name")
 	}
 }

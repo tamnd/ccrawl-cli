@@ -36,6 +36,10 @@ func (g WebGraph) HostEdgesManifestURL() string {
 // graphBaseURL is the root of all hyperlinkgraph releases.
 const graphBaseURL = "https://data.commoncrawl.org/projects/hyperlinkgraph/"
 
+// WebGraphBaseURL returns the release directory URL for a web-graph id, so a
+// caller that names a release explicitly can build a WebGraph without a resolve.
+func WebGraphBaseURL(id string) string { return graphBaseURL + id + "/" }
+
 // reGraphID matches a web-graph release directory name from the full HF URL
 // (e.g. href="https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2026-mar-apr-may/...")
 // or from a relative path (e.g. href="cc-main-.../").
