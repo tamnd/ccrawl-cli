@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ func registerDomains(app *kit.App) {
 	app.CommandGroup("domains", "Publish the Common Crawl domain ranks to HuggingFace")
 	app.AddCommandUnder("domains", newDomainsPublishCmd())
 	app.AddCommandUnder("domains", newDomainsRecountCmd())
+	app.AddCommandUnder("domains", newDomainsDiffCmd())
 }
 
 type domainsPublishCmd struct {
@@ -200,4 +202,146 @@ func (v *domainsRecountCmd) run(ctx context.Context, args []string) error {
 		DoCommit: push,
 		Logf:     func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
+}
+
+type domainsDiffCmd struct {
+	repo     string
+	from     string
+	to       string
+	workers  int
+	addedOut string
+}
+
+func newDomainsDiffCmd() kit.Command {
+	v := &domainsDiffCmd{}
+	return kit.Command{
+		Use:   "diff",
+		Short: "Count domains added, removed, and shared between two published releases",
+		Long: `Diff compares two web-graph domain releases already published to the dataset
+and reports how many domains are new in the later release, how many dropped out
+of the earlier one, and how many the two share. It reads only the domain column
+of each shard straight from the hub, so it never downloads the rank fields.
+
+With no ids it diffs the two most recent complete releases in the dataset, older
+against newer. Pass --from and --to to pick releases explicitly. Use --added-out
+to also write the domains that are new in the later release, one per line.
+
+  ccrawl domains diff
+  ccrawl domains diff --from cc-main-2026-mar-apr-may --to cc-main-2026-apr-may-jun
+  ccrawl domains diff --added-out new-domains.txt`,
+		Args:  kit.NoArgs,
+		Flags: v.flags,
+		Run:   v.run,
+	}
+}
+
+func (v *domainsDiffCmd) flags(f *kit.FlagSet) {
+	f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.from, "from", "", "older web-graph release id (default: second-newest published)")
+	f.StringVar(&v.to, "to", "", "newer web-graph release id (default: newest published)")
+	f.IntVar(&v.workers, "workers", 0, "concurrent shard readers (0 picks a default from CPU count)")
+	f.StringVar(&v.addedOut, "added-out", "", "write domains new in the later release to this file, one per line")
+}
+
+func (v *domainsDiffCmd) run(ctx context.Context, args []string) error {
+	app := appFromCtx(ctx)
+	if v.repo == "" {
+		return usageErr("--repo is required (or set CCRAWL_DOMAINS_REPO)")
+	}
+	hf := ccrawl.NewHFClient("")
+
+	from, to := v.from, v.to
+	if from == "" || to == "" {
+		rf, rt, err := resolveDiffReleases(ctx, hf, v.repo)
+		if err != nil {
+			return err
+		}
+		if from == "" {
+			from = rf
+		}
+		if to == "" {
+			to = rt
+		}
+	}
+	if from == to {
+		return usageErr("--from and --to are the same release; nothing to diff")
+	}
+
+	// Optional sink for the added domains. It is written to a caller-named path,
+	// never a publish stage dir, so a concurrent publish run is untouched.
+	var collect func(string)
+	var flush func() error
+	if v.addedOut != "" {
+		f, err := os.Create(v.addedOut)
+		if err != nil {
+			return err
+		}
+		bw := bufio.NewWriter(f)
+		collect = func(d string) { _, _ = bw.WriteString(d); _ = bw.WriteByte('\n') }
+		flush = func() error {
+			if err := bw.Flush(); err != nil {
+				_ = f.Close()
+				return err
+			}
+			return f.Close()
+		}
+	}
+
+	d, err := ccrawl.DiffDomainReleases(ctx, app.HTTP, hf, ccrawl.DomainDiffOptions{
+		Repo:    v.repo,
+		From:    from,
+		To:      to,
+		Workers: v.workers,
+		Logf:    func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		Collect: collect,
+	})
+	if err != nil {
+		return err
+	}
+	if flush != nil {
+		if err := flush(); err != nil {
+			return err
+		}
+	}
+
+	fmt.Print(d.Summary())
+	if v.addedOut != "" {
+		fmt.Fprintf(os.Stderr, "wrote %s new domains to %s\n", commaCount(d.Added), v.addedOut)
+	}
+	return nil
+}
+
+// resolveDiffReleases downloads the domains ledger to a temp file and returns the
+// two most recent complete releases, older then newer. It writes only to a temp
+// path so a concurrent publish's stage dir is never touched.
+func resolveDiffReleases(ctx context.Context, hf *ccrawl.HFClient, repo string) (from, to string, err error) {
+	tmp, err := os.CreateTemp("", "ccrawl-domains-stats-*.csv")
+	if err != nil {
+		return "", "", err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := hf.DownloadRepoFile(ctx, repo, "stats.csv", tmpPath); err != nil {
+		return "", "", fmt.Errorf("read %s ledger to pick releases (pass --from/--to): %w", repo, err)
+	}
+	ledger, err := ccrawl.ReadDomainStats(tmpPath)
+	if err != nil {
+		return "", "", err
+	}
+	return ccrawl.TwoNewestDomainReleases(ledger)
+}
+
+// commaCount groups an integer with thousands separators for a one-line report.
+func commaCount(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
 }
