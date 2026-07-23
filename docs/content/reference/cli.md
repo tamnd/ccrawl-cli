@@ -340,6 +340,7 @@ The one edit to the data is un-reversing the source host key (`com.example` beco
 |---|---|
 | `domains publish` | Mirror the domain ranks to a HuggingFace dataset, in rank order |
 | `domains recount` | Repair drifted release totals in `stats.csv` from the hub |
+| `domains diff` | Count domains added, removed, and shared between two published releases |
 
 ### domains publish
 
@@ -357,6 +358,26 @@ ccrawl domains publish --no-push   # scan and report, upload nothing
 | `--min-free-gb` | Pause new work when free disk is under this many GB |
 | `--max-stall` | Restart the run (exit 75) after this long with no progress |
 | `--no-push` | Scan and stage but skip the upload |
+
+### domains diff
+
+Compare two web-graph domain releases already published to the dataset and report how many domains are new in the later release, how many dropped out of the earlier one, and how many the two share.
+It reads only the domain column of each shard straight from the hub, so it never downloads the rank fields.
+With no ids it diffs the two most recent complete releases in the dataset, older against newer.
+
+```sh
+ccrawl domains diff
+ccrawl domains diff --from cc-main-2026-mar-apr-may --to cc-main-2026-apr-may-jun
+ccrawl domains diff --added-out new-domains.txt
+```
+
+| Flag | Meaning |
+|---|---|
+| `--repo` | HuggingFace dataset repo (default: `open-index/ccrawl-domains`, or `CCRAWL_DOMAINS_REPO`) |
+| `--from` | Older web-graph release id (default: second-newest published) |
+| `--to` | Newer web-graph release id (default: newest published) |
+| `--added-out` | Write the domains new in the later release to this file, one per line |
+| `--workers` | Concurrent shard readers (0 picks a default from CPU count) |
 
 ## publish
 
