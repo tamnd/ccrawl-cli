@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -190,7 +191,11 @@ func (h *fakeHub) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	partNum := 0
 	if q := r.URL.Query().Get("part"); q != "" {
-		fmt.Sscanf(q, "%d", &partNum)
+		n, err := strconv.Atoi(q)
+		if err != nil {
+			h.t.Fatalf("bad part number %q: %v", q, err)
+		}
+		partNum = n
 	}
 
 	h.mu.Lock()

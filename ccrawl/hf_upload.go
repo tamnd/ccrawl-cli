@@ -91,13 +91,13 @@ func classifyHF(op string, resp *http.Response) error {
 	body := strings.TrimSpace(string(snippet))
 	e := &hfHTTPError{Op: op, Status: resp.StatusCode, Body: body}
 
-	switch {
-	case resp.StatusCode == 429:
+	switch resp.StatusCode {
+	case 429:
 		after, _ := parseRetryAfter(resp.Header.Get("Retry-After"))
 		return &RateLimitError{RetryAfter: after, Msg: body}
-	case resp.StatusCode == 401:
+	case 401:
 		e.kind = ErrHFAuth
-	case resp.StatusCode == 403:
+	case 403:
 		// The hub returns 403 for both "your token cannot do this" and "you are
 		// out of space", and only the body tells them apart. It words the second
 		// one as either a quota or a storage limit depending on the endpoint.
@@ -107,9 +107,9 @@ func classifyHF(op string, resp *http.Response) error {
 		} else {
 			e.kind = ErrHFAuth
 		}
-	case resp.StatusCode == 409 || resp.StatusCode == 412:
+	case 409, 412:
 		e.kind = ErrHFConflict
-	case resp.StatusCode == 507:
+	case 507:
 		e.kind = ErrHFQuota
 	}
 	return e
