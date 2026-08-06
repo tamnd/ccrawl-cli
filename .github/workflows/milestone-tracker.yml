@@ -1,0 +1,85 @@
+name: milestone-tracker
+
+# When a PR merges, comment on the tracking issue for its milestone and tick the
+# checklist boxes for any issues the PR closed. Keeps the milestone issue as the
+# single place to look for release progress without anyone editing it by hand.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  update:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const {owner, repo} = context.repo;
+
+            // Issues this PR closed. GraphQL is the only place this lives.
+            const q = await github.graphql(`
+              query($owner:String!, $repo:String!, $num:Int!) {
+                repository(owner:$owner, name:$repo) {
+                  pullRequest(number:$num) {
+                    closingIssuesReferences(first:20) {
+                      nodes { number title state milestone { number title } }
+                    }
+                  }
+                }
+              }`, {owner, repo, num: pr.number});
+            const closed = q.repository.pullRequest.closingIssuesReferences.nodes;
+
+            // The PR's own milestone wins, otherwise take it from the issues it closed.
+            let milestone = pr.milestone ? pr.milestone.number : null;
+            if (!milestone) {
+              const m = closed.find(i => i.milestone);
+              if (m) milestone = m.milestone.number;
+            }
+            if (!milestone) {
+              core.info('no milestone on the PR or on anything it closed, nothing to do');
+              return;
+            }
+
+            // The tracking issue is the open issue on that milestone labelled type: tracking.
+            const candidates = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'type: tracking', milestone: String(milestone),
+            });
+            const tracker = candidates.data.find(i => !i.pull_request);
+            if (!tracker) {
+              core.warning(`no open tracking issue for milestone ${milestone}`);
+              return;
+            }
+
+            const done = closed.filter(i => i.state === 'CLOSED');
+            const lines = [`Merged #${pr.number}, ${pr.title}.`];
+            if (done.length) {
+              lines.push('');
+              lines.push('Closes:');
+              for (const i of done) lines.push(`- #${i.number} ${i.title}`);
+            }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: tracker.number, body: lines.join('\n'),
+            });
+
+            // Tick the box for every issue the PR actually closed.
+            let body = tracker.body || '';
+            let ticked = [];
+            for (const i of done) {
+              const box = new RegExp(`- \\[ \\] #${i.number}\\b`, 'g');
+              if (box.test(body)) {
+                body = body.replace(box, `- [x] #${i.number}`);
+                ticked.push(i.number);
+              }
+            }
+            if (ticked.length) {
+              await github.rest.issues.update({owner, repo, issue_number: tracker.number, body});
+              core.info(`ticked ${ticked.join(', ')} on #${tracker.number}`);
+            }
