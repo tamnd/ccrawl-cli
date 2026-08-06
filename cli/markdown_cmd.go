@@ -70,7 +70,7 @@ Examples:
   ccrawl markdown export --shards 0 --repo open-index/open-markdown-v2
   ccrawl markdown export --shards 0-9 --repo open-index/open-markdown-v2
   ccrawl markdown export --shards all --parallel 4 --commit-batch 10
-  ccrawl markdown export --shards 0-99 --no-push --out ~/data/md
+  ccrawl markdown export --shards 0-99 --push=false --out ~/data/md
   HF_TOKEN=hf_... ccrawl markdown export --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,
