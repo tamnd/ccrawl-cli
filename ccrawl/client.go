@@ -24,6 +24,8 @@ type HTTPClient struct {
 	backoff    time.Duration // base wait before the first retry
 	backoffMax time.Duration // ceiling for a single retry wait
 	userAgent  string
+	source     Source // which base bulk data paths are fetched from
+	creds      awsCreds
 
 	mu   sync.Mutex
 	next time.Time // earliest time the next request may start
@@ -43,6 +45,10 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 	if backoffMax <= 0 {
 		backoffMax = DefaultBackoffMax
 	}
+	src := cfg.Source
+	if src == "" {
+		src = SourceHTTPS
+	}
 	return &HTTPClient{
 		c:          &http.Client{Timeout: cfg.Timeout},
 		download:   &http.Client{},
@@ -51,6 +57,8 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 		backoff:    backoff,
 		backoffMax: backoffMax,
 		userAgent:  ua,
+		source:     src,
+		creds:      resolveAWSCreds(),
 	}
 }
 
@@ -80,6 +88,15 @@ func (h *HTTPClient) throttle(ctx context.Context) error {
 		return nil
 	}
 }
+
+// Source reports which base this client fetches bulk data from.
+func (h *HTTPClient) Source() Source { return h.source }
+
+// DataURL renders a Common Crawl relative path as a URL for this client's
+// configured source. Anything that reads bulk data should go through it rather
+// than naming a base itself, which is how --source s3 reaches the fetch paths
+// and not only the paths we print.
+func (h *HTTPClient) DataURL(path string) string { return FileURL(path, h.source) }
 
 // Get fetches url with retries.
 func (h *HTTPClient) Get(ctx context.Context, url string) (*http.Response, error) {
@@ -149,7 +166,22 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 		if err := h.throttle(ctx); err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		// s3://bucket/key is not something net/http can dial. The bucket is
+		// public, so the REST endpoint for it is a plain anonymous GET and every
+		// other line in this loop, the throttle, the retries, the backoff, applies
+		// to it unchanged.
+		// s3://bucket/key is not something net/http can dial. It becomes a GET
+		// against the bucket's REST endpoint, and every other line in this loop,
+		// the throttle, the retries, the backoff, applies to it unchanged.
+		fetch, isS3 := s3Endpoint(url, s3BucketRegion)
+		if !isS3 {
+			fetch = url
+		}
+		if isS3 && !h.creds.valid() {
+			// Not retryable: no amount of backing off produces a credential.
+			return nil, fmt.Errorf("GET %s: %w", url, ErrNoAWSCredentials)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetch, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -162,10 +194,23 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 		if rangeHdr != "" {
 			req.Header.Set("Range", rangeHdr)
 		}
+		if isS3 {
+			// Signed last, because SigV4 covers every header on the request.
+			signS3(req, h.creds, s3BucketRegion, time.Now())
+			// Checked on the first S3 read rather than at startup, so a run that
+			// never touches bulk data never pays for the probe.
+			warnIfS3Egress(ctx)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			last = err
 			continue
+		}
+		if isS3 {
+			if authErr := s3AuthError(url, resp); authErr != nil {
+				_ = resp.Body.Close()
+				return nil, authErr
+			}
 		}
 		if retryableStatus(resp.StatusCode) {
 			// A 503/429 commonly carries Retry-After; honor it on the next loop.

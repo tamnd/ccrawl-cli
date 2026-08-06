@@ -46,6 +46,9 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 | `CCRAWL_LIBRARY` | Dataset library root (overrides the default `~/notes/ccrawl`) |
 | `CCRAWL_CACHE_DIR` | Cache directory (overrides the default under the data dir) |
 | `HF_TOKEN` | HuggingFace write token, required by the publishing commands (`HUGGINGFACE_TOKEN` also works) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credentials for `--source s3` (see [the source flag](#the-source-flag)) |
+| `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE` | Which profile and file to read credentials from when the variables above are unset |
+| `AWS_REGION` | Where the run is, used to warn about cross-region egress under `--source s3` |
 
 ## Publishing to HuggingFace
 
@@ -81,26 +84,44 @@ The `CCRAWL_HF_COMMIT=python` escape hatch that v0.6.0 shipped is gone as of v0.
 
 ## The source flag
 
-`--source` picks which base a Common Crawl path is rendered against: `https://data.commoncrawl.org/` or `s3://commoncrawl/`.
-It changes the URLs ccrawl writes down, not the ones it fetches.
+`--source` picks which base a Common Crawl path is read from: `https://data.commoncrawl.org/` or `s3://commoncrawl/`.
+Both serve the same bytes. The difference is the bill.
 
-`--source s3` affects:
+Reads of `s3://commoncrawl` from inside `us-east-1`, where the bucket lives, do not pay egress.
+The HTTPS mirror does, and one crawl is measured in terabytes, so a bulk job running on EC2 in that region wants `--source s3` and everything else wants the default.
+
+```sh
+ccrawl download warc --source s3 --crawl CC-MAIN-2026-30 -n 10
+ccrawl get example.com --source s3 --text
+ccrawl markdown export --source s3 --crawl CC-MAIN-2026-30 --repo you/your-dataset
+```
+
+Every command that reads bulk data honors it: `get`, `fetch`, `download`, `export`, `news`, `markdown export`, `markdown refetch`, and the columnar projection behind `urls publish`.
+It also still changes the URLs ccrawl writes down, which is what you want when the SQL is going somewhere else:
 
 | Command | Effect |
 |---|---|
 | `paths` | Prints `s3://commoncrawl/...` paths instead of HTTPS ones |
 | `columnar sql`, `columnar *`, `db load` | The generated SQL reads `s3://commoncrawl/cc-index/...` |
 | `host cdx`, `host enrich`, `sched diff` | The Parquet file list handed to DuckDB uses S3 URIs |
-| `urls publish` | The columnar Parquet it projects from uses S3 URIs |
 
-Everything ccrawl fetches itself still goes over the HTTPS mirror.
-`get`, `fetch`, `search`, `download`, `export`, `news`, `markdown export`, and `markdown refetch` all use `https://data.commoncrawl.org/` regardless of this flag, because the binary has no S3 client and the CloudFront mirror serves the same bytes anonymously.
-`download` in particular says so in the code: an `--source s3` download still comes down over HTTPS.
+### S3 needs AWS credentials
 
-So `--source s3` is for producing SQL and paths you hand to something else, Athena, Spark, Trino, or a DuckDB with AWS credentials loaded.
-Reading the bucket over the S3 API needs AWS credentials on your side, while the HTTPS mirror needs nothing, which is why `https` is the default.
+The bucket used to allow anonymous reads and does not any more: an unsigned request gets `AccessDenied`.
+Nothing is charged for the objects themselves, but the request has to be signed, so `--source s3` needs credentials.
 
-Making ccrawl actually fetch over S3 is tracked in [#44](https://github.com/tamnd/ccrawl-cli/issues/44).
+ccrawl reads them from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, and falls back to the profile named by `AWS_PROFILE` (or `default`) in `~/.aws/credentials`.
+Instance roles are not used, because a run that takes hours wants a key it was handed rather than one that expires halfway through.
+Without credentials the command fails immediately, saying so, rather than retrying a 403 five times.
+
+An S3 error that names the credentials, `InvalidAccessKeyId`, `SignatureDoesNotMatch`, `ExpiredToken`, is reported as-is and not retried.
+
+If you pass `--source s3` from outside `us-east-1`, ccrawl prints one warning on the first read, because that is the combination that costs money for nothing.
+It stays quiet when it cannot tell where it is running.
+
+DuckDB reads the S3 URIs in the generated SQL with its own credentials, not ccrawl's, so `columnar` queries under `--source s3` need `httpfs` configured on the DuckDB side.
+
+Making ccrawl fetch over S3 was tracked in [#44](https://github.com/tamnd/ccrawl-cli/issues/44).
 
 ## Output auto-detection
 

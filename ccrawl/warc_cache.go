@@ -107,7 +107,7 @@ func openWARCShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig) (s
 		}
 	}
 
-	warcURL := FileURL(cfg.WARCPath, SourceHTTPS)
+	warcURL := h.DataURL(cfg.WARCPath)
 	resp, derr := h.GetDownload(ctx, warcURL)
 	if derr != nil {
 		return nil, false, 0, fmt.Errorf("shard %d: download warc: %w", cfg.ShardIdx, derr)

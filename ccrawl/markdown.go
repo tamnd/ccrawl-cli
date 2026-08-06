@@ -107,7 +107,7 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	stats := MarkdownStats{ShardIdx: cfg.ShardIdx}
 
 	t0 := time.Now()
-	warcURL := FileURL(cfg.WARCPath, SourceHTTPS)
+	warcURL := h.DataURL(cfg.WARCPath)
 	resp, err := h.GetDownload(ctx, warcURL)
 	if err != nil {
 		return stats, fmt.Errorf("download shard %d: %w", cfg.ShardIdx, err)
