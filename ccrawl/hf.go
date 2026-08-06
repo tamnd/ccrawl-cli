@@ -53,6 +53,10 @@ func (e *RateLimitError) Error() string {
 	return "HF rate limited: " + e.Msg
 }
 
+// Unwrap makes errors.Is(err, ErrHFRateLimited) work alongside the existing
+// errors.As call sites that reach for RetryAfter.
+func (e *RateLimitError) Unwrap() error { return ErrHFRateLimited }
+
 // HFClient is a HuggingFace Hub client. Large-file commits are delegated to an
 // embedded Python helper (hf_commit.py) run via uv, which uses huggingface_hub
 // + hf-xet for xet-aware uploads.
@@ -70,9 +74,18 @@ func NewHFClient(token string) *HFClient {
 	if token == "" {
 		token = os.Getenv("HUGGINGFACE_TOKEN")
 	}
+	// The commit path opens many concurrent PUTs to the same object store host.
+	// The default transport keeps only two idle connections per host, so most of
+	// those would pay for a fresh TLS handshake; keeping a connection per
+	// concurrent upload means the bandwidth goes to bytes instead.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = hfUploadConcurrency
+	tr.IdleConnTimeout = 90 * time.Second
+
 	return &HFClient{
 		token: token,
-		http:  &http.Client{Timeout: 30 * time.Minute},
+		http:  &http.Client{Timeout: 30 * time.Minute, Transport: tr},
 	}
 }
 
@@ -215,9 +228,21 @@ func (c *HFClient) PathsInfo(ctx context.Context, repoID string, paths []string)
 	return sizes, nil
 }
 
-// CreateCommit uploads files to HuggingFace via uv+Python and returns the commit URL.
-// The Python helper (hf_commit.py) is extracted to ~/.cache/ccrawl/ on first use.
+// CreateCommit uploads files to HuggingFace and returns the commit URL. The
+// default path speaks the hub's commit protocol directly (see hf_upload.go), so
+// publishing needs nothing on the box but this binary. Set CCRAWL_HF_COMMIT=python
+// to fall back to the embedded huggingface_hub helper for one more release; that
+// path and its uv dependency go away after that.
 func (c *HFClient) CreateCommit(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {
+	if os.Getenv("CCRAWL_HF_COMMIT") != "python" {
+		return c.createCommitGo(ctx, repoID, message, ops)
+	}
+	return c.createCommitPython(ctx, repoID, message, ops)
+}
+
+// createCommitPython uploads files via uv+Python. The helper (hf_commit.py) is
+// extracted to ~/.cache/ccrawl/ on first use.
+func (c *HFClient) createCommitPython(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {
 	scriptPath, err := hfScriptPath()
 	if err != nil {
 		return "", fmt.Errorf("hf_commit.py: %w", err)
