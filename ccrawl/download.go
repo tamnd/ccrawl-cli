@@ -70,10 +70,7 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 		return DownloadResult{Path: ccPath, Err: err}
 	}
 
-	// S3 source still downloads over HTTPS unless an s3 client is configured;
-	// the CloudFront mirror serves the same bytes, so prefer it for downloads.
-	url := FileURL(ccPath, SourceHTTPS)
-	_ = src
+	url := FileURL(ccPath, src)
 	resp, err := h.GetDownload(ctx, url)
 	if err != nil {
 		return DownloadResult{Path: ccPath, Err: fmt.Errorf("GET %s: %w", url, err)}
@@ -107,7 +104,7 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 // byte-range request. This is how a capture's content is pulled without
 // downloading the whole multi-gigabyte WARC.
 func FetchWARCRecord(ctx context.Context, h *HTTPClient, filename string, offset, length int64) (WARCRecord, error) {
-	resp, err := h.GetRange(ctx, FileURL(filename, SourceHTTPS), offset, length)
+	resp, err := h.GetRange(ctx, h.DataURL(filename), offset, length)
 	if err != nil {
 		return WARCRecord{}, fmt.Errorf("range GET: %w", err)
 	}

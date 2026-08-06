@@ -115,7 +115,7 @@ func runNewsSearch(ctx context.Context, app *App, host string, year, month int) 
 	g.SetLimit(app.Workers)
 	for _, f := range files {
 		g.Go(func() error {
-			resp, err := app.HTTP.GetDownload(ctx, ccrawl.FileURL(f.Path, ccrawl.SourceHTTPS))
+			resp, err := app.HTTP.GetDownload(ctx, app.HTTP.DataURL(f.Path))
 			if err != nil {
 				return nil
 			}

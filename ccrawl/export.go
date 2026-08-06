@@ -197,7 +197,7 @@ func newUUID() string {
 // range. The bytes are the original gzip member as stored in the WARC file, so
 // they can be written straight into an exported WARC without re-encoding.
 func FetchWARCRecordRaw(ctx context.Context, h *HTTPClient, filename string, offset, length int64) ([]byte, error) {
-	resp, err := h.GetRange(ctx, FileURL(filename, SourceHTTPS), offset, length)
+	resp, err := h.GetRange(ctx, h.DataURL(filename), offset, length)
 	if err != nil {
 		return nil, fmt.Errorf("range GET: %w", err)
 	}
