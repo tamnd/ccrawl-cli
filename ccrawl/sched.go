@@ -7,6 +7,11 @@ import (
 
 // ── recrawl scheduling ────────────────────────────────────────────────────────
 
+// RankUnknown is the harmonicPos value meaning "this host's rank is not
+// available". Rank positions from the web graph are 1-based, so 0 (and anything
+// below it) can never be a real position.
+const RankUnknown int64 = 0
+
 // CrawlTier assigns a 1–5 crawl tier to a host based on its harmonic rank
 // position and estimated change rate. Lower tier = more frequent crawling.
 //
@@ -15,7 +20,23 @@ import (
 //	Tier 3: 0.2–0.5 + top 5 M                  → 7 days
 //	Tier 4: < 0.2  + top 10 M                  → 30 days
 //	Tier 5: everything else                     → on-demand
+//
+// Tiers 1 and 2 are authority gated: a host only earns them by being both
+// important and volatile. Pass RankUnknown when the rank is not available and
+// the tier is derived from the change rate alone, capped at tier 3, because
+// there is no evidence the host deserves a daily or 3-day recrawl. Do not pass
+// 0 to mean "rank first", it means the opposite.
 func CrawlTier(harmonicPos int64, changeRate float64) int {
+	if harmonicPos <= RankUnknown {
+		switch {
+		case changeRate >= 0.5:
+			return 3
+		case changeRate >= 0.2:
+			return 4
+		default:
+			return 5
+		}
+	}
 	switch {
 	case harmonicPos <= 100_000 && changeRate > 0.8:
 		return 1
@@ -95,8 +116,10 @@ func DiffCDX(ctx context.Context, urlsA, urlsB []string, crawlA, crawlB string, 
 			ChangedURLs: int64Val(row, "changed_urls"),
 			ChangeRate:  float64Val(row, "change_rate"),
 		}
-		// use harmonic rank position 0 (unknown) → tier based only on change rate
-		e.Tier = CrawlTier(0, e.ChangeRate)
+		// The diff joins two columnar indexes and never sees the web graph, so
+		// the rank is genuinely unknown here and the tier comes from the change
+		// rate alone. Feed the tier assignment real ranks with `sched assign`.
+		e.Tier = CrawlTier(RankUnknown, e.ChangeRate)
 		return fn(e)
 	})
 }

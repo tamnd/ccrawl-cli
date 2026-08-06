@@ -26,6 +26,51 @@ func TestCrawlTier(t *testing.T) {
 	}
 }
 
+// An unknown rank must never buy a host tier 1 or tier 2. Those are for hosts
+// that are both important and volatile, and without a rank we only know the
+// second half. Passing 0 used to read as "position 0", i.e. the best rank there
+// is, which put every noisy host in the long tail on a 24h recrawl.
+func TestCrawlTierUnknownRank(t *testing.T) {
+	cases := []struct {
+		pos        int64
+		changeRate float64
+		wantTier   int
+	}{
+		{RankUnknown, 1.0, 3},
+		{RankUnknown, 0.9, 3},
+		{RankUnknown, 0.5, 3},
+		{RankUnknown, 0.49, 4},
+		{RankUnknown, 0.2, 4},
+		{RankUnknown, 0.19, 5},
+		{RankUnknown, 0, 5},
+		{-1, 0.9, 3}, // negative is unknown too, not a very good rank
+	}
+	for _, c := range cases {
+		got := CrawlTier(c.pos, c.changeRate)
+		if got != c.wantTier {
+			t.Errorf("CrawlTier(%d, %.2f) = %d, want %d", c.pos, c.changeRate, got, c.wantTier)
+		}
+	}
+}
+
+// The unknown-rank tier is a provisional ceiling on urgency taken from the
+// change rate alone, so it is not comparable to a tier backed by a real rank.
+// What has to hold is that it never reaches the authority gated tiers and that
+// it moves in the right direction as the change rate rises.
+func TestCrawlTierUnknownRankIsMonotone(t *testing.T) {
+	prev := 6
+	for _, rate := range []float64{0, 0.19, 0.2, 0.49, 0.5, 0.8, 1.0} {
+		tier := CrawlTier(RankUnknown, rate)
+		if tier < 3 {
+			t.Errorf("rate %.2f: unknown rank reached authority gated tier %d", rate, tier)
+		}
+		if tier > prev {
+			t.Errorf("rate %.2f: tier went up to %d from %d as the change rate rose", rate, tier, prev)
+		}
+		prev = tier
+	}
+}
+
 func TestTierInterval(t *testing.T) {
 	if TierInterval(1) != 24 {
 		t.Errorf("tier 1 should be 24h")
