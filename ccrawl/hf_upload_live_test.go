@@ -6,16 +6,15 @@ package ccrawl
 //
 // Run them with real Common Crawl parquet:
 //
-//	ccrawl markdown export --shards 0-9 --push=false --keep-parquet --out /tmp/e1-real
-//	CCRAWL_HF_LIVE_DIR=/tmp/e1-real \
-//	CCRAWL_HF_LIVE_GO_REPO=open-index/ccrawl-e1-bench-go \
-//	CCRAWL_HF_LIVE_PY_REPO=open-index/ccrawl-e1-bench-py \
+//	ccrawl markdown export --shards 0-9 --push=false --keep-parquet --out /tmp/hf-real
+//	CCRAWL_HF_LIVE_DIR=/tmp/hf-real \
+//	CCRAWL_HF_LIVE_REPO=your-org/ccrawl-hf-live \
 //	go test ./ccrawl/ -run TestLive -v -timeout 60m
 //
-// TestLiveCommitParity proves the Go path stores the same bytes as the Python
-// path. TestLiveCommitThroughput measures both, using a different half of the
-// shards for each so neither benefits from the other having already uploaded the
-// same content.
+// TestLiveCommitIntegrity proves the bytes arrive unchanged: every LFS oid the
+// hub reports back is the sha256 we computed locally. TestLiveCommitThroughput
+// reports what the upload actually sustains. Point them at a scratch repo, they
+// write to it.
 
 import (
 	"context"
@@ -141,6 +140,15 @@ func localSHA256(t *testing.T, path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Size()
+}
+
 func totalSize(t *testing.T, paths []string) int64 {
 	t.Helper()
 	var n int64
@@ -162,17 +170,14 @@ func opsFor(paths []string) []HFOperation {
 	return ops
 }
 
-// TestLiveCommitParity commits the same real shards through both paths into two
-// repos and checks the hub ended up holding identical content: the same paths,
-// the same sizes, and LFS oids equal to the local sha256 on both sides.
-func TestLiveCommitParity(t *testing.T) {
+// TestLiveCommitIntegrity commits real shards and checks the hub ended up
+// holding what we sent: the same paths, the same sizes, and LFS oids equal to
+// the local sha256.
+func TestLiveCommitIntegrity(t *testing.T) {
 	shards := liveShards(t)
 	c := liveClient(t)
-	goRepo := liveRepo(t, "CCRAWL_HF_LIVE_GO_PARITY_REPO")
-	pyRepo := liveRepo(t, "CCRAWL_HF_LIVE_PY_PARITY_REPO")
+	repo := liveRepo(t, "CCRAWL_HF_LIVE_REPO")
 
-	// Every shard in the directory is the fixture, so point CCRAWL_HF_LIVE_DIR at
-	// a ten shard export to get the ten shard comparison issue #40 asks for.
 	ops := opsFor(shards)
 	paths := make([]string, len(ops))
 	for i, op := range ops {
@@ -180,87 +185,50 @@ func TestLiveCommitParity(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	if _, err := c.createCommitGo(ctx, goRepo, "parity check via go", ops); err != nil {
-		t.Fatalf("go commit: %v", err)
-	}
-	if _, err := c.createCommitPython(ctx, pyRepo, "parity check via python", ops); err != nil {
-		t.Fatalf("python commit: %v", err)
+	if _, err := c.CreateCommit(ctx, repo, "integrity check", ops); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
-	goFiles, err := hubPathsInfo(ctx, c, goRepo, paths)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pyFiles, err := hubPathsInfo(ctx, c, pyRepo, paths)
+	files, err := hubPathsInfo(ctx, c, repo, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for i, path := range paths {
 		want := localSHA256(t, shards[i])
-		g, ok := goFiles[path]
+		f, ok := files[path]
 		if !ok {
-			t.Fatalf("%s missing from %s", path, goRepo)
+			t.Fatalf("%s missing from %s", path, repo)
 		}
-		p, ok := pyFiles[path]
-		if !ok {
-			t.Fatalf("%s missing from %s", path, pyRepo)
+		if f.LFS == nil {
+			t.Fatalf("%s: expected an LFS file, got %+v", path, f)
 		}
-		if g.LFS == nil || p.LFS == nil {
-			t.Fatalf("%s: expected both sides to be LFS, go=%+v py=%+v", path, g.LFS, p.LFS)
+		if f.LFS.OID != want {
+			t.Errorf("%s: hub oid %s, local sha256 %s", path, f.LFS.OID, want)
 		}
-		if g.LFS.OID != want {
-			t.Errorf("%s: go oid %s, local sha256 %s", path, g.LFS.OID, want)
+		if want := fileSize(t, shards[i]); f.LFS.Size != want {
+			t.Errorf("%s: hub size %d, local size %d", path, f.LFS.Size, want)
 		}
-		if p.LFS.OID != want {
-			t.Errorf("%s: python oid %s, local sha256 %s", path, p.LFS.OID, want)
-		}
-		if g.LFS.Size != p.LFS.Size {
-			t.Errorf("%s: go size %d, python size %d", path, g.LFS.Size, p.LFS.Size)
-		}
-		t.Logf("%s: both paths stored oid %s (%d bytes)", path, want, g.LFS.Size)
+		t.Logf("%s: hub stored oid %s (%d bytes)", path, f.LFS.OID, f.LFS.Size)
 	}
 }
 
-// TestLiveCommitThroughput commits real parquet through both paths and reports
-// wall clock and MB/s. Each path gets its own half of the shards so neither is
-// uploading content the other already put on the hub, which would turn the
-// second run into a dedup no-op and make the number meaningless.
+// TestLiveCommitThroughput commits real parquet and reports wall clock and MB/s.
+// The hub deduplicates, so a repeat run against the same repo with the same
+// shards measures nothing. Use a fresh repo, or fresh shards, for a real number.
 func TestLiveCommitThroughput(t *testing.T) {
 	shards := liveShards(t)
 	c := liveClient(t)
-	goRepo := liveRepo(t, "CCRAWL_HF_LIVE_GO_REPO")
-	pyRepo := liveRepo(t, "CCRAWL_HF_LIVE_PY_REPO")
+	repo := liveRepo(t, "CCRAWL_HF_LIVE_REPO")
 
-	if len(shards) < 2 {
-		t.Skip("need at least two shards to give each path its own set")
-	}
-	half := len(shards) / 2
-	goShards, pyShards := shards[:half], shards[half:]
-
+	size := totalSize(t, shards)
 	ctx := t.Context()
-	run := func(name, repo string, paths []string, commit func(context.Context, string, string, []HFOperation) (string, error)) float64 {
-		bytes := totalSize(t, paths)
-		start := time.Now()
-		if _, err := commit(ctx, repo, "throughput check via "+name, opsFor(paths)); err != nil {
-			t.Fatalf("%s commit: %v", name, err)
-		}
-		elapsed := time.Since(start)
-		mbps := float64(bytes) / (1 << 20) / elapsed.Seconds()
-		t.Logf("%s: %d shards, %.1f MB in %s = %.1f MB/s",
-			name, len(paths), float64(bytes)/(1<<20), elapsed.Round(time.Second), mbps)
-		return mbps
+	start := time.Now()
+	if _, err := c.CreateCommit(ctx, repo, "throughput check", opsFor(shards)); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
-
-	// Set CCRAWL_HF_LIVE_PY_FIRST to swap the order, which is how you check that
-	// whichever path runs second is not being flattered by a warm connection.
-	var goMBps, pyMBps float64
-	if os.Getenv("CCRAWL_HF_LIVE_PY_FIRST") != "" {
-		pyMBps = run("python", pyRepo, pyShards, c.createCommitPython)
-		goMBps = run("go", goRepo, goShards, c.createCommitGo)
-	} else {
-		goMBps = run("go", goRepo, goShards, c.createCommitGo)
-		pyMBps = run("python", pyRepo, pyShards, c.createCommitPython)
-	}
-	t.Logf("go is %.2fx the python throughput", goMBps/pyMBps)
+	elapsed := time.Since(start)
+	t.Logf("%d shards, %.1f MB in %s = %.1f MB/s", len(shards),
+		float64(size)/(1<<20), elapsed.Round(time.Second),
+		float64(size)/(1<<20)/elapsed.Seconds())
 }
