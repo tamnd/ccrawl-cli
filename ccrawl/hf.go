@@ -3,21 +3,15 @@ package ccrawl
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
-
-//go:embed embed/hf_commit.py
-var hfCommitPy []byte
 
 // HFOperation describes a file to add to a HuggingFace commit.
 type HFOperation struct {
@@ -57,9 +51,9 @@ func (e *RateLimitError) Error() string {
 // errors.As call sites that reach for RetryAfter.
 func (e *RateLimitError) Unwrap() error { return ErrHFRateLimited }
 
-// HFClient is a HuggingFace Hub client. Large-file commits are delegated to an
-// embedded Python helper (hf_commit.py) run via uv, which uses huggingface_hub
-// + hf-xet for xet-aware uploads.
+// HFClient is a HuggingFace Hub client. It speaks the hub's commit protocol
+// directly, including LFS multipart uploads, so nothing outside this binary is
+// involved in publishing a dataset.
 type HFClient struct {
 	token string
 	http  *http.Client
@@ -228,81 +222,11 @@ func (c *HFClient) PathsInfo(ctx context.Context, repoID string, paths []string)
 	return sizes, nil
 }
 
-// CreateCommit uploads files to HuggingFace and returns the commit URL. The
-// default path speaks the hub's commit protocol directly (see hf_upload.go), so
-// publishing needs nothing on the box but this binary. Set CCRAWL_HF_COMMIT=python
-// to fall back to the embedded huggingface_hub helper for one more release; that
-// path and its uv dependency go away after that.
+// CreateCommit uploads files to HuggingFace and returns the commit URL. It
+// speaks the hub's commit protocol directly (see hf_upload.go), so publishing
+// needs nothing on the box but this binary.
 func (c *HFClient) CreateCommit(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {
-	if os.Getenv("CCRAWL_HF_COMMIT") != "python" {
-		return c.createCommitGo(ctx, repoID, message, ops)
-	}
-	return c.createCommitPython(ctx, repoID, message, ops)
-}
-
-// createCommitPython uploads files via uv+Python. The helper (hf_commit.py) is
-// extracted to ~/.cache/ccrawl/ on first use.
-func (c *HFClient) createCommitPython(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {
-	scriptPath, err := hfScriptPath()
-	if err != nil {
-		return "", fmt.Errorf("hf_commit.py: %w", err)
-	}
-	type opJSON struct {
-		LocalPath  string `json:"local_path,omitempty"`
-		PathInRepo string `json:"path_in_repo"`
-	}
-	opsJSON := make([]opJSON, len(ops))
-	for i, op := range ops {
-		opsJSON[i] = opJSON(op)
-	}
-	stdin, _ := json.Marshal(map[string]interface{}{
-		"token": c.token, "repo_id": repoID,
-		"message": message, "num_threads": 8, "ops": opsJSON,
-	})
-	uvBin := hfResolveUV()
-	if uvBin == "" {
-		return "", fmt.Errorf("uv not found — install with: curl -LsSf https://astral.sh/uv/install.sh | sh")
-	}
-	uploadCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(uploadCtx, uvBin, "run", scriptPath)
-	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Stderr = os.Stderr
-	cmd.Cancel = func() error { return cmd.Process.Kill() }
-	cmd.WaitDelay = 10 * time.Second
-	cmd.Env = append(os.Environ(),
-		"HF_HUB_VERBOSITY=warning",
-		"HF_XET_FIXED_UPLOAD_CONCURRENCY=4",
-		"HF_XET_CLIENT_RETRY_MAX_ATTEMPTS=7",
-		"HF_XET_CLIENT_RETRY_MAX_DURATION=600s",
-		"HF_XET_CLIENT_READ_TIMEOUT=300s",
-		"HF_XET_CLIENT_CONNECT_TIMEOUT=120s",
-	)
-	out, err := cmd.Output()
-	if uploadCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("HF commit timed out after 45 minutes")
-	}
-	if err != nil {
-		return "", fmt.Errorf("HF commit failed: %w", err)
-	}
-	var result struct {
-		CommitURL  string `json:"commit_url"`
-		Error      string `json:"error"`
-		RetryAfter int    `json:"retry_after"`
-	}
-	if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
-		return "", fmt.Errorf("HF commit parse: %w", jsonErr)
-	}
-	if result.Error != "" {
-		if result.RetryAfter > 0 {
-			return "", &RateLimitError{
-				RetryAfter: time.Duration(result.RetryAfter) * time.Second,
-				Msg:        result.Error,
-			}
-		}
-		return "", fmt.Errorf("HF commit: %s", result.Error)
-	}
-	return result.CommitURL, nil
+	return c.createCommitGo(ctx, repoID, message, ops)
 }
 
 // CommitWithRetry calls CreateCommit up to maxAttempts times with exponential backoff.
@@ -334,37 +258,4 @@ func (c *HFClient) CommitWithRetry(ctx context.Context, repoID, message string, 
 		fmt.Fprintf(os.Stderr, "  HF commit attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
 	}
 	return "", fmt.Errorf("HF commit after %d attempts: %w", maxAttempts, lastErr)
-}
-
-func hfScriptPath() (string, error) {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".cache", "ccrawl")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, "hf_commit.py")
-	existing, _ := os.ReadFile(p)
-	if string(existing) != string(hfCommitPy) {
-		if err := os.WriteFile(p, hfCommitPy, 0o755); err != nil {
-			return "", err
-		}
-	}
-	return p, nil
-}
-
-func hfResolveUV() string {
-	if p, err := exec.LookPath("uv"); err == nil {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	for _, candidate := range []string{
-		filepath.Join(home, ".local", "bin", "uv"),
-		filepath.Join(home, ".cargo", "bin", "uv"),
-		"/usr/local/bin/uv",
-	} {
-		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
-			return candidate
-		}
-	}
-	return ""
 }

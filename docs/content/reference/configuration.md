@@ -46,7 +46,6 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 | `CCRAWL_LIBRARY` | Dataset library root (overrides the default `~/notes/ccrawl`) |
 | `CCRAWL_CACHE_DIR` | Cache directory (overrides the default under the data dir) |
 | `HF_TOKEN` | HuggingFace write token, required by the publishing commands (`HUGGINGFACE_TOKEN` also works) |
-| `CCRAWL_HF_COMMIT` | Set to `python` to use the old uv-based commit path instead of the built-in one |
 
 ## Publishing to HuggingFace
 
@@ -54,8 +53,7 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 
 The commit is spoken directly by the binary: preupload, then LFS multipart to object storage, then the commit itself.
 Nothing else has to be installed.
-Setting `CCRAWL_HF_COMMIT=python` falls back to the previous implementation, which shelled out to `uv run` with `huggingface_hub`, and that fallback goes away in the release after this one.
-It is there only in case a repo behaves differently than expected during the changeover.
+The `CCRAWL_HF_COMMIT=python` escape hatch that v0.6.0 shipped is gone as of v0.7.0, along with the embedded helper script and the uv lookup.
 
 ## Global flags
 
