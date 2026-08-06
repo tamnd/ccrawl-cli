@@ -54,7 +54,7 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 | `-o, --output` | auto | `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, `raw`, `parquet` |
 | `-n, --limit` | `0` | Maximum results; `0` is unlimited |
 | `-j, --workers` | per command | Concurrency for downloads and scans |
-| `--source` | `https` | Bulk data source: `https` or `s3` |
+| `--source` | `https` | Which URL scheme to name for bulk data: `https` or `s3` (see [below](#the-source-flag)) |
 | `--rate` | `200ms` | Minimum delay between requests, to stay polite |
 | `--retries` | `5` | Retry attempts on 403, 429, and 5xx |
 | `--timeout` | `2m` | Per-request timeout |
@@ -69,6 +69,29 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 | `-q, --quiet` | off | Suppress progress output |
 | `-v, --verbose` | off | Increase verbosity (repeatable) |
 | `--dry-run` | off | Print actions without performing them |
+
+## The source flag
+
+`--source` picks which base a Common Crawl path is rendered against: `https://data.commoncrawl.org/` or `s3://commoncrawl/`.
+It changes the URLs ccrawl writes down, not the ones it fetches.
+
+`--source s3` affects:
+
+| Command | Effect |
+|---|---|
+| `paths` | Prints `s3://commoncrawl/...` paths instead of HTTPS ones |
+| `columnar sql`, `columnar *`, `db load` | The generated SQL reads `s3://commoncrawl/cc-index/...` |
+| `host cdx`, `host enrich`, `sched diff` | The Parquet file list handed to DuckDB uses S3 URIs |
+| `urls publish` | The columnar Parquet it projects from uses S3 URIs |
+
+Everything ccrawl fetches itself still goes over the HTTPS mirror.
+`get`, `fetch`, `search`, `download`, `export`, `news`, `markdown export`, and `markdown refetch` all use `https://data.commoncrawl.org/` regardless of this flag, because the binary has no S3 client and the CloudFront mirror serves the same bytes anonymously.
+`download` in particular says so in the code: an `--source s3` download still comes down over HTTPS.
+
+So `--source s3` is for producing SQL and paths you hand to something else, Athena, Spark, Trino, or a DuckDB with AWS credentials loaded.
+Reading the bucket over the S3 API needs AWS credentials on your side, while the HTTPS mirror needs nothing, which is why `https` is the default.
+
+Making ccrawl actually fetch over S3 is tracked in [#44](https://github.com/tamnd/ccrawl-cli/issues/44).
 
 ## Output auto-detection
 

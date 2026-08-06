@@ -1,106 +1,126 @@
 ---
 title: "Building a recrawl engine"
-description: "Seed a crawl from the CC host list, fetch live URLs respecting robots.txt, and store results for later indexing."
+description: "What the crawl group does today: pick seed hosts from the web graph, fetch a URL politely, and see the tier budget."
 weight: 70
 ---
 
-`ccrawl crawl` is a small but opinionated web crawler built on top of the Common Crawl host and CDX data.
-It is designed for one job: re-crawl the URLs Common Crawl already knows about, update the content, and feed the results into the search index.
+`ccrawl crawl` is the recrawl side of the tool: decide which hosts are worth crawling again, and fetch pages the way a well-behaved crawler should.
 
-## How it works
+Read this first, because it decides whether the guide is useful to you today.
+What ships right now is the seeding half and a single-URL fetcher.
+There is no bulk crawl loop yet, no `.seen` file, no WARC writer wired to a command.
+The [planned](#planned) section at the bottom says what is coming and where to follow it.
 
-The pipeline has three stages:
+## What ships today
 
-1. `crawl seed` — pick which hosts (and their URLs) to crawl based on rank and recency
-2. `crawl fetch` — fetch the live pages, respecting `robots.txt`, and write WARC or JSONL
-3. `index build` — build a local BM25 inverted index from the fetched content (covered in the [search index guide](/guides/search-index/))
+| Command | Does |
+|---|---|
+| `crawl seed` | Stream the web-graph host rank table and emit one seed URL per host |
+| `crawl fetch <url>` | Fetch one URL with the crawler config, optionally checking robots.txt |
+| `crawl status` | Show the daily page budget across the five recrawl tiers |
 
-## Seeding from the host list
+Tier assignment itself lives in `ccrawl sched`, covered in [recrawl scheduling](/guides/scheduling/).
 
-`crawl seed` queries the CC CDX Parquet index to produce a seed list of `(host, url, score)` tuples.
-It ranks seeds by harmonic centrality so the most important pages are crawled first.
+## Seeding from the host rank table
+
+`crawl seed` streams the host rank table from a web-graph release and emits one seed per host: the host, `https://{host}/`, its tier, and its harmonic centrality as the priority.
+Hosts come out in rank order, so the most central hosts arrive first and you can stop reading whenever you have enough.
 
 ```bash
-ccrawl crawl seed -o jsonl > seeds.jsonl
-ccrawl crawl seed --max-tier 2 -o jsonl > seeds.jsonl    # only hosts in the top two rank tiers
-ccrawl crawl seed --max-seeds 10000 -o jsonl             # cap at 10 k URLs
+ccrawl crawl seed -n 100 -o table
+ccrawl crawl seed --max-tier 2 -n 1000000 -o jsonl > seeds.jsonl
+ccrawl crawl seed --graph cc-main-2026-mar-apr-may --max-tier 3 -o jsonl > seeds.jsonl
 ```
-
-Flags:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--max-tier` | 5 | Only include hosts at or below this rank tier (1 = top 1%, 5 = all) |
-| `--max-seeds` | unlimited | Hard cap on the number of seed URLs emitted |
-| `--graph` | latest | Web-graph release to use for host ranks |
+| `--max-tier` | 5 | Skip hosts at a tier above this (1 = top 100 K only, 5 = everything) |
+| `--max-seeds` | 10 000 000 | Hard cap on hosts emitted |
+| `--graph` | latest | Web-graph release to read ranks from |
 
-Tier 1 is a few thousand hosts, tier 2 a few hundred thousand, tier 5 is all 262 million.
-Start with `--max-tier 2` and grow.
+Note the seed is the host root, one URL per host, not every URL the host has in the index.
+If you want per-URL seeds, that comes from the [columnar index](/guides/columnar-index/) instead.
 
-## Fetching pages
+One thing worth knowing about the tier column here: `crawl seed` has ranks but no measured change rates, so it assumes 0.5 for every host.
+Tier 1 needs a change rate above 0.8, so nothing seeded this way lands in tier 1.
+Feed real change rates in with `ccrawl sched diff` if the tier split matters to you.
 
-`crawl fetch` reads seeds on stdin (or from a file), fetches the live pages, and writes a WARC or JSONL output.
+The `-n` limit and `--max-seeds` do the same job from different ends.
+`-n` is the global record limit that every ccrawl command has, `--max-seeds` is the pipeline's own cap.
+Either one alone is fine.
+
+Tier 1 is around 100 000 hosts, tier 2 around a million, tier 5 is the whole 262 million host tail.
+Start at `--max-tier 2` and grow.
+
+## Fetching one URL
+
+`crawl fetch` takes exactly one URL argument.
+It fetches with the crawler user agent (`CCrawl/2.0`), follows up to 5 redirects, caps the body at 10 MB, and reports the status, the final URL, the content type, a SHA-1 digest of the body, and the outbound link count.
 
 ```bash
-# quick pipeline: seed → fetch → JSONL
-ccrawl crawl seed --max-tier 2 | ccrawl crawl fetch -o jsonl > pages.jsonl
-
-# write WARC (suitable for archiving or feeding back into WET/WAT processing)
-ccrawl crawl seed --max-tier 1 | ccrawl crawl fetch -f warc -o out/
-
-# fetch from an existing seed file
-ccrawl crawl fetch seeds.jsonl -o jsonl > pages.jsonl
+ccrawl crawl fetch https://golang.org/ -o json
+ccrawl crawl fetch example.com                  # scheme is added if you leave it off
+ccrawl crawl fetch https://example.com/ --robots
 ```
 
-Flags:
+`--robots` fetches and parses the host's `robots.txt` first and refuses the fetch if the path is disallowed.
+It is off by default because a single manual fetch of a URL you already chose does not need it.
+Turn it on for anything automated.
 
-| Flag | Default | Purpose |
-|---|---|---|
-| `--robots` | true | Respect `robots.txt` rules |
-| `--workers` | 8 | Parallel fetch workers |
-| `--delay` | 1s | Politeness delay per host |
-| `--timeout` | 30s | Per-request timeout |
-| `-f` / `--format` | jsonl | Output format: `jsonl` or `warc` |
+The digest is the useful part for recrawl work.
+Fetch a URL, compare the digest with the `content_digest` the columnar index has for the same URL, and you know whether the page changed since the crawl without diffing any text.
 
-The crawler uses a shared connection pool (200 idle connections, 10 per host) and a domain-level frontier with anti-starvation to avoid concentrating on a single host.
-
-## Politeness
-
-By default, `crawl fetch` reads and honors `robots.txt` for every host.
-It caches the parsed ruleset per host for the lifetime of the run.
-Disable only if you own the target domain:
+Because it is one URL per invocation, driving a list means driving the loop yourself:
 
 ```bash
-ccrawl crawl fetch seeds.jsonl --robots=false
+# fetch the top 50 seeds, one at a time, politely
+ccrawl crawl seed -n 50 -o jsonl \
+  | jq -r .url \
+  | while read -r u; do ccrawl crawl fetch "$u" --robots -o jsonl; sleep 1; done \
+  > pages.jsonl
 ```
 
-The politeness delay (`--delay`) is applied per domain, not per worker, so increasing `--workers` does not increase per-host request rate.
+That is a shell loop, not a crawler.
+It has no shared frontier, no per-host politeness across workers, and no resume.
+It is fine for a few thousand URLs and wrong for a few million, which is exactly the gap the planned `crawl run` fills.
 
-## Output format
+## Crawl budget
 
-**JSONL** (`-f jsonl`): one JSON object per page, with URL, status code, final URL after redirects, content type, raw HTML, extracted text, and outbound links.
-Pipe directly into `index build`:
+`crawl status` prints the daily page budget across the five tiers, assuming 10 000 pages per second sustained, which is 864 million pages a day.
 
 ```bash
-ccrawl crawl seed --max-tier 2 | ccrawl crawl fetch -o jsonl | ccrawl index build --dir idx/ -
+ccrawl crawl status -o table
 ```
 
-**WARC** (`-f warc`): standards-compliant WARC/1.1 files, one per worker, written to the directory given with `-o`.
-Use these if you want to replay the crawl later or feed it into other tools.
+It is a planning tool, not a measurement.
+It tells you what a full recrawl at each tier interval would cost so you can size the thing before building it.
 
-## Resuming an interrupted crawl
+## Feeding a search index
 
-`crawl fetch` writes a `.seen` file alongside the output.
-If you re-run the same command, already-seen URLs are skipped automatically.
-
-## End-to-end example
+`ccrawl index build` builds a local BM25 index, and it takes URLs directly rather than reading crawl output on stdin:
 
 ```bash
-# Seed tier-2 hosts, fetch live, build a local search index
-ccrawl crawl seed --max-tier 2 --max-seeds 50000 -o jsonl > seeds.jsonl
-ccrawl crawl fetch seeds.jsonl -o jsonl > pages.jsonl
-ccrawl index build --dir idx/ pages.jsonl
+ccrawl index build --dir idx/ --urls "$(ccrawl crawl seed -n 20 -o jsonl | jq -r .url | paste -sd,)"
 ccrawl index search --dir idx/ "golang concurrency"
 ```
 
-This takes a few hours on a home connection and produces an index you can search in milliseconds.
+`index build` does its own fetching and text extraction, with `--workers` for concurrency.
+It also accepts `--input docs.jsonl` for a JSONL file of documents you already have.
+See the [search index guide](/guides/search-index/) for the details.
+
+## Planned
+
+The library under `ccrawl/crawl.go` already has the pieces a real crawl loop needs, and they compile and are tested:
+
+- `Frontier`, a priority queue with a per-host politeness delay and anti-starvation
+- `RobotsCache`, a per-host cache of parsed rules with a TTL
+- `WriteWARCResponse`, a WARC/1.1 response record writer
+- a shared connection pool, 200 idle connections and 10 per host
+
+None of it is reachable from a command yet.
+Wiring it into a `ccrawl crawl run` that takes a seed list, walks the frontier, honours robots, and writes WARC is tracked in [#54](https://github.com/tamnd/ccrawl-cli/issues/54).
+The frontier also has to survive a restart before that is useful at scale, which is [#51](https://github.com/tamnd/ccrawl-cli/issues/51), and the robots parser needs to be RFC 9309 correct first, which is [#52](https://github.com/tamnd/ccrawl-cli/issues/52).
+
+Until those land, if you need a bulk pipeline over Common Crawl URLs today, use [`ccrawl markdown refetch`](/guides/markdown-corpus/).
+It takes the URL list from a WARC shard, fetches every page live at high concurrency, and writes Parquet.
+It is a different shape from a general crawler, since the URL set is fixed up front rather than discovered from links, but it is the one that exists and it is fast.

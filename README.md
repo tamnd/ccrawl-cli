@@ -29,8 +29,11 @@ go install github.com/tamnd/ccrawl-cli/cmd/ccrawl@latest
 ```
 
 Or grab a prebuilt binary from the [releases page](https://github.com/tamnd/ccrawl-cli/releases).
-The binary is pure Go with no runtime dependencies.
-DuckDB is optional and only needed to run the columnar index queries locally (see [Bulk questions](#bulk-questions-the-columnar-index)).
+The binary is pure Go and everything in the quick start works with nothing else installed.
+Two optional things unlock more:
+
+- **DuckDB** on your `PATH` runs the columnar index queries locally (see [Bulk questions](#bulk-questions-the-columnar-index)). Without it, ccrawl prints the SQL for you to run elsewhere.
+- **Python with `uv`** is required only by the commands that commit to HuggingFace (`urls publish`, `domains publish`, `markdown export`, `markdown refetch`), which shell out to `huggingface_hub` for the upload. Everything that reads Common Crawl is pure Go. Replacing this with a native Go commit path is [#40](https://github.com/tamnd/ccrawl-cli/issues/40).
 
 Build from source:
 
@@ -176,6 +179,23 @@ ccrawl parse local.warc.gz --type response -o table -n 20
 ccrawl convert local.warc.wet.gz --to parquet -O out.parquet
 ```
 
+## Markdown datasets: `markdown`
+
+Common Crawl ships HTML, and most downstream work wants clean Markdown.
+`ccrawl markdown` converts WARC shards to Markdown, writes zstd Parquet, and commits each shard to a HuggingFace dataset repo.
+
+```sh
+ccrawl markdown export --shards 0 --push=false --out ./md   # one shard, local only
+ccrawl markdown export --shards all --parallel 4 --commit-batch 10 --repo your-org/your-dataset
+ccrawl markdown refetch --shards 0-9 --repo your-org/your-refetch-dataset
+```
+
+`export` uses the HTML Common Crawl already captured.
+`refetch` takes the URL list from the shard and fetches every page live, adding status, timings, headers, and an error column.
+Both write a ledger, so a killed run resumes by re-running the same command.
+
+See the [markdown reference](https://ccrawl-cli.tamnd.com/reference/markdown/) and the [corpus guide](https://ccrawl-cli.tamnd.com/guides/markdown-corpus/).
+
 ## CC-NEWS
 
 [CC-NEWS](https://commoncrawl.org/blog/news-dataset-available) is a separate, continuously updated dataset of news articles.
@@ -249,7 +269,7 @@ Useful global flags (all have sensible defaults):
 | `-o, --output` | Output format, including `parquet` (default auto) |
 | `-n, --limit` | Maximum results (`0` means unlimited) |
 | `-j, --workers` | Concurrency for downloads and scans |
-| `--source` | Bulk data source: `https` or `s3` |
+| `--source` | Which URLs to name for bulk data: `https` or `s3`. ccrawl always fetches over HTTPS; `s3` changes the paths it prints and the SQL it generates (see [Configuration](https://ccrawl-cli.tamnd.com/reference/configuration/)) |
 | `--rate` | Minimum delay between requests, to stay polite |
 | `--no-cache` | Bypass the on-disk cache |
 
@@ -268,12 +288,22 @@ Useful global flags (all have sensible defaults):
 | `parse` | Decode a local WARC/WAT/WET file into records |
 | `convert` | Convert WARC/WAT/WET archives to Parquet or JSONL |
 | `columnar` | Query the columnar Parquet index (alias `table`, `athena`) |
+| `markdown` | Build Markdown Parquet datasets from CC WARCs and publish them |
+| `content` | Live-fetch content signals for a URL: text, outlinks, quality |
 | `news` | Work with the continuous CC-NEWS dataset |
 | `rank` | Look up host and domain ranks from the web graph |
+| `host` | Enumerate and enrich hosts from the CC web graph |
+| `crawl` | Recrawl engine: seed hosts, fetch a URL, show the tier budget |
+| `sched` | Recrawl scheduling: tier assignment and differential CDX analysis |
+| `index` | Build and query a local BM25 full-text search index |
+| `api` | Start the v2 REST API server |
 | `urls` | Publish the Common Crawl URL index to a HuggingFace dataset |
 | `domains` | Publish the Common Crawl domain ranks to a HuggingFace dataset |
+| `publish` | Maintenance for the published Common Crawl datasets |
 | `db` | Build and query a local DuckDB database |
 | `stats` | Show the shape of a crawl: file counts per archive kind |
+| `serve` | Serve the operations over HTTP as NDJSON |
+| `mcp` | Run as an MCP server over stdio |
 | `config` | Show resolved configuration and data paths |
 | `cache` | Inspect and clear the on-disk cache |
 

@@ -77,6 +77,21 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # Compare `ccrawl --help` against docs/content/reference/. A command that ships
+  # without a reference entry, or a flag documented that the binary does not have,
+  # fails here rather than shipping.
+  docs-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - name: docs match the binary
+        run: ./scripts/docs-drift.sh
+
   # Confirm go.mod and go.sum are tidy: a PR that adds an import without running
   # go mod tidy fails here instead of breaking a later release.
   tidy:
