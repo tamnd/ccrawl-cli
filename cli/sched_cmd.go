@@ -72,6 +72,11 @@ func registerSchedDiff(app *kit.App) {
 to compute a per-host change rate. This drives tier re-assignment and freshness
 scheduling.
 
+The tier column here is provisional. The diff never reads the web graph, so it
+has no rank to work with and derives the tier from the change rate alone, which
+caps it at tier 3. Tiers 1 and 2 need a rank, so pair this with 'sched assign'
+to get the final assignment.
+
 Requires DuckDB on PATH. Scans ~184 GB × 2 = ~368 GB of Parquet data.
 
 Examples:
