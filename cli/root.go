@@ -49,7 +49,19 @@ Quick start:
   ccrawl crawls latest                 newest crawl ID
   ccrawl search example.com/*          captures under a path
   ccrawl get example.com --text        the page text Common Crawl captured
-  ccrawl columnar urls --tld gov -o url   bulk URLs from the columnar index`,
+  ccrawl columnar urls --tld gov -o url   bulk URLs from the columnar index
+
+Exit codes:
+  0   success
+  1   error
+  2   usage error, a missing or invalid argument
+  3   the query ran and matched nothing
+  75  temporary failure, run it again (EX_TEMPFAIL)
+
+Exit 3 is not a failure, it means the query was fine and Common Crawl has
+nothing for it. Exit 75 comes from the publish pipelines when a run stalls or
+finishes short, and it is the signal for a supervisor to restart the run, which
+picks up where it left off.`,
 		Site: "https://commoncrawl.org",
 		Repo: "https://github.com/tamnd/ccrawl-cli",
 	}, kit.WithDefaults(b.defaults))

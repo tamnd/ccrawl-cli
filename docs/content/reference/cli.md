@@ -611,3 +611,7 @@ These apply to every command.
 | `--no-header` | | Omit the header row in table output | false |
 | `--db` | | Tee every record into a store (e.g. `out.db`, `postgres://...`) | |
 | `--profile` | | Named profile to load | |
+
+## Exit codes
+
+`0` success, `1` error, `2` usage error, `3` the query matched nothing, `75` temporary failure so run it again. See [exit codes](/reference/exit-codes/) for what to branch on and how to supervise a publish run.
