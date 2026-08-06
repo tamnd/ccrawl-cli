@@ -86,7 +86,7 @@ Examples:
   ccrawl markdown refetch --shards 0 --repo open-index/open-markdown-refetch-v1
   ccrawl markdown refetch --shards 0-9 --fetch-workers 400 --repo open-index/open-markdown-refetch-v1
   ccrawl markdown refetch --shards all --parallel 2 --commit-batch 5
-  ccrawl markdown refetch --shards 0-99 --no-push --out ~/data/refetch
+  ccrawl markdown refetch --shards 0-99 --push=false --out ~/data/refetch
   HF_TOKEN=hf_... ccrawl markdown refetch --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,

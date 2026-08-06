@@ -29,11 +29,10 @@ go install github.com/tamnd/ccrawl-cli/cmd/ccrawl@latest
 ```
 
 Or grab a prebuilt binary from the [releases page](https://github.com/tamnd/ccrawl-cli/releases).
-The binary is pure Go and everything in the quick start works with nothing else installed.
-Two optional things unlock more:
+The binary is pure Go with no runtime dependencies, including the commands that commit to HuggingFace (`urls publish`, `domains publish`, `markdown export`, `markdown refetch`).
+One optional thing unlocks more:
 
 - **DuckDB** on your `PATH` runs the columnar index queries locally (see [Bulk questions](#bulk-questions-the-columnar-index)). Without it, ccrawl prints the SQL for you to run elsewhere.
-- **Python with `uv`** is required only by the commands that commit to HuggingFace (`urls publish`, `domains publish`, `markdown export`, `markdown refetch`), which shell out to `huggingface_hub` for the upload. Everything that reads Common Crawl is pure Go. Replacing this with a native Go commit path is [#40](https://github.com/tamnd/ccrawl-cli/issues/40).
 
 Build from source:
 
