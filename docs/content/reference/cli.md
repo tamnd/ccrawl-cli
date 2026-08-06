@@ -26,6 +26,7 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `content` | Live-fetch content signals: text, outlinks, quality |
 | `news` | Work with the continuous CC-NEWS dataset |
 | `columnar` | Query the columnar Parquet index |
+| `markdown` | Build Markdown Parquet datasets from CC WARCs and publish them |
 | `rank` | Look up host and domain ranks from the web graph |
 | `host` | Enumerate and enrich hosts from the CC web graph |
 | `urls` | Mirror the Common Crawl URL index to a HuggingFace dataset |
@@ -38,6 +39,8 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `db` | Build and query a local DuckDB database |
 | `convert` | Convert WARC/WAT/WET archives to Parquet or JSONL |
 | `stats` | Show the shape of a crawl: file counts per archive kind |
+| `serve` | Serve the operations over HTTP as NDJSON |
+| `mcp` | Run as an MCP server over stdio |
 | `config` | Show resolved configuration and data paths |
 | `cache` | Inspect and clear the on-disk cache |
 | `version` | Print the version and exit |
@@ -213,6 +216,26 @@ Engine: `--engine` (`auto|duckdb|print`).
 
 ---
 
+## markdown
+
+Build Markdown Parquet datasets from Common Crawl WARC files and commit them to a HuggingFace dataset repo.
+
+| Subcommand | Does |
+|---|---|
+| `markdown export` | Convert the HTML Common Crawl captured to Markdown Parquet |
+| `markdown refetch` | Re-fetch every URL in a shard live, then convert to Markdown Parquet |
+
+```sh
+ccrawl markdown export --shards 0 --push=false --out ./md
+ccrawl markdown export --shards all --parallel 4 --commit-batch 10 --repo org/name
+ccrawl markdown refetch --shards 0-9 --fetch-workers 400 --repo org/name
+```
+
+Both take `--shards` (`N`, `N-M`, `N,M`, or `all`), resume from a ledger at `<out>/.committed`, and need `HF_TOKEN` unless `--push=false`.
+The [markdown reference](/reference/markdown/) has both schemas, the HuggingFace path layout, and the tuning flags.
+
+---
+
 ## rank
 
 | Subcommand | Does |
@@ -220,8 +243,15 @@ Engine: `--engine` (`auto|duckdb|print`).
 | `rank domain <domain>` | Rank of a registered domain |
 | `rank host <host>` | Rank of a host |
 | `rank top` | Top-ranked hosts or domains (requires `--table <url>`) |
+| `rank all` | Stream every host in a rank table, most central first (requires `--table <url>`) |
 
-`rank top` takes `--tld` to filter by TLD.
+`rank top` and `rank all` take `--tld` to filter by TLD.
+The rank table is sorted by harmonic centrality, so `rank all -n 1000` is the top 1000 hosts without any sorting on your side.
+
+```sh
+ccrawl rank all --table <url> --tld com -n 1000
+ccrawl rank all --table <url> -o jsonl > hosts.jsonl
+```
 
 ---
 
@@ -582,6 +612,38 @@ ccrawl convert <file|dir> [flags]
 `--to parquet|jsonl` (default `parquet`).
 `-O/--out` sets the output file or directory.
 `--markdown` converts HTML bodies on the way.
+
+---
+
+## serve
+
+Serve the record-stream operations over HTTP as NDJSON.
+Every kit operation gets an endpoint, so anything the CLI can list, the server can stream.
+
+```sh
+ccrawl serve --addr :8080
+ccrawl serve --addr :8080 --allow-writes
+```
+
+| Flag | Meaning |
+|---|---|
+| `--addr` | Listen address (default `:8080`) |
+| `--allow-writes` | Expose the write operations, which are hidden by default |
+
+`serve` is the generic operation server; `api` is the purpose-built v2 REST API with the host store and search.
+
+---
+
+## mcp
+
+Run as an MCP server over stdio, exposing the same operations as tools to an MCP client.
+
+```sh
+ccrawl mcp
+```
+
+There are no command-specific flags.
+The global flags apply, so `-c`, `--data-dir`, and `--no-cache` all set the server's defaults.
 
 ---
 

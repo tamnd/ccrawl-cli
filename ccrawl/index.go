@@ -134,7 +134,10 @@ func (b *InvertedIndexBuilder) Add(docID uint64, tokens []string) {
 	}
 }
 
-// Flush writes the inverted index to disk in shard_NNN/ directories.
+// Flush writes the inverted index to three flat files in the index directory:
+// terms.dat (term, posting offset, doc frequency, IDF), postings.dat (VByte
+// delta-encoded posting lists), and stats.dat (collection statistics for BM25).
+// The index is not sharded; one Flush writes the whole thing.
 func (b *InvertedIndexBuilder) Flush() error {
 	b.TermCount = len(b.postings)
 	// sort terms
