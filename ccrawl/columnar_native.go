@@ -141,11 +141,12 @@ func (p predicate) excludes(minV, maxV parquet.Value) bool {
 	}
 	for _, pre := range p.prefixes {
 		// Every string with this prefix sorts inside [prefix, prefix+0xff...].
-		// If that window is disjoint from the page's bounds, nothing here can
-		// start with it. Clipping lo to the prefix length is what makes the
-		// lower comparison right: "com,ex" is not less than "com,example", but
-		// a page starting at "com,example" holds no "com,ex" either.
-		if !(pre > hi || pre < clipTo(lo, len(pre))) {
+		// If that window overlaps the page's bounds at all then a row in here
+		// might start with it, and the page has to be read. Clipping lo to the
+		// prefix length is what makes the lower comparison right: "com,ex" is
+		// not less than "com,example", but a page starting at "com,example"
+		// holds no "com,ex" either.
+		if pre <= hi && pre >= clipTo(lo, len(pre)) {
 			return false
 		}
 	}
