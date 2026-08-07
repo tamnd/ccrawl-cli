@@ -53,7 +53,9 @@ func sampleHash(s string) float64 {
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 
-// str renders a DuckDB JSON value as a string.
+// str renders a result value as a string. Numbers arrive as float64 from
+// duckdb, which goes through encoding/json, and as int64 from the native
+// engine, which reads the Parquet column directly.
 func str(v any) string {
 	if v == nil {
 		return ""
@@ -73,8 +75,19 @@ func str(v any) string {
 	}
 }
 
+// toInt64 reads an integer out of a result value. duckdb's JSON gives every
+// number as a float64, but the native engine hands back the Parquet column's
+// own type, so a warc offset arrives as an int64 and used to fall through to
+// zero here. A location with a zero offset and length is a record nobody can
+// fetch, and nothing about it looks wrong until the fetch comes back empty.
 func toInt64(v any) int64 {
 	switch t := v.(type) {
+	case int64:
+		return t
+	case int32:
+		return int64(t)
+	case int:
+		return int64(t)
 	case float64:
 		return int64(t)
 	case string:

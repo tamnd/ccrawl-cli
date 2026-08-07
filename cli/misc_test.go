@@ -19,6 +19,32 @@ func TestParseLocationLine(t *testing.T) {
 	}
 }
 
+// Both engines feed the same row map to the same output code, and they do not
+// agree on the Go type of a number: duckdb goes through encoding/json and gives
+// float64, the native engine gives the Parquet column's own int64. Missing one
+// of those silently zeroed every warc offset the native engine produced.
+func TestToInt64AcceptsBothEngines(t *testing.T) {
+	cases := map[string]struct {
+		in   any
+		want int64
+	}{
+		"duckdb json number": {float64(1234), 1234},
+		"native int64":       {int64(1234), 1234},
+		"native int32":       {int32(1234), 1234},
+		"plain int":          {1234, 1234},
+		"cdx string":         {"1234", 1234},
+		"missing":            {nil, 0},
+		"not a number":       {"abc", 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := toInt64(tc.in); got != tc.want {
+				t.Errorf("toInt64(%#v) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHumanBytes(t *testing.T) {
 	cases := map[int64]string{
 		512:             "512 B",
