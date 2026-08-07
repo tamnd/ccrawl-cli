@@ -294,7 +294,7 @@ func (r *RunReporter) Textf(format string, a ...any) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fmt.Fprintf(r.out, format, a...)
+	_, _ = fmt.Fprintf(r.out, format, a...)
 }
 
 // record folds an event into the metrics registry.

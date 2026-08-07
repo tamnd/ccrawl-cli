@@ -1,0 +1,55 @@
+---
+title: "Columnar engines"
+linkTitle: "Columnar engines"
+description: "The two engines behind ccrawl columnar, what each one can answer, and which one runs when."
+weight: 17
+---
+
+`ccrawl columnar` answers bulk questions against Common Crawl's Parquet index. There are two engines behind it, and `--engine` picks between them.
+
+| Engine | What it is | Needs |
+|---|---|---|
+| `duckdb` | The SQL is handed to a local duckdb binary reading the Parquet over HTTPS | duckdb on PATH |
+| `native` | ccrawl reads the Parquet files itself over ranged HTTP | nothing |
+| `print` | The SQL is printed for you to run in Athena, Spark, Trino, or duckdb yourself | nothing |
+| `auto` | native for anything native can answer, duckdb for the rest | nothing |
+
+The default is `auto`. It takes the native engine for every query the native engine can answer, whether or not duckdb is installed, so the same command does the same thing on every box. What is left is the arbitrary SQL, and that goes to duckdb where duckdb exists and gets printed where it does not. `--engine duckdb` forces the old path on a box that has both.
+
+## What the native engine can answer
+
+`urls`, `locations`, `count`, `langs`, `mimes` and `schema`, with any combination of the filter flags: `--domain`, `--host`, `--tld`, `--mime`, `--lang`, `--status`, `--path-prefix` and `--subset`.
+
+`columnar query` and `columnar sql` take arbitrary SQL, so they need duckdb and always will. A hand written engine that accepts arbitrary SQL is a database, and this is a command line tool. Asking for `--engine native` on one of those is an error rather than a silent fallback, so a script cannot end up quietly running somewhere else.
+
+## How it reads less
+
+A crawl's `warc` subset is thousands of Parquet parts. Reading all of them to count the captures on one TLD would be absurd, so the native engine does what a query planner does.
+
+It opens each part over ranged HTTP and reads only the footer. From the footer it reads the page index for the columns the filters mention, and compares each page's minimum and maximum against the filter. A part whose pages all fall outside the filter is dropped without a single data page being read. Because the files are sorted by `url_surtkey`, a `--domain` or `--host` filter also gets a prefix predicate on that column, which is the one that prunes hardest.
+
+What survives is read a column at a time, cheapest column first, and each column narrows the set of rows still alive. A row group where the first filter kills everything never has the expensive columns touched at all. Only then are the output columns read, and only for the rows that matched.
+
+The upshot on a real crawl: opening a part and deciding it holds nothing costs about 200 KiB out of an 8.7 MiB file.
+
+## Speed
+
+Counting the Vietnamese TLD across the 300 parts of one crawl's `robotstxt` subset, on a home connection:
+
+| Engine | Wall clock |
+|---|---|
+| native, `-j 16` | 15s |
+| native, default `-j 8` | 22s |
+| duckdb | 39s |
+
+Being faster than duckdb is not the point and will not hold for every query. duckdb is a vectorized engine and will win where a query actually has to read a lot of rows. The point is that the no-dependency path is not a consolation prize.
+
+The native engine does not apply the `--rate` inter-request delay. That delay is priced for requests that mean something, a CDX page or a WARC range or a whole file, and a columnar scan is thousands of few-kilobyte reads of footers and column indexes. duckdb, which answers the same queries by default, applies no delay either.
+
+## Differences to know about
+
+Rows come back in whichever order the parts finish, which is also what duckdb over an unordered file list does. Add your own sort if you need one.
+
+`langs` and `mimes` order by count descending and break ties by value, so repeated runs agree with each other.
+
+An empty string and a missing value are two different groups in a breakdown, under both engines.
