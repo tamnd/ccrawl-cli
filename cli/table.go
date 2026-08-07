@@ -209,13 +209,19 @@ func (t *tableCmd) runBreakdown(ctx context.Context, app *App, id string) error 
 	scan.GroupBy = col
 	// The native engine returns the group under "value" rather than under the
 	// column's own name, since one field name keeps the sink generic. Both
-	// spellings are read here so the emitter does not care which engine ran.
+	// spellings are read here, and the row is rebuilt under the column's own
+	// name, so the JSON is the same whichever engine ran.
 	return runColumnarScan(ctx, app, sql, scan, &t.tf, func(row map[string]any) error {
 		v, ok := row[col]
 		if !ok {
 			v = row["value"]
 		}
-		return app.Out.Emit(Row{Cols: []string{col, "count"}, Vals: []string{str(v), str(row["n"])}, Value: row})
+		n := row["n"]
+		return app.Out.Emit(Row{
+			Cols:  []string{col, "count"},
+			Vals:  []string{str(v), str(n)},
+			Value: map[string]any{col: v, "n": n},
+		})
 	})
 }
 
