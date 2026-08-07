@@ -212,7 +212,7 @@ Aliases: `table`, `athena`.
 | `columnar schema` | The columns of the index |
 
 Filters: `--domain`, `--host`, `--tld`, `--mime`, `--status`, `--lang`, `--path-prefix`, `--subset`.
-Engine: `--engine` (`auto|duckdb|print`).
+Engine: `--engine` (`auto|duckdb|native|print`). See [the columnar engines](/reference/columnar-engines/) for what each one can answer and how fast.
 
 ---
 

@@ -49,9 +49,10 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 	if src == "" {
 		src = SourceHTTPS
 	}
+	tr := pooledTransport()
 	return &HTTPClient{
-		c:          &http.Client{Timeout: cfg.Timeout},
-		download:   &http.Client{},
+		c:          &http.Client{Timeout: cfg.Timeout, Transport: tr},
+		download:   &http.Client{Transport: tr},
 		retries:    max(cfg.Retries, 0),
 		delay:      cfg.Delay,
 		backoff:    backoff,
@@ -59,6 +60,42 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 		userAgent:  ua,
 		source:     src,
 		creds:      resolveAWSCreds(),
+	}
+}
+
+// pooledTransport returns a transport that keeps enough idle connections for a
+// worker pool. Go's default is two per host, which is fine for a browser and
+// wrong here: every command that fans out talks to one host, so past two
+// workers the rest pay a fresh TLS handshake on every request.
+func pooledTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 256
+	tr.MaxIdleConnsPerHost = 64
+	tr.IdleConnTimeout = 90 * time.Second
+	return tr
+}
+
+// WithoutDelay returns a copy of h that skips the inter-request delay, sharing
+// the same connection pool, credentials and retry policy.
+//
+// The delay is priced for requests that mean something: a CDX page, a WARC
+// range, a gigabyte file. A columnar scan is thousands of few-kilobyte reads of
+// footers and column indexes, and spacing those two hundred milliseconds apart
+// turns a thirty second query into two minutes. duckdb, which is the default
+// engine for the same queries, applies no delay at all, so throttling the
+// built-in engine only makes the dependency-free path the slow one.
+func (h *HTTPClient) WithoutDelay() *HTTPClient {
+	// Field by field rather than a struct copy, because the mutex must not be
+	// carried over.
+	return &HTTPClient{
+		c:          h.c,
+		download:   h.download,
+		retries:    h.retries,
+		backoff:    h.backoff,
+		backoffMax: h.backoffMax,
+		userAgent:  h.userAgent,
+		source:     h.source,
+		creds:      h.creds,
 	}
 }
 

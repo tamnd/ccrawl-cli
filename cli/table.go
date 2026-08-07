@@ -42,7 +42,7 @@ func (tf *tableFlags) bind(f *kit.FlagSet) {
 	f.IntVar(&tf.status, "status", 0, "fetch_status (e.g. 200)")
 	f.StringVar(&tf.pathPrefix, "path-prefix", "", "url_path prefix")
 	f.StringVar(&tf.subset, "subset", "warc", "warc|crawldiagnostics|robotstxt")
-	f.StringVar(&tf.engine, "engine", "auto", "auto|duckdb|print")
+	f.StringVar(&tf.engine, "engine", "auto", "auto|duckdb|native|print")
 	f.BoolVar(&tf.print, "print", false, "print the SQL and exit")
 }
 
@@ -54,9 +54,14 @@ func newTableCmd() kit.Command {
 		Long: `Query Common Crawl's columnar (Parquet) index, the fastest way to answer bulk
 questions like "every PDF on .gov domains" without touching a single WARC.
 
-By default the SQL runs against a local duckdb binary over the public Parquet
-files. With --engine print (or no duckdb installed) the ready-to-run SQL is
-printed so you can paste it into Athena, Spark, Trino, or DuckDB yourself.
+urls, locations, count, langs, mimes and schema are answered by the built-in
+native engine, which reads the Parquet files directly over ranged HTTP and skips
+the row groups whose statistics rule them out. Nothing needs installing for it.
+
+"columnar query" and "columnar sql --run" take arbitrary SQL, so they run
+against a local duckdb binary. With --engine print the ready-to-run SQL is
+printed so you can paste it into Athena, Spark, Trino, or DuckDB yourself. Use
+--engine duckdb to send a filter query through duckdb too.
 
 Examples:
   ccrawl columnar urls --domain example.com --status 200 -o url
@@ -199,8 +204,18 @@ func (t *tableCmd) runBreakdown(ctx context.Context, app *App, id string) error 
 	if app.Limit > 0 {
 		sql += fmt.Sprintf("\nLIMIT %d", app.Limit)
 	}
-	return runColumnarSQL(ctx, app, sql, &t.tf, func(row map[string]any) error {
-		return app.Out.Emit(Row{Cols: []string{col, "count"}, Vals: []string{str(row[col]), str(row["n"])}, Value: row})
+	scan := nativeScan(q, app)
+	scan.Aggregate = ccrawl.NativeGroupCount
+	scan.GroupBy = col
+	// The native engine returns the group under "value" rather than under the
+	// column's own name, since one field name keeps the sink generic. Both
+	// spellings are read here so the emitter does not care which engine ran.
+	return runColumnarScan(ctx, app, sql, scan, &t.tf, func(row map[string]any) error {
+		v, ok := row[col]
+		if !ok {
+			v = row["value"]
+		}
+		return app.Out.Emit(Row{Cols: []string{col, "count"}, Vals: []string{str(v), str(row["n"])}, Value: row})
 	})
 }
 
@@ -218,18 +233,63 @@ func (t *tableCmd) runSchema(ctx context.Context, app *App, id string) error {
 	// -json mode, which yields no JSON rows; the subquery makes the output
 	// consistent across duckdb versions.
 	sql := fmt.Sprintf("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('%s', hive_partitioning=1) LIMIT 1)", src)
-	return runColumnarSQL(ctx, app, sql, &t.tf, func(row map[string]any) error {
+	emit := func(name, typ string) error {
 		return app.Out.Emit(Row{
 			Cols:  []string{"column", "type"},
-			Vals:  []string{str(row["column_name"]), str(row["column_type"])},
-			Value: row,
+			Vals:  []string{name, typ},
+			Value: map[string]any{"column_name": name, "column_type": typ},
 		})
+	}
+	switch pickEngine(&t.tf, true) {
+	case enginePrint:
+		_, _ = fmt.Fprintln(cmdOut, sql)
+		return nil
+	case engineNative:
+		// The schema is the same in every part, so reading one footer answers it.
+		urls, err := ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, id, t.tf.subset, app.Cfg.Source)
+		if err != nil {
+			return err
+		}
+		if len(urls) == 0 {
+			return noResults("no parquet files for this crawl and subset")
+		}
+		cols, err := ccrawl.NativeSchema(ctx, app.HTTP, urls[0])
+		if err != nil {
+			return err
+		}
+		// crawl and subset are hive partitions in the path rather than columns
+		// in the file, so duckdb reports them and the footer does not. They are
+		// appended by hand to keep the two engines printing the same table.
+		cols = append(cols, [2]string{"crawl", "VARCHAR"}, [2]string{"subset", "VARCHAR"})
+		for _, c := range cols {
+			if err := emit(c[0], c[1]); err != nil {
+				return err
+			}
+		}
+		return app.Out.Flush()
+	}
+	return runColumnarSQL(ctx, app, sql, &t.tf, func(row map[string]any) error {
+		return emit(str(row["column_name"]), str(row["column_type"]))
 	})
 }
 
-// runColumnar renders the SQL from q and dispatches to the engine.
+// runColumnar renders the SQL from q, builds the equivalent native scan, and
+// dispatches to whichever engine is going to run.
 func runColumnar(ctx context.Context, app *App, q ccrawl.ColumnarQuery, tf *tableFlags, emit func(map[string]any) error) error {
-	return runColumnarSQL(ctx, app, q.SQL(app.Cfg.Source), tf, emit)
+	scan := nativeScan(q, app)
+	scan.Aggregate = ccrawl.NativeRows
+	scan.Select = q.Select
+	if len(q.Select) == 1 && strings.HasPrefix(q.Select[0], "count(") {
+		scan.Aggregate = ccrawl.NativeCount
+		scan.Select = nil
+	}
+	return runColumnarScan(ctx, app, q.SQL(app.Cfg.Source), scan, tf, emit)
+}
+
+// nativeScan carries the parts of a columnar query the native engine shares
+// with the SQL, leaving the caller to say what it wants produced.
+func nativeScan(q ccrawl.ColumnarQuery, app *App) ccrawl.NativeScan {
+	return ccrawl.NativeScan{Query: q, Limit: app.Limit, Workers: app.Workers}
 }
 
 // resolveGlobForDuckDB rewrites the quoted `*.parquet` glob in sql into a
@@ -252,17 +312,73 @@ func resolveGlobForDuckDB(ctx context.Context, app *App, tf *tableFlags, sql str
 	return strings.ReplaceAll(sql, glob, ccrawl.ParquetListLiteral(urls)), nil
 }
 
+// chosen is which engine a command is about to use.
+type chosen int
+
+const (
+	engineDuckDB chosen = iota
+	engineNative
+	enginePrint
+)
+
+// pickEngine resolves --engine and --print into the engine that will actually
+// run. Auto takes native whenever native can answer the query, installed duckdb
+// or not, so the same command behaves the same way on every box. What is left
+// is the arbitrary SQL, which goes to duckdb where duckdb exists and is printed
+// where it does not. expressible says whether the native engine could answer
+// this one at all.
+func pickEngine(tf *tableFlags, expressible bool) chosen {
+	switch {
+	case tf.print || tf.engine == "print":
+		return enginePrint
+	case tf.engine == "native":
+		return engineNative
+	case tf.engine == "duckdb":
+		return engineDuckDB
+	case expressible:
+		return engineNative
+	case ccrawl.DuckDBAvailable():
+		return engineDuckDB
+	default:
+		return enginePrint
+	}
+}
+
+// runColumnarScan runs a query that both engines can answer. scan is the native
+// form and sql is the duckdb form; they have to agree, which is why they are
+// built side by side by the caller.
+func runColumnarScan(ctx context.Context, app *App, sql string, scan ccrawl.NativeScan, tf *tableFlags, emit func(map[string]any) error) error {
+	switch pickEngine(tf, ccrawl.NativeExpressible(scan)) {
+	case enginePrint:
+		if !tf.print && tf.engine == "auto" {
+			_, _ = fmt.Fprintln(cmdErr, "no duckdb binary found and this query needs SQL; printing it instead")
+		}
+		_, _ = fmt.Fprintln(cmdOut, sql)
+		return nil
+	case engineNative:
+		if !ccrawl.NativeExpressible(scan) {
+			return usageErr("the native engine cannot answer this query; use --engine duckdb")
+		}
+		return runColumnarNative(ctx, app, scan, tf, emit)
+	}
+	return runDuckDB(ctx, app, sql, tf, emit)
+}
+
 func runColumnarSQL(ctx context.Context, app *App, sql string, tf *tableFlags, emit func(map[string]any) error) error {
-	engine := tf.engine
-	if tf.print || engine == "print" {
+	switch pickEngine(tf, false) {
+	case enginePrint:
+		if !tf.print && tf.engine == "auto" {
+			_, _ = fmt.Fprintln(cmdErr, "no duckdb binary found; printing SQL (install duckdb or use --engine duckdb)")
+		}
 		_, _ = fmt.Fprintln(cmdOut, sql)
 		return nil
+	case engineNative:
+		return usageErr("the native engine does not run SQL; use --engine duckdb")
 	}
-	if engine == "auto" && !ccrawl.DuckDBAvailable() {
-		_, _ = fmt.Fprintln(cmdErr, "no duckdb binary found; printing SQL (install duckdb or use --engine duckdb)")
-		_, _ = fmt.Fprintln(cmdOut, sql)
-		return nil
-	}
+	return runDuckDB(ctx, app, sql, tf, emit)
+}
+
+func runDuckDB(ctx context.Context, app *App, sql string, tf *tableFlags, emit func(map[string]any) error) error {
 	// The printed SQL carries the `*.parquet` glob, which Athena and Spark expand
 	// themselves. duckdb cannot list the bucket, so for the duckdb run we swap the
 	// glob for the explicit file list from the crawl's manifest.
@@ -272,6 +388,33 @@ func runColumnarSQL(ctx context.Context, app *App, sql string, tf *tableFlags, e
 	}
 	n := 0
 	if err := ccrawl.RunColumnarDuckDB(ctx, runSQL, func(row map[string]any) error {
+		n++
+		return emit(row)
+	}); err != nil {
+		return err
+	}
+	if err := app.Out.Flush(); err != nil {
+		return err
+	}
+	if n == 0 {
+		return noResults("query returned no rows")
+	}
+	return nil
+}
+
+func runColumnarNative(ctx context.Context, app *App, scan ccrawl.NativeScan, tf *tableFlags, emit func(map[string]any) error) error {
+	id, err := app.Crawl(ctx)
+	if err != nil {
+		return err
+	}
+	scan.URLs, err = ccrawl.ColumnarParquetURLs(ctx, app.HTTP, app.Cache, id, tf.subset, app.Cfg.Source)
+	if err != nil {
+		return err
+	}
+	// A count over the whole index reports 0 rather than nothing, so the empty
+	// result only applies to the queries that list rows.
+	n := 0
+	if err := ccrawl.RunColumnarNative(ctx, app.HTTP, scan, func(row map[string]any) error {
 		n++
 		return emit(row)
 	}); err != nil {
