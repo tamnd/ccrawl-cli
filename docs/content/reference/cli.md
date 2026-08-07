@@ -673,6 +673,11 @@ These apply to every command.
 | `--no-header` | | Omit the header row in table output | false |
 | `--db` | | Tee every record into a store (e.g. `out.db`, `postgres://...`) | |
 | `--profile` | | Named profile to load | |
+| `--progress` | | Progress reporting for long runs: `text`, `json`, `none` | text on a terminal, json otherwise |
+| `--journal` | | Append run events as JSON Lines to this file | `run.jsonl` beside the ledger |
+| `--metrics-addr` | | Serve Prometheus metrics for the run on this address, e.g. `:9090` | off |
+
+See [run journal](/reference/run-journal/) for the event schema, the metric names, and the queries worth keeping.
 
 ## Exit codes
 

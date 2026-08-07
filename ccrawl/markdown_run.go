@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -112,6 +113,14 @@ type MarkdownExportConfig struct {
 	// Progress is called once per committed batch with a snapshot of the run.
 	// It may be nil.
 	Progress func(MarkdownRunStats)
+
+	// Reporter records the run: one event per shard, one per tick, and the start
+	// and end. Nil narrates to stderr in text and records nothing, which is what
+	// the library did before there was a journal.
+	Reporter *RunReporter
+	// TickInterval is how often a tick event is written. 0 selects
+	// DefaultTickInterval.
+	TickInterval time.Duration
 }
 
 // MarkdownRunStats is a live snapshot of a parallel export run.
@@ -131,6 +140,7 @@ type MarkdownRunStats struct {
 	ShardsPerHour float64
 	ETA           time.Duration // estimated time to finish the remaining shards
 	FreeDiskBytes int64
+	RSSBytes      int64 // resident set size at the last progress update
 }
 
 // packShardFn is the function the orchestrator uses to convert one shard. It
@@ -174,6 +184,7 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 	if minFree <= 0 {
 		minFree = 2 << 30
 	}
+	cfg.Reporter = cfg.Reporter.orDefault("markdown export")
 
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return MarkdownRunStats{}, err
@@ -186,13 +197,48 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 	start := time.Now()
 	run := MarkdownRunStats{Total: len(cfg.Indices)}
 
+	cfg.Reporter.Event(RunEvent{
+		Event: EventStart,
+		Crawl: cfg.CrawlID,
+		Total: run.Total,
+	})
+
+	// The committer owns run, so the ticker cannot read it directly. It publishes
+	// a copy after every change instead, which the ticker reads with no lock and
+	// no chance of catching a half-updated struct.
+	var snap atomic.Pointer[MarkdownRunStats]
+	snap.Store(&MarkdownRunStats{Total: run.Total})
+	var inflight atomic.Int64
+
 	// Committer: the only goroutine that touches run's cumulative fields and the
 	// ledger, so no extra locking is needed there.
 	committerDone := make(chan struct{})
 	var commitErr error
 	go func() {
 		defer close(committerDone)
-		commitErr = runCommitter(ctx, hf, cfg, k, start, finished, &run)
+		commitErr = runCommitter(ctx, hf, cfg, k, start, finished, &run, &snap)
+	}()
+
+	// Ticker: a periodic heartbeat so a stalled run shows up in the journal even
+	// when no shard has finished for an hour.
+	stopTicks := make(chan struct{})
+	ticksDone := make(chan struct{})
+	go func() {
+		defer close(ticksDone)
+		interval := cfg.TickInterval
+		if interval <= 0 {
+			interval = DefaultTickInterval
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopTicks:
+				return
+			case <-t.C:
+				cfg.Reporter.Event(markdownTickEvent(EventTick, snap.Load(), cfg, inflight.Load(), time.Since(start)))
+			}
+		}
 	}()
 
 	// Shard workers.
@@ -208,6 +254,7 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 				waitForDisk(ctx, cfg.OutDir, minFree)
 				outPath := filepath.Join(cfg.OutDir, fmt.Sprintf("%06d.parquet", idx))
 				t0 := time.Now()
+				inflight.Add(1)
 				stats, err := packShardFn(ctx, h, MarkdownPackConfig{
 					CrawlID:    cfg.CrawlID,
 					ShardIdx:   idx,
@@ -216,6 +263,7 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 					Workers:    c,
 					ConvertSem: sem,
 				})
+				inflight.Add(-1)
 				// Per-shard wall-clock is the useful convert figure for a parallel
 				// run; the streamed download is folded into it.
 				stats.DurConvert = time.Since(t0)
@@ -248,13 +296,56 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 	wg.Wait()
 	close(finished)
 	<-committerDone
+	close(stopTicks)
+	<-ticksDone
 
 	run.Elapsed = time.Since(start)
 	run.FreeDiskBytes = freeDiskBytes(cfg.OutDir)
+	run.RSSBytes = currentRSSBytes()
+	cfg.Reporter.Event(markdownTickEvent(EventEnd, &run, cfg, 0, run.Elapsed))
 	if commitErr != nil {
 		return run, commitErr
 	}
 	return run, ctx.Err()
+}
+
+// markdownTickEvent renders a run snapshot as a tick or end event. Free disk,
+// RSS and the elapsed clock are sampled here rather than taken from the
+// snapshot: a tick is exactly the moment to ask, and the snapshot's copies are
+// as old as the last committed batch, which on a stalled run is the thing you
+// are trying to see.
+func markdownTickEvent(kind string, s *MarkdownRunStats, cfg MarkdownExportConfig, inflight int64, elapsed time.Duration) RunEvent {
+	if s == nil {
+		s = &MarkdownRunStats{}
+	}
+	rate := 0.0
+	if elapsed > 0 {
+		rate = float64(s.Committed) / elapsed.Hours()
+	}
+	eta := 0.0
+	if remaining := s.Total - s.Skipped - s.Committed - s.Failed; remaining > 0 && rate > 0 {
+		eta = float64(remaining) / rate * 3600
+	}
+	return RunEvent{
+		Event:        kind,
+		Crawl:        cfg.CrawlID,
+		Done:         s.Committed + s.Skipped + s.Failed,
+		Total:        s.Total,
+		Committed:    s.Committed,
+		Skipped:      s.Skipped,
+		Failed:       s.Failed,
+		Inflight:     inflight,
+		Rows:         s.Rows,
+		WARCBytes:    s.WARCBytes,
+		HTMLBytes:    s.HTMLBytes,
+		MDBytes:      s.MDBytes,
+		ParquetBytes: s.ParquetBytes,
+		Rate:         rate,
+		ETAS:         eta,
+		ElapsedS:     elapsed.Seconds(),
+		FreeDisk:     freeDiskBytes(cfg.OutDir),
+		RSS:          currentRSSBytes(),
+	}
 }
 
 // errAlreadyDone marks a shard the ledger already recorded so the committer can
@@ -263,8 +354,14 @@ var errAlreadyDone = fmt.Errorf("already committed")
 
 // runCommitter drains finished shards, batches K parquets per HF commit, deletes
 // the local files, records the ledger, and reports progress with an ETA.
-func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k int, start time.Time, finished <-chan shardResult, run *MarkdownRunStats) error {
+func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k int, start time.Time, finished <-chan shardResult, run *MarkdownRunStats, snap *atomic.Pointer[MarkdownRunStats]) error {
 	var batch []shardResult
+
+	// publish hands the ticker a stable copy of the run so far.
+	publish := func() {
+		s := *run
+		snap.Store(&s)
+	}
 
 	flush := func() error {
 		if len(batch) == 0 {
@@ -333,10 +430,30 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 			}
 		}
 		run.Committed += len(batch)
+
+		// The shard events go out after the commit, so a shard event in the
+		// journal means the parquet is on the hub, not that it was written
+		// locally.
+		for _, r := range batch {
+			idx := r.idx
+			cfg.Reporter.Event(RunEvent{
+				Event:        EventShard,
+				Crawl:        cfg.CrawlID,
+				Shard:        &idx,
+				Status:       StatusOK,
+				Rows:         r.stats.Rows,
+				WARCBytes:    r.stats.WARCBytes,
+				HTMLBytes:    r.stats.HTMLBytes,
+				MDBytes:      r.stats.MDBytes,
+				ParquetBytes: r.stats.ParquetBytes,
+				ConvertS:     r.stats.DurConvert.Seconds(),
+			})
+		}
 		batch = batch[:0]
 
 		updateRunRates(run, start)
 		logProgress(cfg, run)
+		publish()
 		if cfg.Progress != nil {
 			cfg.Progress(*run)
 		}
@@ -344,12 +461,20 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 	}
 
 	for r := range finished {
+		idx := r.idx
 		switch {
 		case r.err == errAlreadyDone:
 			run.Skipped++
+			cfg.Reporter.Event(RunEvent{Event: EventShard, Crawl: cfg.CrawlID, Shard: &idx, Status: StatusSkipped})
+			publish()
 		case r.err != nil:
 			run.Failed++
-			fmt.Fprintf(os.Stderr, "markdown: shard %06d failed: %v\n", r.idx, r.err)
+			cfg.Reporter.Event(RunEvent{
+				Event: EventShard, Crawl: cfg.CrawlID, Shard: &idx,
+				Status: StatusFailed, Error: r.err.Error(),
+			})
+			cfg.Reporter.Textf("markdown: shard %06d failed: %v\n", r.idx, r.err)
+			publish()
 		default:
 			batch = append(batch, r)
 			if len(batch) >= k {
@@ -385,7 +510,8 @@ func logProgress(cfg MarkdownExportConfig, run *MarkdownRunStats) {
 		pct = float64(done) / float64(run.Total) * 100
 	}
 	run.FreeDiskBytes = freeDiskBytes(cfg.OutDir)
-	fmt.Fprintf(os.Stderr,
+	run.RSSBytes = currentRSSBytes()
+	cfg.Reporter.Textf(
 		"markdown: %d/%d shards (%.1f%%) | %.1f rows total | %.1f shards/hour | ETA %s | disk free %s\n",
 		done, run.Total, pct, float64(run.Rows),
 		run.ShardsPerHour, fmtETA(run.ETA), fmtBytes(run.FreeDiskBytes))

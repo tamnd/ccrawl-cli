@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 
 	"github.com/tamnd/any-cli/kit"
@@ -32,18 +34,27 @@ type App struct {
 	Workers    int
 	UseLibrary bool
 	LibraryDir string
+
+	// Run reporting, from --progress, --journal and --metrics-addr. StartRun
+	// turns these into the reporter a long command hands to the pipeline.
+	Progress    string
+	JournalPath string
+	MetricsAddr string
 }
 
 // domainGlobals holds the ccrawl-specific persistent flags that are not part of
 // the kit framework baseline. Root binds them on the root command; the client
 // factory and Finalize hook read them back when building the App.
 type domainGlobals struct {
-	crawl      string
-	source     string
-	workers    int
-	library    bool
-	libraryDir string
-	yes        bool
+	crawl       string
+	source      string
+	workers     int
+	library     bool
+	libraryDir  string
+	yes         bool
+	progress    string
+	journal     string
+	metricsAddr string
 }
 
 // buildApp is the client factory kit calls once per run. It folds the resolved
@@ -64,15 +75,63 @@ func buildApp(kc kit.Config, dom *domainGlobals) *App {
 		cfg.Source = ccrawl.SourceS3
 	}
 	return &App{
-		Cfg:        cfg,
-		HTTP:       ccrawl.NewHTTPClient(cfg),
-		Cache:      ccrawl.NewCache(cfg.CacheDir, !kc.NoCache),
-		Workers:    dom.workers,
-		yes:        dom.yes,
-		dryRun:     kc.DryRun,
-		UseLibrary: dom.library,
-		LibraryDir: dom.libraryDir,
+		Cfg:         cfg,
+		HTTP:        ccrawl.NewHTTPClient(cfg),
+		Cache:       ccrawl.NewCache(cfg.CacheDir, !kc.NoCache),
+		Workers:     dom.workers,
+		yes:         dom.yes,
+		dryRun:      kc.DryRun,
+		UseLibrary:  dom.library,
+		LibraryDir:  dom.libraryDir,
+		Progress:    dom.progress,
+		JournalPath: dom.journal,
+		MetricsAddr: dom.metricsAddr,
 	}
+}
+
+// StartRun wires up everything a long running command reports through: the
+// journal on disk, the progress mode on stderr, and the metrics endpoint. Every
+// such command calls it the same way, so --progress, --journal and
+// --metrics-addr mean the same thing everywhere.
+//
+// defaultJournal is where the journal goes when --journal was not given. Pass ""
+// for the commands where a journal only makes sense if it was asked for.
+//
+// The returned stop closes the journal and the metrics server, and must be
+// called when the run ends.
+func (a *App) StartRun(pipeline, defaultJournal string) (*ccrawl.RunReporter, func(), error) {
+	mode, err := ccrawl.ParseProgressMode(a.Progress, stderrTTY())
+	if err != nil {
+		return nil, nil, usageErr(err.Error())
+	}
+	path := a.JournalPath
+	if path == "" {
+		path = defaultJournal
+	}
+	journal, err := ccrawl.OpenJournal(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open run journal: %w", err)
+	}
+
+	var metrics *ccrawl.Metrics
+	var srv *http.Server
+	if a.MetricsAddr != "" {
+		metrics = ccrawl.NewMetrics()
+		// Bind now, so a busy port fails the command here rather than an hour in.
+		if srv, err = ccrawl.ServeMetrics(a.MetricsAddr, metrics); err != nil {
+			_ = journal.Close()
+			return nil, nil, err
+		}
+	}
+
+	rep := ccrawl.NewRunReporter(pipeline, mode, journal, metrics)
+	rep.SetOutput(cmdErr) // the swappable stderr, so tests can capture progress
+	return rep, func() {
+		if srv != nil {
+			_ = srv.Close()
+		}
+		_ = journal.Close()
+	}, nil
 }
 
 // appFromCtx returns the run's App for an escape-hatch command, with the renderer

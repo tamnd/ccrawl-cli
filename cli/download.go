@@ -103,13 +103,25 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 		return usageErr("aborted")
 	}
 
+	// A download knows how many files it is going to move, so the progress it
+	// reports carries a real ETA. One journal event per file is affordable here
+	// because the file count is what the user asked for.
+	rep, stopRun, err := app.StartRun("download", "")
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	sp := ccrawl.StartStreamProgress(rep, "files", len(paths), 0)
+	defer sp.Stop()
+
 	var done int64
 	var bytes int64
 	progress := func(r ccrawl.DownloadResult) {
 		n := atomic.AddInt64(&done, 1)
 		atomic.AddInt64(&bytes, r.Bytes)
+		sp.Item(r.Path, r.Bytes, r.Err)
 		if r.Err != nil {
-			_, _ = fmt.Fprintf(cmdErr, "[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
+			rep.Textf("[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
 			return
 		}
 		state := "ok"
@@ -117,14 +129,15 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 			state = "skip"
 		}
 		if stderrTTY() || !r.Skipped {
-			_, _ = fmt.Fprintf(cmdErr, "[%d/%d] %-4s %s (%s)\n", n, len(paths), state, r.LocalPath, humanBytes(r.Bytes))
+			rep.Textf("[%d/%d] %-4s %s (%s)\n", n, len(paths), state, r.LocalPath, humanBytes(r.Bytes))
 		}
 	}
 
-	err := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
-	_, _ = fmt.Fprintf(cmdErr, "downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
-	if err != nil {
-		return errs.Wrap(errs.KindNetwork, err, "download failed")
+	dlErr := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
+	sp.Stop()
+	rep.Textf("downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
+	if dlErr != nil {
+		return errs.Wrap(errs.KindNetwork, dlErr, "download failed")
 	}
 	return nil
 }

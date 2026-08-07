@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tamnd/ami/config"
@@ -49,6 +50,13 @@ type RefetchExportConfig struct {
 
 	// Progress is called once per committed batch with a snapshot of the run.
 	Progress func(RefetchRunStats)
+
+	// Reporter records the run: one event per shard, one per tick, and the start
+	// and end. Nil narrates to stderr in text and records nothing.
+	Reporter *RunReporter
+	// TickInterval is how often a tick event is written. 0 selects
+	// DefaultTickInterval.
+	TickInterval time.Duration
 }
 
 // RefetchRunStats is a live snapshot of a parallel refetch export run.
@@ -81,6 +89,7 @@ type RefetchRunStats struct {
 	ShardsPerHour float64
 	ETA           time.Duration
 	FreeDiskBytes int64
+	RSSBytes      int64 // resident set size at the last progress update
 }
 
 // packRefetchFn is the function the orchestrator uses to refetch one shard.
@@ -120,6 +129,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 	if minFree <= 0 {
 		minFree = 2 << 30
 	}
+	cfg.Reporter = cfg.Reporter.orDefault("markdown refetch")
 
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return RefetchRunStats{}, err
@@ -132,11 +142,39 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 	start := time.Now()
 	run := RefetchRunStats{Total: len(cfg.Indices)}
 
+	cfg.Reporter.Event(RunEvent{Event: EventStart, Crawl: cfg.CrawlID, Total: run.Total})
+
+	// The committer owns run, so it publishes a copy for the ticker to read.
+	var snap atomic.Pointer[RefetchRunStats]
+	snap.Store(&RefetchRunStats{Total: run.Total})
+	var inflight atomic.Int64
+
 	committerDone := make(chan struct{})
 	var commitErr error
 	go func() {
 		defer close(committerDone)
-		commitErr = runRefetchCommitter(ctx, hf, cfg, k, start, finished, &run)
+		commitErr = runRefetchCommitter(ctx, hf, cfg, k, start, finished, &run, &snap)
+	}()
+
+	// Ticker: a heartbeat so a run that fetches nothing for an hour still says so.
+	stopTicks := make(chan struct{})
+	ticksDone := make(chan struct{})
+	go func() {
+		defer close(ticksDone)
+		interval := cfg.TickInterval
+		if interval <= 0 {
+			interval = DefaultTickInterval
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopTicks:
+				return
+			case <-t.C:
+				cfg.Reporter.Event(refetchTickEvent(EventTick, snap.Load(), cfg, inflight.Load(), time.Since(start)))
+			}
+		}
 	}()
 
 	var wg sync.WaitGroup
@@ -150,6 +188,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 				}
 				waitForDisk(ctx, cfg.OutDir, minFree)
 				outPath := filepath.Join(cfg.OutDir, fmt.Sprintf("%06d.parquet", idx))
+				inflight.Add(1)
 				stats, err := packRefetchFn(ctx, h, RefetchPackConfig{
 					CrawlID:    cfg.CrawlID,
 					ShardIdx:   idx,
@@ -160,6 +199,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					CacheDir:   cfg.CacheDir,
 					FetchOnly:  cfg.FetchOnly,
 				})
+				inflight.Add(-1)
 				if err != nil {
 					_ = os.Remove(outPath)
 					finished <- refetchShardResult{idx: idx, err: err}
@@ -188,19 +228,67 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 	wg.Wait()
 	close(finished)
 	<-committerDone
+	close(stopTicks)
+	<-ticksDone
 
 	run.Elapsed = time.Since(start)
 	run.FreeDiskBytes = freeDiskBytes(cfg.OutDir)
+	run.RSSBytes = currentRSSBytes()
+	cfg.Reporter.Event(refetchTickEvent(EventEnd, &run, cfg, 0, run.Elapsed))
 	if commitErr != nil {
 		return run, commitErr
 	}
 	return run, ctx.Err()
 }
 
+// refetchTickEvent renders a run snapshot as a tick or end event. It samples the
+// clock, the free disk and the RSS at the moment of the tick rather than reusing
+// the snapshot's copies, which are as old as the last committed batch.
+func refetchTickEvent(kind string, s *RefetchRunStats, cfg RefetchExportConfig, inflight int64, elapsed time.Duration) RunEvent {
+	if s == nil {
+		s = &RefetchRunStats{}
+	}
+	rate := 0.0
+	if elapsed > 0 {
+		rate = float64(s.Committed) / elapsed.Hours()
+	}
+	eta := 0.0
+	if remaining := s.Total - s.Skipped - s.Committed - s.Failed; remaining > 0 && rate > 0 {
+		eta = float64(remaining) / rate * 3600
+	}
+	return RunEvent{
+		Event:        kind,
+		Crawl:        cfg.CrawlID,
+		Done:         s.Committed + s.Skipped + s.Failed,
+		Total:        s.Total,
+		Committed:    s.Committed,
+		Skipped:      s.Skipped,
+		Failed:       s.Failed,
+		Inflight:     inflight,
+		Rows:         s.Rows,
+		Bytes:        s.FetchBytes,
+		WARCBytes:    s.WARCBytes,
+		HTMLBytes:    s.HTMLBytes,
+		MDBytes:      s.MDBytes,
+		ParquetBytes: s.ParquetBytes,
+		Rate:         rate,
+		ETAS:         eta,
+		ElapsedS:     elapsed.Seconds(),
+		FreeDisk:     freeDiskBytes(cfg.OutDir),
+		RSS:          currentRSSBytes(),
+	}
+}
+
 // runRefetchCommitter drains finished shards, batches K parquets per HF commit,
 // deletes the local files, records the ledger, and reports progress with an ETA.
-func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportConfig, k int, start time.Time, finished <-chan refetchShardResult, run *RefetchRunStats) error {
+func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportConfig, k int, start time.Time, finished <-chan refetchShardResult, run *RefetchRunStats, snap *atomic.Pointer[RefetchRunStats]) error {
 	var batch []refetchShardResult
+
+	// publish hands the ticker a stable copy of the run so far.
+	publish := func() {
+		s := *run
+		snap.Store(&s)
+	}
 
 	flush := func() error {
 		if len(batch) == 0 {
@@ -275,10 +363,33 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			}
 		}
 		run.Committed += len(batch)
+
+		// After the commit, so a shard event means the parquet is on the hub.
+		for _, r := range batch {
+			idx := r.idx
+			cfg.Reporter.Event(RunEvent{
+				Event:        EventShard,
+				Crawl:        cfg.CrawlID,
+				Shard:        &idx,
+				Status:       StatusOK,
+				Rows:         r.stats.Rows,
+				Bytes:        r.stats.FetchBytes,
+				WARCBytes:    r.stats.WARCBytes,
+				HTMLBytes:    r.stats.HTMLBytes,
+				MDBytes:      r.stats.MDBytes,
+				ParquetBytes: r.stats.ParquetBytes,
+				FetchFailed:  r.stats.Failed,
+				ExtractS:     r.stats.DurExtract.Seconds(),
+				FetchS:       r.stats.DurFetch.Seconds(),
+				ConvertS:     r.stats.DurConvert.Seconds(),
+				ExportS:      r.stats.DurExport.Seconds(),
+			})
+		}
 		batch = batch[:0]
 
 		updateRefetchRunRates(run, start)
 		logRefetchProgress(cfg, run)
+		publish()
 		if cfg.Progress != nil {
 			cfg.Progress(*run)
 		}
@@ -286,12 +397,20 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 	}
 
 	for r := range finished {
+		idx := r.idx
 		switch {
 		case r.err == errAlreadyDone:
 			run.Skipped++
+			cfg.Reporter.Event(RunEvent{Event: EventShard, Crawl: cfg.CrawlID, Shard: &idx, Status: StatusSkipped})
+			publish()
 		case r.err != nil:
 			run.Failed++
-			fmt.Fprintf(os.Stderr, "refetch: shard %06d failed: %v\n", r.idx, r.err)
+			cfg.Reporter.Event(RunEvent{
+				Event: EventShard, Crawl: cfg.CrawlID, Shard: &idx,
+				Status: StatusFailed, Error: r.err.Error(),
+			})
+			cfg.Reporter.Textf("refetch: shard %06d failed: %v\n", r.idx, r.err)
+			publish()
 		default:
 			batch = append(batch, r)
 			if len(batch) >= k {
@@ -327,6 +446,7 @@ func logRefetchProgress(cfg RefetchExportConfig, run *RefetchRunStats) {
 		pct = float64(done) / float64(run.Total) * 100
 	}
 	run.FreeDiskBytes = freeDiskBytes(cfg.OutDir)
+	run.RSSBytes = currentRSSBytes()
 
 	// Per-phase average over committed shards (0 guard avoids div-by-zero).
 	n := int64(run.Committed)
@@ -342,15 +462,15 @@ func logRefetchProgress(cfg RefetchExportConfig, run *RefetchRunStats) {
 	if run.FetchS > 0 {
 		fetchPerS = float64(run.URLsFound) / float64(run.FetchS)
 	}
-	fmt.Fprintf(os.Stderr,
+	cfg.Reporter.Textf(
 		"refetch: %d/%d shards (%.1f%%) | %d rows | %.1f shards/hr | ETA %s | disk %s\n",
 		done, run.Total, pct, run.Rows,
 		run.ShardsPerHour, fmtETA(run.ETA), fmtBytes(run.FreeDiskBytes))
-	fmt.Fprintf(os.Stderr,
+	cfg.Reporter.Textf(
 		"  phases/shard avg: extract=%ds fetch=%ds convert=%ds export=%ds | fetch %.0f pages/s (%d urls)\n",
 		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPerS, run.URLsFound)
 	if run.Failures > 0 {
-		fmt.Fprintf(os.Stderr,
+		cfg.Reporter.Textf(
 			"  failures: %d total | dns=%d timeout=%d refused=%d skip=%d other=%d\n",
 			run.Failures, run.ErrDNS, run.ErrTimeout, run.ErrRefused, run.ErrSkip, run.ErrOther)
 	}
