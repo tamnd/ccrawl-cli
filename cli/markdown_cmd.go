@@ -147,6 +147,17 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		fmt.Fprintf(os.Stderr, "markdown: ledger %s already records %d committed shards\n", ledgerPath, done)
 	}
 
+	// The journal lands beside the ledger, so a resumed run's events sit next to
+	// the record of what it resumed from.
+	rep, stopRun, err := app.StartRun("markdown export", filepath.Join(outDir, "run.jsonl"))
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	if p := rep.JournalPath(); p != "" {
+		fmt.Fprintf(os.Stderr, "markdown: run journal %s (run %s)\n", p, rep.RunID())
+	}
+
 	run, runErr := ccrawl.RunMarkdownExport(ctx, app.HTTP, hf, ccrawl.MarkdownExportConfig{
 		CrawlID:        crawlID,
 		Indices:        indices,
@@ -160,9 +171,10 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		KeepParquet:    v.keepParquet,
 		MinFreeBytes:   int64(v.minFreeGB) << 30,
 		Ledger:         ledger,
+		Reporter:       rep,
 	})
 
-	fmt.Fprintf(os.Stderr,
+	rep.Textf(
 		"\nmarkdown: %d committed, %d skipped, %d failed of %d | %d rows | html=%s md=%s parquet=%s | %s elapsed (%.1f shards/hour)\n",
 		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
 		humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),

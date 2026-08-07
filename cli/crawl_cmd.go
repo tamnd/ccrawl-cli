@@ -60,6 +60,16 @@ Examples:
 		if maxTier <= 0 || maxTier > 5 {
 			maxTier = 5 // emit all tiers by default
 		}
+		// Seeding the full rank table is a ten million row stream, so the ticks
+		// carry an ETA against --max-seeds and one line per seed would be noise.
+		rep, stopRun, err := in.App.StartRun("crawl seed", "")
+		if err != nil {
+			return err
+		}
+		defer stopRun()
+		sp := ccrawl.StartStreamProgress(rep, "seeds", maxSeeds, 0)
+		defer sp.Stop()
+
 		count := 0
 		return ccrawl.RankStream(ctx, in.App.HTTP, g.HostRankURL(), "", func(r ccrawl.Rank) error {
 			if count >= maxSeeds {
@@ -72,6 +82,7 @@ Examples:
 				return nil // skip hosts below the requested tier ceiling
 			}
 			count++
+			sp.Add(1, 1, 0)
 			return emit(SeedRecord{
 				Host:     r.Key,
 				URL:      "https://" + r.Key + "/",

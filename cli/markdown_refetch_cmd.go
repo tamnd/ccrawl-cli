@@ -233,6 +233,17 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		fmt.Fprintf(os.Stderr, "refetch: fetch-only mode, storing raw HTML and skipping convert\n")
 	}
 
+	// The journal lands beside the ledger, so a resumed run's events sit next to
+	// the record of what it resumed from.
+	rep, stopRun, err := app.StartRun("markdown refetch", filepath.Join(outDir, "run.jsonl"))
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	if p := rep.JournalPath(); p != "" {
+		fmt.Fprintf(os.Stderr, "refetch: run journal %s (run %s)\n", p, rep.RunID())
+	}
+
 	run, runErr := ccrawl.RunRefetchExport(ctx, app.HTTP, hf, ccrawl.RefetchExportConfig{
 		CrawlID:        crawlID,
 		Indices:        indices,
@@ -249,6 +260,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		Ledger:         ledger,
 		CacheDir:       warcCacheDir,
 		FetchOnly:      v.fetchOnly,
+		Reporter:       rep,
 	})
 
 	n := int64(run.Committed)
@@ -259,19 +271,19 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	if run.FetchS > 0 {
 		fetchPagesPerS = float64(run.URLsFound) / float64(run.FetchS)
 	}
-	fmt.Fprintf(os.Stderr,
+	rep.Textf(
 		"\nrefetch: %d committed, %d skipped, %d failed of %d | %d rows | urls=%d html=%s md=%s parquet=%s | %s elapsed (%.1f shards/hour)\n",
 		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
 		run.URLsFound, humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),
 		run.Elapsed.Round(time.Second), run.ShardsPerHour)
-	fmt.Fprintf(os.Stderr,
+	rep.Textf(
 		"phase totals: extract=%ds fetch=%ds convert=%ds export=%ds publish=%ds\n",
 		run.ExtractS, run.FetchS, run.ConvertS, run.ExportS, run.PublishS)
-	fmt.Fprintf(os.Stderr,
+	rep.Textf(
 		"phase avg/shard: extract=%ds fetch=%ds convert=%ds export=%ds | fetch-only %.0f pages/s (urls/fetch-sec)\n",
 		run.ExtractS/n, run.FetchS/n, run.ConvertS/n, run.ExportS/n, fetchPagesPerS)
 	if run.Failures > 0 {
-		fmt.Fprintf(os.Stderr,
+		rep.Textf(
 			"failures: %d total | dns=%d timeout=%d refused=%d skip=%d other=%d\n",
 			run.Failures, run.ErrDNS, run.ErrTimeout, run.ErrRefused, run.ErrSkip, run.ErrOther)
 	}

@@ -95,6 +95,9 @@ func (b *builder) globals(f *kit.FlagSet) {
 	f.BoolVar(&b.dom.library, "library", false, "read and write under the structured dataset library")
 	f.StringVar(&b.dom.libraryDir, "library-dir", ccrawl.LibraryDir(), "root of the dataset library")
 	f.BoolVarP(&b.dom.yes, "yes", "y", false, "assume yes to prompts")
+	f.StringVar(&b.dom.progress, "progress", "", "progress reporting for long runs: text|json|none (default: text on a terminal, json otherwise)")
+	f.StringVar(&b.dom.journal, "journal", "", "append run events as JSON Lines to this file (default: run.jsonl beside the ledger)")
+	f.StringVar(&b.dom.metricsAddr, "metrics-addr", "", "serve Prometheus metrics for the run on this address, e.g. :9090")
 }
 
 // client is the factory kit calls once per run to build the shared engine from

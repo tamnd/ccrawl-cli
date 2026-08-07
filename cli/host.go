@@ -296,7 +296,19 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 		return err
 	}
 
+	// Enrichment reads tens of gigabytes over four phases and none of them know
+	// their size up front, so progress here is about which phase a stalled run is
+	// stuck in rather than an ETA.
+	rep, stopRun, err := app.StartRun("host enrich", "")
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	sp := ccrawl.StartStreamProgress(rep, "hosts", 0, 0)
+	defer sp.Stop()
+
 	// Phase 2: vertex ID → host map (needed for degree join)
+	sp.Phase("vertices")
 	hostToID := make(map[string]int64, 1<<18)
 	maxID := int64(0)
 	if err := ccrawl.VertexStream(ctx, app.HTTP, g.HostVerticesManifestURL(), func(v ccrawl.VertexRecord) error {
@@ -312,6 +324,7 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 	// Phase 3: edge degrees (optional)
 	var inDeg, outDeg []int32
 	if e.degrees {
+		sp.Phase("edge degrees")
 		inDeg, outDeg, err = ccrawl.ComputeEdgeDegrees(ctx, app.HTTP, g.HostEdgesManifestURL(), maxID+1)
 		if err != nil {
 			return fmt.Errorf("phase 3 edges: %w", err)
@@ -321,6 +334,7 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 	// Phase 4: CDX aggregation (optional)
 	cdxStats := make(map[string]ccrawl.HostCDXStats)
 	if e.cdx {
+		sp.Phase("cdx aggregate")
 		if !ccrawl.DuckDBAvailable() {
 			return fmt.Errorf("--cdx requires duckdb binary on PATH")
 		}
@@ -341,6 +355,7 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 	}
 
 	// Phase 1 + 5: stream rank table, join phases, emit
+	sp.Phase("rank join")
 	return ccrawl.RankStream(ctx, app.HTTP, g.HostRankURL(), "", func(r ccrawl.Rank) error {
 		rec := ccrawl.HostFromRank(r)
 		rec.RegisteredDomain = registeredDomain(rec.Host)
@@ -358,6 +373,7 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 			applyHostCDXStats(&rec, s)
 		}
 
+		sp.Add(1, 1, 0)
 		return app.Out.Emit(rec)
 	})
 }

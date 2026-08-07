@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,6 +30,11 @@ type exportCmd struct {
 	mime   string
 	lang   string
 	filter []string
+
+	// sp reports the run. An export can write millions of records, so it counts
+	// them with Add rather than an event each, and only the ticks land in the
+	// journal.
+	sp *ccrawl.StreamProgress
 }
 
 func newExportCmd() kit.Command {
@@ -104,6 +110,17 @@ func (c *exportCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	exp := ccrawl.NewWARCExporter(c.outDir, c.prefix, c.subprefix, c.size, c.info())
 
+	rep, stopRun, err := app.StartRun("export", "")
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	// A pattern export does not know how many captures it will match until the
+	// query is drained, so the total stays 0 and the ticks report a rate with no
+	// ETA. The stdin form fills the total in once it has read the locations.
+	c.sp = ccrawl.StartStreamProgress(rep, "records", 0, 0)
+	defer c.sp.Stop()
+
 	var runErr error
 	if args[0] == "-" {
 		runErr = c.exportStdin(ctx, app, exp)
@@ -113,6 +130,7 @@ func (c *exportCmd) run(ctx context.Context, args []string) error {
 	if cerr := exp.Close(); cerr != nil && runErr == nil {
 		runErr = cerr
 	}
+	c.sp.Stop()
 	if runErr != nil {
 		return runErr
 	}
@@ -137,12 +155,14 @@ func (c *exportCmd) writeLoc(ctx context.Context, app *App, exp *ccrawl.WARCExpo
 	}
 	raw, err := ccrawl.FetchWARCRecordRaw(ctx, app.HTTP, loc.Filename, loc.Offset, loc.Length)
 	if err != nil {
+		c.sp.Fail()
 		_, _ = fmt.Fprintln(cmdErr, "warn: "+err.Error())
 		return true, nil
 	}
 	if err := exp.Write(raw); err != nil {
 		return false, err
 	}
+	c.sp.Add(1, 0, int64(len(raw)))
 	if app.Limit > 0 && exp.Records() >= app.Limit {
 		return false, nil
 	}
@@ -173,7 +193,9 @@ func (c *exportCmd) exportQuery(ctx context.Context, app *App, exp *ccrawl.WARCE
 			}
 			return nil
 		})
-		if err != nil && err != errStopExport {
+		// CDXStream wraps whatever the callback returned with the page it came
+		// from, so the sentinel has to be unwrapped rather than compared.
+		if err != nil && !errors.Is(err, errStopExport) {
 			return err
 		}
 		if stop {
@@ -193,6 +215,7 @@ func (c *exportCmd) exportStdin(ctx context.Context, app *App, exp *ccrawl.WARCE
 	}); err != nil {
 		return err
 	}
+	c.sp.SetTotal(len(locs))
 	for _, loc := range locs {
 		cont, err := c.writeLoc(ctx, app, exp, loc)
 		if err != nil {

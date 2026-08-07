@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -431,25 +430,4 @@ func newRefetchParquetWriter(path string) (*ParquetWriter[RefetchRow], error) {
 // HFRefetchPath returns the HF repo path for one refetch parquet shard.
 func HFRefetchPath(crawlID string, shardIdx int) string {
 	return fmt.Sprintf("data/crawl=%s/%06d.parquet", crawlID, shardIdx)
-}
-
-// currentRSSBytes reads the current process RSS from /proc/self/status.
-// Returns 0 on any error or non-Linux platform.
-func currentRSSBytes() int64 {
-	data, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "VmRSS:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				kb, err := strconv.ParseInt(fields[1], 10, 64)
-				if err == nil {
-					return kb * 1024
-				}
-			}
-		}
-	}
-	return 0
 }
