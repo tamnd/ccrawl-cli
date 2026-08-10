@@ -111,7 +111,14 @@ type Crawler struct {
 	stats crawlCounters
 
 	hosts map[string]bool // seed hosts, for SameHost
+
+	lastMu sync.Mutex           // guards last
+	last   map[string]time.Time // when each host may next be asked for something
 }
+
+// hostClockCap is how many host request times are kept before the stale ones
+// are swept out.
+const hostClockCap = 1 << 16
 
 // crawlCounters is CrawlStats while a run is happening, when every counter is
 // being written by every worker.
@@ -144,6 +151,7 @@ func NewCrawler(cfg RunConfig, h *HTTPClient) (*Crawler, error) {
 		f:     f,
 		rc:    NewRobotsCache(24*time.Hour, cfg.Crawl.UserAgent),
 		hosts: make(map[string]bool),
+		last:  make(map[string]time.Time),
 	}
 	if cfg.OutDir != "" {
 		c.w = NewWARCWriter(cfg.OutDir, cfg.Prefix, cfg.WARCSize, cfg.Info)
@@ -191,6 +199,11 @@ func (c *Crawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlSta
 		return c.snapshot(), err
 	}
 
+	// How long a worker with nothing to do waits before asking again. It tracks
+	// the politeness delay, because that is what it is waiting for, with a floor
+	// so a fast crawl of a few hosts does not turn into a spin.
+	idle := min(max(c.cfg.Delay, 5*time.Millisecond), 50*time.Millisecond)
+
 	var inflight atomic.Int64
 	var wg sync.WaitGroup
 	errs := make(chan error, c.cfg.Workers)
@@ -232,7 +245,7 @@ func (c *Crawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlSta
 					select {
 					case <-ctx.Done():
 					case <-done:
-					case <-time.After(50 * time.Millisecond):
+					case <-time.After(idle):
 					}
 					continue
 				}
@@ -278,6 +291,9 @@ func (c *Crawler) process(ctx context.Context, e FrontierEntry, emit func(CrawlP
 		return c.f.Fail(e.URL)
 	}
 
+	// delay is what this host gets between requests: the run's own figure unless
+	// robots.txt asks for more.
+	delay := c.cfg.Delay
 	if c.cfg.Robots {
 		entry := c.rc.Fetch(ctx, c.h, u.Host, u.Scheme)
 		if !entry.IsAllowed(u.RequestURI()) {
@@ -289,16 +305,34 @@ func (c *Crawler) process(ctx context.Context, e FrontierEntry, emit func(CrawlP
 		// for this host, because at that point nobody had read its robots.txt,
 		// and this is where the host's own number replaces it. A worker that
 		// lost the host to another worker in the meantime puts its URL back.
-		if entry.CrawlDelay > c.cfg.Delay {
-			until := time.Now().Add(entry.CrawlDelay).UnixMilli()
+		if entry.CrawlDelay > delay {
+			delay = entry.CrawlDelay
+			until := time.Now().Add(delay).UnixMilli()
 			if !c.f.HoldClaim(e, until) {
 				return c.f.Defer(e, until)
 			}
 		}
 	}
 
+	// The frontier spaces hand-outs, and the gap between being handed a URL and
+	// getting the request onto the wire is not zero: under load a worker can be
+	// forty milliseconds behind its own pop. Two requests to one host then land
+	// closer together than the delay even though the queue did everything right.
+	// This is the last gate before the fetch, and it is measured where it
+	// matters, at the request rather than at the pop.
+	if err := c.waitForHost(ctx, u.Host, delay); err != nil {
+		// Cancelled while waiting: the URL was never fetched, so it goes back.
+		return c.f.Retry(e, time.Now().UnixMilli())
+	}
+
 	c.pages.Add(1)
-	res, err := CrawlURL(ctx, e.URL, c.cfg.Crawl)
+	// The wire time is what the host experiences, so it is what the next
+	// request is spaced from. Without this the clock runs from the dispatch and
+	// a request that had to open a connection arrives later than one that
+	// reused it, which shows up at the host as a gap under the delay.
+	crawlCfg := c.cfg.Crawl
+	crawlCfg.OnRequestWritten = func(t time.Time) { c.stampHost(u.Host, t) }
+	res, err := CrawlURL(ctx, e.URL, crawlCfg)
 	if err != nil {
 		if ctx.Err() != nil {
 			// A cancelled fetch was never attempted as far as the queue is
@@ -375,6 +409,61 @@ func (c *Crawler) expand(res *CrawlResult, from FrontierEntry) {
 			c.stats.discovered.Add(1)
 		}
 	}
+}
+
+// waitForHost holds a worker until its host's turn on the wire comes round.
+//
+// The clock is stamped at the moment the request is about to go out rather than
+// when the worker was handed the URL, because the two are not the same instant
+// under load and the host only sees the first one. Stamping happens under the
+// lock, so two workers aiming at one host cannot both read a free slot and take
+// it, and the one that loses recomputes its wait rather than sleeping through
+// the slot it did not get.
+func (c *Crawler) waitForHost(ctx context.Context, host string, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	for {
+		c.lastMu.Lock()
+		now := time.Now()
+		earliest := now
+		if prev, ok := c.last[host]; ok {
+			earliest = prev.Add(delay)
+		}
+		if !earliest.After(now) {
+			c.last[host] = now
+			if len(c.last) > hostClockCap {
+				// A crawl of the open web sees millions of hosts and needs the
+				// timings of none of them past the delay, so the map is swept
+				// rather than grown.
+				for h, t := range c.last {
+					if t.Add(delay).Before(now) {
+						delete(c.last, h)
+					}
+				}
+			}
+			c.lastMu.Unlock()
+			return nil
+		}
+		c.lastMu.Unlock()
+
+		t := time.NewTimer(time.Until(earliest))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// stampHost records when a request to a host actually went out.
+func (c *Crawler) stampHost(host string, t time.Time) {
+	c.lastMu.Lock()
+	if prev, ok := c.last[host]; !ok || t.After(prev) {
+		c.last[host] = t
+	}
+	c.lastMu.Unlock()
 }
 
 // classify buckets a fetch error the way refetch does.

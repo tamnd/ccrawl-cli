@@ -210,16 +210,16 @@ func TestFrontierPolitenessSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestFrontierDeferredURLsAreNotLost is the politeness write back: an entry
-// claimed while its host is inside the delay goes back to pending rather than
-// evaporating with the claim buffer.
+// TestFrontierDeferredURLsAreNotLost is the politeness case: a second URL for a
+// host that was just handed out waits its turn and is still there when the
+// delay is up, rather than evaporating with the claim buffer.
 func TestFrontierDeferredURLsAreNotLost(t *testing.T) {
 	f := NewFrontier(60 * time.Second)
 	defer func() { _ = f.Close() }()
 	now := time.Now().UnixMilli()
 
 	// One busy host and one quiet one. The busy host's second URL has to be
-	// deferred to reach the quiet host's, and then still be there afterwards.
+	// passed over to reach the quiet host's, and then still be there afterwards.
 	f.Add(FrontierEntry{URL: "https://busy.example/1", Host: "busy.example", Priority: 10})
 	f.Add(FrontierEntry{URL: "https://busy.example/2", Host: "busy.example", Priority: 9})
 	f.Add(FrontierEntry{URL: "https://quiet.example/1", Host: "quiet.example", Priority: 1})
@@ -229,10 +229,10 @@ func TestFrontierDeferredURLsAreNotLost(t *testing.T) {
 		t.Fatalf("first pass popped %v, want busy/1 then quiet/1", got)
 	}
 	if f.Len() != 1 {
-		t.Fatalf("Len = %d, want 1 deferred URL still queued", f.Len())
+		t.Fatalf("Len = %d, want 1 URL still queued for the busy host", f.Len())
 	}
-	if s := f.Stats(); s.Deferred == 0 {
-		t.Error("Stats.Deferred = 0, want the write back to have been counted")
+	if s := f.Stats(); s.Claimed != 2 {
+		t.Errorf("Claimed = %d, want 2: a URL that cannot be handed out should not be claimed", s.Claimed)
 	}
 	later := drain(t, f, now+61_000)
 	if len(later) != 1 || later[0] != "https://busy.example/2" {

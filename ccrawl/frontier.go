@@ -115,6 +115,9 @@ type Frontier struct {
 	db    *sql.DB
 	cfg   FrontierConfig
 	delay int64 // politeness delay in milliseconds
+	poll  int64 // how long an empty refill stays empty, in milliseconds
+
+	idleUntil int64 // no candidate can appear before this, so do not go and look
 
 	seen    *seenCache
 	pending []FrontierEntry // admissions not yet written
@@ -251,6 +254,7 @@ func OpenFrontier(cfg FrontierConfig) (*Frontier, error) {
 		db:         db,
 		cfg:        cfg,
 		delay:      cfg.Delay.Milliseconds(),
+		poll:       min(cfg.Delay.Milliseconds(), 50),
 		seen:       newSeenCache(cfg.SeenURLs),
 		hosts:      make(map[string]*list.Element),
 		hostLRU:    list.New(),
@@ -329,6 +333,10 @@ func (f *Frontier) Add(e FrontierEntry) bool {
 		return false
 	}
 	f.pending = append(f.pending, e)
+	// There is work again, so the idle gate has to come down: a crawl that
+	// discovers its next URL while every worker is waiting must not wait out a
+	// poll interval to find out.
+	f.idleUntil = 0
 	if len(f.pending) >= f.cfg.BatchSize {
 		if err := f.flushLocked(); err != nil {
 			return true
@@ -492,6 +500,14 @@ func (f *Frontier) Pop(now int64) (FrontierEntry, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if now < f.idleUntil {
+		// A refill came back empty and nothing has been added since, so the
+		// answer cannot have changed yet. Worth saying without asking SQLite:
+		// every worker with nothing to do arrives here, and a query each is how
+		// an idle crawl spends more time in the queue than on the network.
+		return FrontierEntry{}, false, nil
+	}
+
 	for {
 		// readyAt walks the claim buffer once. An entry it steps over was either
 		// handed out or written back, so there is nothing to compact and the scan
@@ -528,6 +544,7 @@ func (f *Frontier) Pop(now int64) (FrontierEntry, bool, error) {
 			return FrontierEntry{}, false, err
 		}
 		if n == 0 {
+			f.idleUntil = now + f.poll
 			return FrontierEntry{}, false, nil
 		}
 	}
@@ -539,25 +556,39 @@ func (f *Frontier) Pop(now int64) (FrontierEntry, bool, error) {
 // the same file, cannot hand out the same URL. It is also what makes a crash
 // recoverable: whatever is still marked claimed when the process dies is
 // exactly the set the next run has to put back.
+//
+// Two things keep the batch worth claiming. The query joins the host clocks, so
+// a host inside its politeness delay is not a candidate at all, and the scan
+// keeps one row per host, because a second URL for a host that was just handed
+// out cannot be fetched until the delay is up anyway. Without those, a crawl
+// over a few hosts claims five hundred rows, hands out one, and writes the
+// other four hundred and ninety nine straight back, which turns every pop into
+// two transactions and puts the whole thing on the floor.
 func (f *Frontier) refillLocked(now int64) (int, error) {
 	ctx := context.Background()
-	// Completions first. A row that finished has to stop being claimed before
-	// the next claim query runs, or the frontier keeps a growing tail of rows
-	// that are done in memory and in flight on disk.
-	if err := f.flushFinishedLocked(); err != nil {
-		return 0, err
+	// Completions first, once there are enough of them to be worth a
+	// transaction. A row that finished has to stop being claimed eventually, or
+	// the frontier keeps a growing tail of rows that are done in memory and in
+	// flight on disk, but writing two of them on every refill is how a crawl
+	// over a handful of hosts ends up doing more transactions than fetches.
+	if len(f.finished) >= f.cfg.SyncEvery {
+		if err := f.flushFinishedLocked(); err != nil {
+			return 0, err
+		}
 	}
 	if err := f.flushHostsLocked(); err != nil {
 		return 0, err
 	}
-	rows, err := f.db.QueryContext(ctx, `SELECT url, host, priority, depth, retries, next_at
-		FROM frontier WHERE state = ? AND next_at <= ?
-		ORDER BY priority DESC LIMIT ?`,
-		frontierPending, now, f.cfg.ClaimSize)
+	rows, err := f.db.QueryContext(ctx, `SELECT f.url, f.host, f.priority, f.depth, f.retries, f.next_at
+		FROM frontier f LEFT JOIN hosts h ON h.host = f.host
+		WHERE f.state = ? AND f.next_at <= ? AND coalesce(h.next_at, 0) <= ?
+		ORDER BY f.priority DESC LIMIT ?`,
+		frontierPending, now, now, f.cfg.ClaimSize)
 	if err != nil {
 		return 0, fmt.Errorf("frontier refill: %w", err)
 	}
 	var batch []FrontierEntry
+	seenHost := make(map[string]bool)
 	for rows.Next() {
 		var e FrontierEntry
 		var depth, retries int64
@@ -565,6 +596,13 @@ func (f *Frontier) refillLocked(now int64) (int, error) {
 			_ = rows.Close()
 			return 0, fmt.Errorf("frontier refill: %w", err)
 		}
+		if seenHost[e.Host] {
+			// Left pending rather than claimed, so the next refill sees it once
+			// the host is free instead of it riding along in a buffer it cannot
+			// be handed out from.
+			continue
+		}
+		seenHost[e.Host] = true
 		e.Depth, e.Retries = uint8(depth), uint8(retries)
 		batch = append(batch, e)
 	}
