@@ -23,15 +23,19 @@ import (
 // the open-index/open-markdown dataset layout so the output can be appended to
 // existing crawls without a schema migration.
 //
-// language, language_confidence, and extractor make this open-markdown-v3. They
-// are appended at the end and every earlier column keeps its name and type, so a
-// v2 reader projecting the columns it knows about reads a v3 file without
-// changes: parquet is read by name, and a reader that never asks for the new
-// columns never touches them.
+// language, language_confidence, extractor, and simhash make this
+// open-markdown-v3. They are appended at the end and every earlier column keeps
+// its name and type, so a v2 reader projecting the columns it knows about reads
+// a v3 file without changes: parquet is read by name, and a reader that never
+// asks for the new columns never touches them.
 //
 // extractor is name@version, not just the name. Extraction changes between
 // releases, sometimes visibly, and a dataset that only recorded the name could
 // not answer why two shards built months apart disagree about the same page.
+//
+// simhash is a fingerprint, not a decision. Collapsing near duplicates is a
+// judgement about what a corpus is for, and it belongs in a query the consumer
+// writes rather than in a pipeline that already threw the evidence away.
 type MarkdownRow struct {
 	DocID          string  `parquet:"doc_id"`
 	URL            string  `parquet:"url"`
@@ -44,6 +48,7 @@ type MarkdownRow struct {
 	Language       string  `parquet:"language"`
 	LangConfidence float64 `parquet:"language_confidence"`
 	Extractor      string  `parquet:"extractor"`
+	Simhash        uint64  `parquet:"simhash"`
 }
 
 // MarkdownDocID returns a stable 16-byte hex document ID derived from the URL.
@@ -77,6 +82,11 @@ type MarkdownStats struct {
 	// handed to Progress, so nothing reads the map while it is being written.
 	LangDropped int64
 	LangCounts  map[string]int64
+
+	// DigestDropped counts records --dedup-digest skipped because an identical
+	// payload had already been seen in this shard. It is filled in on the
+	// returned stats, after the reader goroutine has finished.
+	DigestDropped int64
 }
 
 // candidateRow is a converted document on its way to the writer, carrying the
@@ -128,6 +138,15 @@ type MarkdownPackConfig struct {
 	// Extractor is the engine that turns a captured page into Markdown. nil
 	// selects the default, which keeps every existing caller on h2m.
 	Extractor *Extractor
+	// DedupDigest skips a record whose payload is byte identical to one already
+	// seen in this shard. The check runs before conversion, so a dropped record
+	// costs a hash and not an extraction.
+	//
+	// The scope is one shard, not the whole run. Shards convert in parallel, so a
+	// run wide set would make which copy survives depend on which shard happened
+	// to finish first, and it would grow without a bound over --shards all. A
+	// per-shard set is deterministic and costs one entry per page.
+	DedupDigest bool
 	// Progress is called after each row is written. It may be nil.
 	Progress func(MarkdownStats)
 }
@@ -196,11 +215,14 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 	rows := make(chan candidateRow, workers*4)
 	langCounts := map[string]int64{}
 
-	// Reader: iterate the source stream and push one record per page.
+	// Reader: iterate the source stream and push one record per page. Both
+	// results are read after the rows channel closes, which the reader's own
+	// close of records happens before, so neither needs a lock.
 	var readErr error
+	var digestDropped int64
 	go func() {
 		defer close(records)
-		readErr = streamSourceRecords(ctx, body, cfg, ex, records)
+		digestDropped, readErr = streamSourceRecords(ctx, body, cfg, ex, records)
 	}()
 
 	tConvert := time.Now()
@@ -234,6 +256,7 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 						Language:       code,
 						LangConfidence: conf,
 						Extractor:      exID,
+						Simhash:        Simhash(md),
 					},
 				}
 			}
@@ -268,6 +291,7 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 		}
 	}
 	stats.LangCounts = langCounts
+	stats.DigestDropped = digestDropped
 
 	stats.DurConvert = time.Since(tConvert)
 
@@ -301,16 +325,35 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 
-// streamSourceRecords reads the shard and pushes one record per page. A WARC
-// shard carries HTML in response records; a WET shard carries text Common Crawl
-// already extracted, in conversion records. Both come out as the same struct,
-// so everything downstream of here is identical for the two sources and only
-// the extractor knows the difference.
-func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, ex *Extractor, records chan<- htmlRecord) error {
+// streamSourceRecords reads the shard and pushes one record per page, returning
+// how many records --dedup-digest skipped. A WARC shard carries HTML in response
+// records; a WET shard carries text Common Crawl already extracted, in
+// conversion records. Both come out as the same struct, so everything downstream
+// of here is identical for the two sources and only the extractor knows the
+// difference.
+func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, ex *Extractor, records chan<- htmlRecord) (int64, error) {
 	queued := 0
+	var dropped int64
 	errStop := errors.New("record limit reached")
 
+	// Exact duplicates are the cheap half of deduplication and the bigger half by
+	// volume: the same page served on two URLs, a mirror, a session id in the
+	// query string. Hashing the payload before conversion means a duplicate costs
+	// a hash instead of an extraction.
+	var seen map[[sha256.Size]byte]struct{}
+	if cfg.DedupDigest {
+		seen = make(map[[sha256.Size]byte]struct{}, 8192)
+	}
+
 	push := func(rec htmlRecord) error {
+		if seen != nil {
+			sum := sha256.Sum256(rec.html)
+			if _, dup := seen[sum]; dup {
+				dropped++
+				return nil
+			}
+			seen[sum] = struct{}{}
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -354,9 +397,9 @@ func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackCo
 		})
 	}
 	if errors.Is(err, errStop) {
-		return nil // a deliberate early stop is not a read failure
+		return dropped, nil // a deliberate early stop is not a read failure
 	}
-	return err
+	return dropped, err
 }
 
 // convertGated runs the extractor while holding a slot in sem, so the total

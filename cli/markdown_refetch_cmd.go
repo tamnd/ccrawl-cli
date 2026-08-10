@@ -47,6 +47,7 @@ type markdownRefetchCmd struct {
 	lang         string
 	minConf      float64
 	extractor    string
+	dedupDigest  bool
 }
 
 func newMarkdownRefetchCmd() kit.Command {
@@ -83,11 +84,18 @@ Output schema (open-markdown-refetch-v1):
   language          ISO 639-3 code detected in the Markdown, "" if too short
   language_confidence 0 to 1, how sure the identifier is
   extractor         engine that produced the text, as name@version
+  simhash           64-bit near-duplicate fingerprint, 0 if too short
   error             fetch error string (empty on success)
 
 --extractor picks the conversion engine: h2m (default), readability, or raw.
 The wet engine is not available here, since a live fetch returns HTML and there
 is no Common Crawl text to pass through.
+
+--dedup-digest keeps only the first row for each response body digest in a shard,
+reusing the digest ami already computed. The fetch has happened by then, so this
+saves storage rather than work. Failed fetches are exempt: they have no body to
+be a duplicate of, and collapsing them would hide the dead hosts a refetch run
+exists to find.
 
 HF path layout (same as open-markdown):
   data/crawl=CC-MAIN-YYYY-WW/NNNNNN.parquet
@@ -124,6 +132,7 @@ func (v *markdownRefetchCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.lang, "lang", "", "keep only documents detected as this ISO 639-3 language (e.g. vie)")
 	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
 	f.StringVar(&v.extractor, "extractor", ccrawl.DefaultExtractor, "conversion engine: h2m|readability|raw")
+	f.BoolVar(&v.dedupDigest, "dedup-digest", false, "keep only the first row for each response body digest in a shard")
 	f.BoolVar(&v.fetchOnly, "fetch-only", false, "store raw HTML and skip the convert phase, so fetch runs at full speed (convert offline later over the html column)")
 }
 
@@ -294,6 +303,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		Lang:              v.lang,
 		MinLangConfidence: v.minConf,
 		Extractor:         ex,
+		DedupDigest:       v.dedupDigest,
 	})
 
 	n := int64(run.Committed)
@@ -320,6 +330,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 			"failures: %d total | dns=%d timeout=%d refused=%d skip=%d other=%d\n",
 			run.Failures, run.ErrDNS, run.ErrTimeout, run.ErrRefused, run.ErrSkip, run.ErrOther)
 	}
+	rep.Textf("%s", dedupSummary(v.dedupDigest, run.DigestDropped, run.Rows))
 	rep.Textf("%s", langSummary(v.lang, run.LangDropped, run.LangCounts))
 
 	return runErr

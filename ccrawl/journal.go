@@ -122,6 +122,10 @@ type RunEvent struct {
 	// shard comes out smaller than expected.
 	LangDropped int64            `json:"lang_dropped,omitempty"`
 	LangCounts  map[string]int64 `json:"lang_counts,omitempty"`
+	// DigestDropped counts records --dedup-digest skipped as byte identical to
+	// one already emitted, for the same reason: a run that comes out smaller
+	// than expected should say which filter did it.
+	DigestDropped int64 `json:"digest_dropped,omitempty"`
 
 	Rate     float64 `json:"rate_per_hour,omitempty"`
 	ETAS     float64 `json:"eta_s,omitempty"`

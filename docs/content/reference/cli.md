@@ -38,6 +38,7 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `api` | Start the v2 REST API server |
 | `db` | Build and query a local DuckDB database |
 | `convert` | Convert WARC/WAT/WET archives to Parquet or JSONL |
+| `dedup` | Report exact and near duplicate documents in a Markdown Parquet dataset |
 | `stats` | Show the shape of a crawl: file counts per archive kind |
 | `serve` | Serve the operations over HTTP as NDJSON |
 | `mcp` | Run as an MCP server over stdio |
@@ -366,6 +367,20 @@ language: detected vie=21482 eng=17903 unknown=2011 zho=884 ...
 `--lang` cannot be combined with `markdown refetch --fetch-only`, since fetch-only never produces the Markdown the identifier reads.
 
 This is a coarse pre-filter. A trigram identifier tells Vietnamese from Malay well enough to cut a corpus down to something worth looking at, and it is not a substitute for a language specific classifier.
+
+### Deduplication
+
+| Flag | Default | Does |
+|---|---|---|
+| `--dedup-digest` | `false` | Skip records whose payload digest was already seen in this shard |
+
+```sh
+ccrawl markdown export --shards 0 --dedup-digest --push=false --out ./md
+```
+
+The check runs before extraction, so a duplicate costs a hash lookup rather than an HTML parse, and the scope is one shard rather than the whole run. On one shard of `CC-MAIN-2026-30` it dropped 83 duplicate payloads, which an independent scan of the same WARC confirmed exactly.
+
+Every row also carries a `simhash` fingerprint whether or not the flag is set. Near duplicates are reported by `ccrawl dedup` rather than dropped during the run, because deciding which of two near identical copies is the good one is not a decision a converter should make on its own. See [Deduplication](/reference/markdown/#deduplication).
 
 ---
 
@@ -745,6 +760,40 @@ ccrawl convert <file|dir> [flags]
 `--to parquet|jsonl` (default `parquet`).
 `-O/--out` sets the output file or directory.
 `--markdown` converts HTML bodies on the way.
+
+---
+
+## dedup
+
+```
+ccrawl dedup <parquet-file|dir>... [flags]
+```
+
+Reports duplicate documents in a dataset written by `markdown export` or `markdown refetch`. It reads and prints, it never rewrites the input, so it is safe to point at a published dataset.
+
+| Flag | Default | Does |
+|---|---|---|
+| `--distance` | `3` | Hamming distance between fingerprints that still counts as a near duplicate, 0 to 64 |
+| `--top` | `10` | How many of the largest clusters to list, 0 for none |
+| `--json` | `false` | Emit the report as JSON instead of a table |
+
+```sh
+ccrawl dedup ./md
+ccrawl dedup ./md --distance 6 --top 20
+ccrawl dedup ./md/part-000.parquet ./md/part-001.parquet --json
+```
+
+```
+20,861 rows in 1 files
+  exact duplicates          165 in 113 clusters, 139.7 kB
+  near duplicates            24 in 23 clusters, 171.0 kB  (distance <= 3)
+  redundant                 189  (0.9% of rows)
+  no fingerprint              2  (too short to hash, left alone)
+```
+
+Exact clusters are documents with identical Markdown. Near clusters are grouped by the `simhash` column, and a file written before that column existed is fingerprinted on the fly, so an older dataset still works.
+
+Only three columns are read, which is why a 20k row shard takes well under a second. Raising `--distance` widens the net and chains clusters together, so 6 finds more real template duplicates and also more junk. Documents under 512 bytes are left out of the near pass because a 64 bit fingerprint over that little text is decided by noise. See [Deduplication](/reference/markdown/#deduplication) for what the numbers mean and how they were measured.
 
 ---
 
