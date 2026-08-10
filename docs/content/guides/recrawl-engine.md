@@ -7,8 +7,8 @@ weight: 70
 `ccrawl crawl` is the recrawl side of the tool: decide which hosts are worth crawling again, and fetch pages the way a well-behaved crawler should.
 
 Read this first, because it decides whether the guide is useful to you today.
-What ships right now is the seeding half and a single-URL fetcher.
-There is no bulk crawl loop yet, no `.seen` file, no WARC writer wired to a command.
+What ships right now is the seeding half and a single-URL fetcher that can write WARC.
+There is no bulk crawl loop yet and no shared frontier behind a command.
 The [planned](#planned) section at the bottom says what is coming and where to follow it.
 
 ## What ships today
@@ -61,6 +61,7 @@ It fetches with the crawler user agent (`CCrawl/2.0`), follows up to 5 redirects
 ccrawl crawl fetch https://golang.org/ -o json
 ccrawl crawl fetch example.com                  # scheme is added if you leave it off
 ccrawl crawl fetch https://example.com/ --robots
+ccrawl crawl fetch https://example.com/ --warc-dir warc/
 ```
 
 `--robots` fetches and parses the host's `robots.txt` first and refuses the fetch if the path is disallowed.
@@ -70,6 +71,26 @@ Turn it on for anything automated.
 The parser follows [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html): `*` and `$` wildcards, longest match wins with an allow breaking ties, the most specific user agent group taking precedence over `*`, and `Sitemap` lines collected.
 A missing `robots.txt` leaves the host open, and a `robots.txt` that could not be fetched at all, whether the host returned a 5xx or never answered, disallows the whole host until the fetch is retried a few minutes later.
 That last rule is the spec's and it is deliberate: a site whose robots endpoint is down cannot tell you to stop, so you stop.
+
+### Archiving the fetch
+
+`--warc-dir` writes the fetch into a `.warc.gz` file in that directory and prints the path in the record.
+What comes out is a WARC/1.0 file the same shape as the ones Common Crawl publishes: a warcinfo record naming the tool and the exact command, then a request record and a response record linked to each other with `WARC-Concurrent-To`.
+Every record carries a `WARC-Block-Digest`, every response also carries a `WARC-Payload-Digest` over the HTTP body, both `sha1:` and base32, and the address the server answered from goes in `WARC-IP-Address`.
+When the 10 MB body cap cuts a response short the record says so with `WARC-Truncated: length` rather than pretending the page was that size.
+
+One thing to know about what is stored. Go decodes gzip and undoes chunking while it reads, so the bytes in the record are the decoded body and not the bytes that crossed the wire.
+The stored headers are rewritten to match: `Content-Length` is the length of the body actually stored, and a `Content-Encoding` or `Transfer-Encoding` that no longer describes anything is dropped.
+The record is self consistent, which is what a reader needs, but it is not a byte for byte capture of the connection.
+
+Each file opens at `ccrawl-crawl-00000.warc.gz` and takes the first sequence number the directory does not already have, so fetching into the same directory twice adds files rather than overwriting them.
+Read the output back with `ccrawl parse`, or with anything else that reads WARC:
+
+```bash
+ccrawl crawl fetch https://example.com/ --warc-dir warc/
+ccrawl parse warc/ccrawl-crawl-00000.warc.gz --type response -o jsonl
+warcio check -v warc/ccrawl-crawl-00000.warc.gz
+```
 
 The digest is the useful part for recrawl work.
 Fetch a URL, compare the digest with the `content_digest` the columnar index has for the same URL, and you know whether the page changed since the crawl without diffing any text.
@@ -118,7 +139,7 @@ The library already has the pieces a real crawl loop needs, and they compile and
 
 - `Frontier`, a SQLite-backed priority queue with a per-host politeness delay, resumable across a restart
 - `RobotsCache`, a per-host cache of RFC 9309 rules with a TTL
-- `WriteWARCResponse`, a WARC/1.1 response record writer
+- `WARCWriter`, the ISO 28500 writer behind `--warc-dir`, rotating at a size target
 - a shared connection pool, 200 idle connections and 10 per host
 
 None of it is reachable from a command yet.

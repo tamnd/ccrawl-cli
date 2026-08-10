@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -96,9 +97,10 @@ Examples:
 // ── crawl fetch ───────────────────────────────────────────────────────────────
 
 type crawlFetchIn struct {
-	App    *App   `kit:"inject"`
-	URL    string `kit:"arg" name:"url" help:"URL to crawl"`
-	Robots bool   `kit:"flag" help:"check robots.txt before fetching"`
+	App     *App   `kit:"inject"`
+	URL     string `kit:"arg" name:"url" help:"URL to crawl"`
+	Robots  bool   `kit:"flag" help:"check robots.txt before fetching"`
+	WARCDir string `kit:"flag,name=warc-dir" help:"write the fetch to a WARC file in this directory"`
 }
 
 // FetchRecord is the result of crawling one URL.
@@ -111,6 +113,17 @@ type FetchRecord struct {
 	BodySize    int    `json:"body_size" table:"body_size"`
 	LinkCount   int    `json:"link_count" table:"link_count"`
 	FetchedAt   string `json:"fetched_at" table:"fetched_at"`
+	WARCFile    string `json:"warc_file,omitempty" table:"warc_file,omitempty"`
+}
+
+// crawlWARCInfo is the provenance a crawl writes into every WARC file it opens.
+func crawlWARCInfo() ccrawl.WARCInfo {
+	return ccrawl.WARCInfo{
+		Software:    "ccrawl/" + strings.TrimPrefix(Version, "v"),
+		IsPartOf:    "ccrawl-crawl",
+		Description: "crawl generated with: " + strings.Join(os.Args, " "),
+		Format:      "WARC file version 1.0",
+	}
 }
 
 func registerCrawlFetch(app *kit.App) {
@@ -122,9 +135,14 @@ func registerCrawlFetch(app *kit.App) {
 		Long: `Fetch a single URL using the v2 crawler config (user-agent, redirect following,
 body limit). Optionally check robots.txt before fetching.
 
+Pass --warc-dir to archive the fetch as a WARC/1.0 request and response pair,
+with digests, the server IP, and a warcinfo record naming the command that made
+it. The file reads back with ccrawl parse and with any WARC tool.
+
 Examples:
   ccrawl crawl fetch https://example.com/
-  ccrawl crawl fetch https://example.com/ --robots -o json`,
+  ccrawl crawl fetch https://example.com/ --robots -o json
+  ccrawl crawl fetch https://example.com/ --warc-dir warc/`,
 		Args: []kit.Arg{{Name: "url"}},
 	}, func(ctx context.Context, in crawlFetchIn, emit func(FetchRecord) error) error {
 		rawURL := in.URL
@@ -149,6 +167,17 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("fetch %s: %w", rawURL, err)
 		}
+		warcFile := ""
+		if in.WARCDir != "" {
+			w := ccrawl.NewWARCWriter(in.WARCDir, "ccrawl-crawl", ccrawl.DefaultCrawlWARCSize, crawlWARCInfo())
+			if err := w.Write(ccrawl.NewWARCCapture(res)); err != nil {
+				return fmt.Errorf("write WARC: %w", err)
+			}
+			if err := w.Close(); err != nil {
+				return fmt.Errorf("close WARC: %w", err)
+			}
+			warcFile = w.Files()[0]
+		}
 		return emit(FetchRecord{
 			URL:         rawURL,
 			FinalURL:    res.FinalURL,
@@ -158,6 +187,7 @@ Examples:
 			BodySize:    len(res.Body),
 			LinkCount:   len(res.Links),
 			FetchedAt:   res.FetchedAt.Format(time.RFC3339),
+			WARCFile:    warcFile,
 		})
 	})
 }

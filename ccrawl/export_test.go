@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -9,18 +10,23 @@ import (
 )
 
 // rawRecord builds one gzip-member WARC response record, the same shape a byte
-// range fetch returns, so the exporter test does not need the network.
+// range fetch returns, so the exporter test does not need the network. It is
+// written out longhand rather than through the crawl writer because the
+// exporter's job is to pass bytes through untouched, and a fixture it does not
+// share with the writer is the only way that stays true.
 func rawRecord(t *testing.T, uri string) []byte {
 	t.Helper()
+	block := "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>" + uri + "</html>"
 	var rec bytes.Buffer
-	if err := WriteWARCResponse(&rec, NewWARCRecord{
-		TargetURI: uri,
-		Date:      "2024-01-02T03:04:05Z",
-		RecordID:  "urn:uuid:00000000-0000-4000-8000-000000000000",
-		Block:     []byte("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>" + uri + "</html>"),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	rec.WriteString("WARC/1.0\r\n")
+	rec.WriteString("WARC-Type: response\r\n")
+	fmt.Fprintf(&rec, "WARC-Target-URI: %s\r\n", uri)
+	rec.WriteString("WARC-Date: 2024-01-02T03:04:05Z\r\n")
+	rec.WriteString("WARC-Record-ID: <urn:uuid:00000000-0000-4000-8000-000000000000>\r\n")
+	rec.WriteString("Content-Type: application/http; msgtype=response\r\n")
+	fmt.Fprintf(&rec, "Content-Length: %d\r\n\r\n", len(block))
+	rec.WriteString(block)
+	rec.WriteString("\r\n\r\n")
 	member, err := gzipMember(rec.Bytes())
 	if err != nil {
 		t.Fatal(err)
