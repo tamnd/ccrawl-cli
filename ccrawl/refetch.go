@@ -50,6 +50,7 @@ type RefetchRow struct {
 	Language       string  `parquet:"language"`
 	LangConfidence float64 `parquet:"language_confidence"`
 	Extractor      string  `parquet:"extractor"`
+	Simhash        uint64  `parquet:"simhash"`
 }
 
 // RefetchStats summarises one shard's refetch run with per-phase breakdown.
@@ -88,6 +89,10 @@ type RefetchStats struct {
 	// short to call. LangCounts is set on the returned stats only.
 	LangDropped int64
 	LangCounts  map[string]int64
+
+	// DigestDropped is how many rows --dedup-digest kept out of the parquet
+	// because an identical response body had already been written.
+	DigestDropped int64
 
 	// Phase 4: parquet write.
 	ParquetBytes int64
@@ -135,6 +140,13 @@ type RefetchPackConfig struct {
 	// selects the default. The wet engine is not usable here: a live fetch
 	// returns HTML, and there is no Common Crawl text to pass through.
 	Extractor *Extractor
+
+	// DedupDigest keeps only the first row for each response body digest in this
+	// shard. The fetch has already happened by then, so unlike the export
+	// pipeline this saves storage rather than work. Which copy of a duplicate
+	// survives depends on which fetch finished first; how many were dropped does
+	// not.
+	DedupDigest bool
 
 	// CacheDir, when set, is where the downloaded WARC is cached so a re-run of
 	// the same shard skips the multi-second download. The download streams to a
@@ -241,6 +253,14 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 		ex = Extractors[DefaultExtractor]
 	}
 	exID := ex.ID(cfg.CrawlID)
+	// The digest is the one ami already computed over the response body, so
+	// deduplication here costs a map lookup. Failed fetches are exempt: they have
+	// no body to be a duplicate of, and dropping all but one of them would hide
+	// the dead hosts a refetch run exists to find.
+	var seenDigest map[string]struct{}
+	if cfg.DedupDigest {
+		seenDigest = make(map[string]struct{}, 8192)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(convertWorkers)
@@ -289,6 +309,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 						row.MarkdownLength = int64(len(md))
 						row.Markdown = md
 						row.Language, row.LangConfidence = DetectLanguage(md)
+						row.Simhash = Simhash(md)
 					}
 				}
 				rows <- row
@@ -312,17 +333,26 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 			if row.FinalURL != "" && row.FinalURL != row.URL {
 				stats.Redirected++
 			}
-			if row.Markdown != "" || row.HTML != "" {
-				stats.Rows++
-			}
 		}
 		// The stats above count the whole attempt, failures included, because
-		// that is what tells you how the crawl went. The filter decides only what
-		// reaches the parquet.
+		// that is what tells you how the crawl went. The filters below decide what
+		// reaches the parquet, and Rows is counted after them: it is the number
+		// the dataset card publishes, so it has to match the file rather than the
+		// attempt.
+		if seenDigest != nil && row.Error == "" && row.Digest != "" {
+			if _, dup := seenDigest[row.Digest]; dup {
+				stats.DigestDropped++
+				continue
+			}
+			seenDigest[row.Digest] = struct{}{}
+		}
 		langCounts[row.Language]++
 		if !LangMatches(cfg.Lang, row.Language, row.LangConfidence, minConf) {
 			stats.LangDropped++
 			continue
+		}
+		if row.Markdown != "" || row.HTML != "" {
+			stats.Rows++
 		}
 		if werr := pw.Write(row); werr != nil {
 			go func() {

@@ -119,6 +119,8 @@ type MarkdownExportConfig struct {
 	// Extractor is the engine every shard in the run uses. nil selects the
 	// default.
 	Extractor *Extractor
+	// DedupDigest skips pages whose bytes were already seen in the same shard.
+	DedupDigest bool
 
 	// Progress is called once per committed batch with a snapshot of the run.
 	// It may be nil.
@@ -159,6 +161,9 @@ type MarkdownRunStats struct {
 	// LangCounts[lang].
 	LangDropped int64
 	LangCounts  map[string]int64
+	// DigestDropped is how many records --dedup-digest skipped across every
+	// shard in the run.
+	DigestDropped int64
 }
 
 // packShardFn is the function the orchestrator uses to convert one shard. It
@@ -284,6 +289,7 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 					Lang:              cfg.Lang,
 					MinLangConfidence: cfg.MinLangConfidence,
 					Extractor:         cfg.Extractor,
+					DedupDigest:       cfg.DedupDigest,
 				})
 				inflight.Add(-1)
 				// Per-shard wall-clock is the useful convert figure for a parallel
@@ -349,26 +355,27 @@ func markdownTickEvent(kind string, s *MarkdownRunStats, cfg MarkdownExportConfi
 		eta = float64(remaining) / rate * 3600
 	}
 	return RunEvent{
-		Event:        kind,
-		Crawl:        cfg.CrawlID,
-		Done:         s.Committed + s.Skipped + s.Failed,
-		Total:        s.Total,
-		Committed:    s.Committed,
-		Skipped:      s.Skipped,
-		Failed:       s.Failed,
-		Inflight:     inflight,
-		Rows:         s.Rows,
-		WARCBytes:    s.WARCBytes,
-		HTMLBytes:    s.HTMLBytes,
-		MDBytes:      s.MDBytes,
-		ParquetBytes: s.ParquetBytes,
-		LangDropped:  s.LangDropped,
-		LangCounts:   s.LangCounts,
-		Rate:         rate,
-		ETAS:         eta,
-		ElapsedS:     elapsed.Seconds(),
-		FreeDisk:     freeDiskBytes(cfg.OutDir),
-		RSS:          currentRSSBytes(),
+		Event:         kind,
+		Crawl:         cfg.CrawlID,
+		Done:          s.Committed + s.Skipped + s.Failed,
+		Total:         s.Total,
+		Committed:     s.Committed,
+		Skipped:       s.Skipped,
+		Failed:        s.Failed,
+		Inflight:      inflight,
+		Rows:          s.Rows,
+		WARCBytes:     s.WARCBytes,
+		HTMLBytes:     s.HTMLBytes,
+		MDBytes:       s.MDBytes,
+		ParquetBytes:  s.ParquetBytes,
+		LangDropped:   s.LangDropped,
+		LangCounts:    s.LangCounts,
+		DigestDropped: s.DigestDropped,
+		Rate:          rate,
+		ETAS:          eta,
+		ElapsedS:      elapsed.Seconds(),
+		FreeDisk:      freeDiskBytes(cfg.OutDir),
+		RSS:           currentRSSBytes(),
 	}
 }
 
@@ -409,6 +416,7 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 			run.ParquetBytes += r.stats.ParquetBytes
 			run.ConvertS += int64(r.stats.DurConvert.Seconds())
 			run.LangDropped += r.stats.LangDropped
+			run.DigestDropped += r.stats.DigestDropped
 			for code, n := range r.stats.LangCounts {
 				if run.LangCounts == nil {
 					run.LangCounts = map[string]int64{}
@@ -470,18 +478,19 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 		for _, r := range batch {
 			idx := r.idx
 			cfg.Reporter.Event(RunEvent{
-				Event:        EventShard,
-				Crawl:        cfg.CrawlID,
-				Shard:        &idx,
-				Status:       StatusOK,
-				Rows:         r.stats.Rows,
-				WARCBytes:    r.stats.WARCBytes,
-				HTMLBytes:    r.stats.HTMLBytes,
-				MDBytes:      r.stats.MDBytes,
-				ParquetBytes: r.stats.ParquetBytes,
-				LangDropped:  r.stats.LangDropped,
-				LangCounts:   r.stats.LangCounts,
-				ConvertS:     r.stats.DurConvert.Seconds(),
+				Event:         EventShard,
+				Crawl:         cfg.CrawlID,
+				Shard:         &idx,
+				Status:        StatusOK,
+				Rows:          r.stats.Rows,
+				WARCBytes:     r.stats.WARCBytes,
+				HTMLBytes:     r.stats.HTMLBytes,
+				MDBytes:       r.stats.MDBytes,
+				ParquetBytes:  r.stats.ParquetBytes,
+				LangDropped:   r.stats.LangDropped,
+				LangCounts:    r.stats.LangCounts,
+				DigestDropped: r.stats.DigestDropped,
+				ConvertS:      r.stats.DurConvert.Seconds(),
 			})
 		}
 		batch = batch[:0]

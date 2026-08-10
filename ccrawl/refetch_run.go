@@ -55,6 +55,8 @@ type RefetchExportConfig struct {
 	// Extractor is the engine every shard in the run uses. nil selects the
 	// default.
 	Extractor *Extractor
+	// DedupDigest keeps only the first row for each response body digest.
+	DedupDigest bool
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
@@ -105,6 +107,9 @@ type RefetchRunStats struct {
 	// LangCounts breaks every row down by detected language.
 	LangDropped int64
 	LangCounts  map[string]int64
+	// DigestDropped is how many rows --dedup-digest kept out of the parquet
+	// across every shard in the run.
+	DigestDropped int64
 }
 
 // packRefetchFn is the function the orchestrator uses to refetch one shard.
@@ -217,6 +222,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					Lang:              cfg.Lang,
 					MinLangConfidence: cfg.MinLangConfidence,
 					Extractor:         cfg.Extractor,
+					DedupDigest:       cfg.DedupDigest,
 				})
 				inflight.Add(-1)
 				if err != nil {
@@ -276,27 +282,28 @@ func refetchTickEvent(kind string, s *RefetchRunStats, cfg RefetchExportConfig, 
 		eta = float64(remaining) / rate * 3600
 	}
 	return RunEvent{
-		Event:        kind,
-		Crawl:        cfg.CrawlID,
-		Done:         s.Committed + s.Skipped + s.Failed,
-		Total:        s.Total,
-		Committed:    s.Committed,
-		Skipped:      s.Skipped,
-		Failed:       s.Failed,
-		Inflight:     inflight,
-		Rows:         s.Rows,
-		Bytes:        s.FetchBytes,
-		WARCBytes:    s.WARCBytes,
-		HTMLBytes:    s.HTMLBytes,
-		MDBytes:      s.MDBytes,
-		ParquetBytes: s.ParquetBytes,
-		LangDropped:  s.LangDropped,
-		LangCounts:   s.LangCounts,
-		Rate:         rate,
-		ETAS:         eta,
-		ElapsedS:     elapsed.Seconds(),
-		FreeDisk:     freeDiskBytes(cfg.OutDir),
-		RSS:          currentRSSBytes(),
+		Event:         kind,
+		Crawl:         cfg.CrawlID,
+		Done:          s.Committed + s.Skipped + s.Failed,
+		Total:         s.Total,
+		Committed:     s.Committed,
+		Skipped:       s.Skipped,
+		Failed:        s.Failed,
+		Inflight:      inflight,
+		Rows:          s.Rows,
+		Bytes:         s.FetchBytes,
+		WARCBytes:     s.WARCBytes,
+		HTMLBytes:     s.HTMLBytes,
+		MDBytes:       s.MDBytes,
+		ParquetBytes:  s.ParquetBytes,
+		LangDropped:   s.LangDropped,
+		LangCounts:    s.LangCounts,
+		DigestDropped: s.DigestDropped,
+		Rate:          rate,
+		ETAS:          eta,
+		ElapsedS:      elapsed.Seconds(),
+		FreeDisk:      freeDiskBytes(cfg.OutDir),
+		RSS:           currentRSSBytes(),
 	}
 }
 
@@ -342,6 +349,7 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			run.ErrSkip += r.stats.ErrSkip
 			run.ErrOther += r.stats.ErrOther
 			run.LangDropped += r.stats.LangDropped
+			run.DigestDropped += r.stats.DigestDropped
 			for code, n := range r.stats.LangCounts {
 				if run.LangCounts == nil {
 					run.LangCounts = map[string]int64{}
@@ -396,23 +404,24 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 		for _, r := range batch {
 			idx := r.idx
 			cfg.Reporter.Event(RunEvent{
-				Event:        EventShard,
-				Crawl:        cfg.CrawlID,
-				Shard:        &idx,
-				Status:       StatusOK,
-				Rows:         r.stats.Rows,
-				Bytes:        r.stats.FetchBytes,
-				WARCBytes:    r.stats.WARCBytes,
-				HTMLBytes:    r.stats.HTMLBytes,
-				MDBytes:      r.stats.MDBytes,
-				ParquetBytes: r.stats.ParquetBytes,
-				LangDropped:  r.stats.LangDropped,
-				LangCounts:   r.stats.LangCounts,
-				FetchFailed:  r.stats.Failed,
-				ExtractS:     r.stats.DurExtract.Seconds(),
-				FetchS:       r.stats.DurFetch.Seconds(),
-				ConvertS:     r.stats.DurConvert.Seconds(),
-				ExportS:      r.stats.DurExport.Seconds(),
+				Event:         EventShard,
+				Crawl:         cfg.CrawlID,
+				Shard:         &idx,
+				Status:        StatusOK,
+				Rows:          r.stats.Rows,
+				Bytes:         r.stats.FetchBytes,
+				WARCBytes:     r.stats.WARCBytes,
+				HTMLBytes:     r.stats.HTMLBytes,
+				MDBytes:       r.stats.MDBytes,
+				ParquetBytes:  r.stats.ParquetBytes,
+				LangDropped:   r.stats.LangDropped,
+				LangCounts:    r.stats.LangCounts,
+				DigestDropped: r.stats.DigestDropped,
+				FetchFailed:   r.stats.Failed,
+				ExtractS:      r.stats.DurExtract.Seconds(),
+				FetchS:        r.stats.DurFetch.Seconds(),
+				ConvertS:      r.stats.DurConvert.Seconds(),
+				ExportS:       r.stats.DurExport.Seconds(),
 			})
 		}
 		batch = batch[:0]

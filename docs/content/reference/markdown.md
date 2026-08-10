@@ -54,8 +54,9 @@ An out-of-range index is a usage error, not a silent skip.
 | `language` | string | ISO 639-3 language detected in the Markdown, empty when there was too little text |
 | `language_confidence` | double | the identifier's confidence, 0 to 1 |
 | `extractor` | string | the engine that produced the text, as `name@version` |
+| `simhash` | uint64 | 64 bit near duplicate fingerprint of the Markdown, 0 when there was too little text |
 
-v3 appends the last three columns and changes nothing else, so a reader written against v2 loads a v3 file and gets every column it asks for.
+v3 appends the last four columns and changes nothing else, so a reader written against v2 loads a v3 file and gets every column it asks for.
 The default repo moved to `open-index/open-markdown-v3` to keep the two schemas in separate repos.
 
 ### open-markdown-refetch-v1, written by `markdown refetch`
@@ -89,6 +90,7 @@ Everything the export schema has, plus the live response and its timings.
 | `language` | string | ISO 639-3 language detected in the Markdown |
 | `language_confidence` | double | the identifier's confidence, 0 to 1 |
 | `extractor` | string | the engine that produced the text, as `name@version` |
+| `simhash` | uint64 | 64 bit near duplicate fingerprint of the Markdown, 0 when there was too little text |
 | `error` | string | fetch error, empty on success |
 
 A failed fetch still produces a row.
@@ -249,6 +251,64 @@ And this is a coarse pre-filter: a trigram identifier separates Vietnamese from 
 
 `ccrawl content lang <url>` runs the same identifier on a single URL and prints the text it judged, which is the way to find out why a page was kept or dropped.
 
+## Deduplication
+
+A crawl shard holds the same page more than once, and there are two different problems hiding in that sentence.
+The cheap one is byte identical payloads, which is what `--dedup-digest` drops.
+The expensive one is pages that differ only in a session id or a timestamp, which is what the `simhash` column exists to let you find later.
+
+```sh
+ccrawl markdown export --shards 0 --dedup-digest --push=false --out ./md
+ccrawl markdown refetch --shards 0 --dedup-digest --push=false --out ./md
+ccrawl dedup ./md
+```
+
+`--dedup-digest` skips a record whose payload digest has already been seen.
+It runs before extraction, so a duplicate costs a hash lookup instead of an HTML parse, and on export it uses the digest the WARC already carries rather than recomputing one.
+The scope is one shard, not the whole run.
+That is deliberate: shards are converted in parallel, so a run wide set would make the choice of which copy survives depend on scheduling, and over `--shards all` the set would grow without a bound anyone set.
+On refetch the drop happens in the single writer loop, and failed fetches are exempt, because two dead hosts share an empty body and collapsing them would hide the failure.
+
+One shard of `CC-MAIN-2026-30` measured both ways:
+
+| Run | Rows | `digest_dropped` | Parquet |
+|---|---|---|---|
+| without `--dedup-digest` | 20861 | | 49.7 MB |
+| with `--dedup-digest` | 20819 | 83 | 48.3 MB |
+
+An independent scan of the same WARC found 21278 HTML response records holding 21195 distinct payloads, so 83 duplicate payloads in 28 groups, which is the pipeline's number exactly and zero false drops.
+Only 42 of those 83 show up as fewer rows because the other 41 extract to nothing and would never have been rows in the first place.
+Under 1 percent is the honest expectation for a single shard: byte identical duplicates within one WARC are rare, and the interesting redundancy on Common Crawl is across shards and across crawls, which this flag does not attempt.
+
+The `simhash` column is a 64 bit fingerprint over overlapping three word shingles of the Markdown, and two documents that differ in a few phrases differ in a few bits.
+It is stored rather than acted on.
+Dropping near duplicates during a run means deciding, once and irreversibly, which copy is the good one, and that decision belongs to whoever knows what the dataset is for.
+The column costs a hash per row and makes the decision available afterwards.
+
+`ccrawl dedup` reads it back and reports, without rewriting anything:
+
+```
+20,861 rows in 1 files
+  exact duplicates          165 in 113 clusters, 139.7 kB
+  near duplicates            24 in 23 clusters, 171.0 kB  (distance <= 3)
+  redundant                 189  (0.9% of rows)
+  no fingerprint              2  (too short to hash, left alone)
+```
+
+That is 0.68 seconds over the shard, because it reads three columns and leaves the rest of the parquet on disk.
+The exact count is higher than the 83 above for a reason worth knowing: different HTML can extract to identical Markdown, and identical HTML at two URLs can extract to different Markdown, since relative links are resolved against the page URL.
+Payload identity and text identity are not the same question, and `--dedup-digest` answers the first while `ccrawl dedup` answers the second.
+
+Two things were learned building this and are worth writing down.
+
+Charikar's original simhash weights each feature by how often it occurs, and on web text that is a trap.
+A mojibake page, one where UTF-8 was served as Latin-1, extracts to a handful of replacement sequences repeated thousands of times, and a count weighted fingerprint is then decided almost entirely by those few features.
+Two such pages measured here shared 6.5 percent of their shingles and still came out one bit apart, which pulled 68 unrelated documents into a single cluster by chaining.
+Counting each distinct shingle once, however often it occurs, put that pair 30 bits apart and cut the shard's near duplicate count from 67 to 26.
+
+The other is that a 64 bit fingerprint decided by fewer than 64 features is decided by noise, so the near pass ignores documents under 512 bytes of Markdown.
+Short pages still get a fingerprint and still cluster as exact duplicates, which is the only claim worth making about a stub.
+
 ## Tuning: parallel, workers, commit-batch
 
 Three flags set throughput, and they control three different resources.
@@ -325,6 +385,7 @@ Shared by `markdown export` and `markdown refetch`:
 | `--lang` | Keep only documents detected as this ISO 639-3 language, for example `vie` |
 | `--min-lang-confidence` | Confidence a document has to clear for `--lang` (default 0.8) |
 | `--extractor` | Conversion engine: `h2m`, `readability`, `raw`, or `wet` (default `h2m`, and `wet` is export only) |
+| `--dedup-digest` | Skip records whose payload digest was already seen in this shard |
 
 `markdown export` only:
 

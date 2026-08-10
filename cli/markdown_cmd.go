@@ -41,6 +41,8 @@ type markdownExportCmd struct {
 
 	extractor  string
 	sourceKind string
+
+	dedupDigest bool
 }
 
 func newMarkdownExportCmd() kit.Command {
@@ -64,8 +66,9 @@ Output schema (open-markdown-v3):
   language            ISO 639-3 code detected in the Markdown, "" if too short
   language_confidence 0 to 1, how sure the identifier is
   extractor           engine that produced the text, as name@version
+  simhash             64-bit near-duplicate fingerprint, 0 if too short
 
-v3 appends the last three columns and changes nothing else, so a v2 reader that
+v3 appends the last four columns and changes nothing else, so a v2 reader that
 projects the columns it knows about reads a v3 file unchanged.
 
 Extractors (--extractor):
@@ -83,6 +86,16 @@ between releases.
 yourself, wet reads wet.paths.gz and takes the text Common Crawl already
 extracted. They are not interchangeable, so wet pairs with --extractor wet and
 nothing else.
+
+--dedup-digest drops a page whose bytes are identical to one already seen in the
+same shard, before it is converted, so a duplicate costs a hash instead of an
+extraction. The scope is one shard and not the run: shards are processed in
+parallel, so a run-wide set would make which copy survives depend on scheduling,
+and it would grow without a bound over --shards all. Near duplicates are not
+dropped at all. Every row carries a simhash instead, and "ccrawl dedup" reports
+the clusters, because collapsing them is a judgement about what the corpus is for
+and belongs in a query rather than in a pipeline that already threw the evidence
+away.
 
 --lang keeps only the documents identified as that language, which is a document
 level check on the text actually extracted, not the CLD2 label Common Crawl
@@ -131,6 +144,7 @@ func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
 	f.StringVar(&v.extractor, "extractor", ccrawl.DefaultExtractor, "conversion engine: "+strings.Join(ccrawl.ExtractorNames(), "|"))
 	f.StringVar(&v.sourceKind, "source-kind", "", "shard manifest to read: warc|wet (default: whatever the extractor needs)")
+	f.BoolVar(&v.dedupDigest, "dedup-digest", false, "skip a page whose bytes are identical to one already seen in the same shard")
 }
 
 func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
@@ -232,6 +246,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		Lang:              v.lang,
 		MinLangConfidence: v.minConf,
 		Extractor:         ex,
+		DedupDigest:       v.dedupDigest,
 	})
 
 	rep.Textf(
@@ -239,6 +254,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
 		humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),
 		run.Elapsed.Round(time.Second), run.ShardsPerHour)
+	rep.Textf("%s", dedupSummary(v.dedupDigest, run.DigestDropped, run.Rows))
 	rep.Textf("%s", langSummary(v.lang, run.LangDropped, run.LangCounts))
 
 	// Per-shard conversion failures never abort the run; they are logged and
@@ -298,6 +314,25 @@ func parseShardRange(spec string, total int) ([]int, error) {
 		return nil, fmt.Errorf("shard spec %q matched no shards", spec)
 	}
 	return out, nil
+}
+
+// dedupSummary reports what --dedup-digest threw away. A drop count is the only
+// way to tell a filter that worked from a filter that did nothing, and the two
+// look identical in a row count you have nothing to compare against.
+//
+// The drop count is payloads, not rows, and the two do not have to move
+// together: a duplicate of a page that extracts to nothing was never going to be
+// a row, so dropping it costs the parquet nothing. Reporting both numbers rather
+// than a percentage of one over the other keeps that visible.
+func dedupSummary(on bool, dropped, rows int64) string {
+	if !on {
+		return ""
+	}
+	if dropped == 0 {
+		return fmt.Sprintf("dedup: --dedup-digest dropped nothing, all %d payloads were distinct\n", rows)
+	}
+	return fmt.Sprintf("dedup: --dedup-digest dropped %d duplicate payloads before conversion, %d rows written\n",
+		dropped, rows)
 }
 
 // langSummary renders the language breakdown for the end of a run. Without a
