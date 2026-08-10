@@ -362,6 +362,147 @@ func TestNativePrunesRowGroups(t *testing.T) {
 	}
 }
 
+// The fixture holds one row with no language at all and one with an empty
+// string, so the two things a negated filter is easy to get wrong are both in
+// front of it. A row Common Crawl never labelled is the row --not-lang exists
+// to find, and SQL's own <> would drop it.
+func TestNativeNegation(t *testing.T) {
+	cases := []struct {
+		name string
+		q    ColumnarQuery
+		want int64
+	}{
+		// 9 rows, 2 of them Vietnamese, so 7, and the unlabelled row is one of
+		// the 7 rather than lost.
+		{"not lang keeps the null and the empty", ColumnarQuery{NotLang: "vie"}, 7},
+		{"not lang eng", ColumnarQuery{NotLang: "eng"}, 4},
+		{"not tld", ColumnarQuery{NotTLD: "com"}, 4},
+		{"not mime", ColumnarQuery{NotMIME: "text/html"}, 2},
+		{"not status", ColumnarQuery{NotStatus: 200}, 2},
+		// The gao recovery pass: everything on one TLD that is not labelled
+		// with the language, including the rows with no label.
+		{"tld and not lang", ColumnarQuery{TLD: "com", NotLang: "eng"}, 1},
+		{"not lang matches nothing", ColumnarQuery{Domain: "example.com", NotTLD: "com"}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanFixture(t, NativeScan{Query: tc.q, Aggregate: NativeCount})
+			if got[0]["n"] != tc.want {
+				t.Errorf("count = %v, want %d", got[0]["n"], tc.want)
+			}
+		})
+	}
+}
+
+// The unlabelled row has to come back by name, not just be counted, since a
+// count that happens to be right can still be right for the wrong rows.
+func TestNativeNotLangReturnsTheUnlabelledRow(t *testing.T) {
+	got := scanFixture(t, NativeScan{
+		Query:     ColumnarQuery{NotLang: "eng"},
+		Aggregate: NativeRows,
+		Select:    []string{"url_host_name", "content_languages"},
+	})
+	var hosts []string
+	for _, m := range got {
+		hosts = append(hosts, m["url_host_name"].(string))
+	}
+	sort.Strings(hosts)
+	want := []string{"example.com", "null.example.org", "other.org", "other.org"}
+	if fmt.Sprint(hosts) != fmt.Sprint(want) {
+		t.Errorf("hosts = %v, want %v", hosts, want)
+	}
+	for _, m := range got {
+		if m["url_host_name"] == "null.example.org" && m["content_languages"] != nil {
+			t.Errorf("the unlabelled row came back with a language: %v", m["content_languages"])
+		}
+	}
+}
+
+func TestNativeSets(t *testing.T) {
+	cases := []struct {
+		name string
+		q    ColumnarQuery
+		want int64
+	}{
+		{"hosts", ColumnarQuery{Hosts: []string{"a.example.com", "other.org"}}, 4},
+		{"hosts with a miss in the set", ColumnarQuery{Hosts: []string{"other.org", "absent.example"}}, 2},
+		{"domains", ColumnarQuery{Domains: []string{"example.com", "other.org"}}, 7},
+		{"a set of one is the same as the single flag", ColumnarQuery{Hosts: []string{"example.com"}}, 2},
+		{"a set that matches nothing", ColumnarQuery{Hosts: []string{"absent.example"}}, 0},
+		// Query 3 of the recovery pass: a host list, minus one TLD.
+		{"hosts and not tld", ColumnarQuery{Hosts: []string{"a.example.com", "other.org"}, NotTLD: "com"}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanFixture(t, NativeScan{Query: tc.q, Aggregate: NativeCount})
+			if got[0]["n"] != tc.want {
+				t.Errorf("count = %v, want %d", got[0]["n"], tc.want)
+			}
+		})
+	}
+}
+
+// A negated predicate must never prune. Page statistics say nothing about the
+// nulls in a page, so a group whose min and max both rule the value out can
+// still hold the unlabelled rows the flag is hunting for. A set predicate does
+// prune, on the span of the whole set rather than one member at a time.
+func TestNativePruningWithNegationAndSets(t *testing.T) {
+	f, err := os.Open(writeTestParquet(t, testRows()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf, err := parquet.OpenFile(f, info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		q    ColumnarQuery
+		want int
+	}{
+		// Group 2 is all .org, so an equality on com prunes it. The negation of
+		// the same thing prunes nothing, on purpose.
+		{"not tld prunes nothing", ColumnarQuery{NotTLD: "com"}, 0},
+		{"not lang prunes nothing", ColumnarQuery{NotLang: "vie"}, 0},
+		{"not status prunes nothing", ColumnarQuery{NotStatus: 200}, 0},
+		// Group 2 runs from null.example.org to other.org on host name, and
+		// both wanted hosts sort below it.
+		{"a set prunes on its span", ColumnarQuery{Hosts: []string{"a.example.com", "b.example.com"}}, 1},
+		{"a set matching nothing prunes everything", ColumnarQuery{Hosts: []string{"zzz.example"}}, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := newScanPlan(NativeScan{Query: tc.q, Aggregate: NativeCount})
+			if err != nil {
+				t.Fatal(err)
+			}
+			idx := map[string]int{}
+			for _, c := range plan.filterCols {
+				leaf, ok := pf.Schema().Lookup(c)
+				if !ok {
+					t.Fatalf("column %s is missing from the fixture", c)
+				}
+				idx[c] = leaf.ColumnIndex
+			}
+			pruned := 0
+			for _, rg := range pf.RowGroups() {
+				if pruneRowGroup(plan, idx, rg.ColumnChunks()) {
+					pruned++
+				}
+			}
+			if pruned != tc.want {
+				t.Errorf("pruned %d of %d row groups, want %d", pruned, len(pf.RowGroups()), tc.want)
+			}
+		})
+	}
+}
+
 func TestNativeExpressible(t *testing.T) {
 	if !NativeExpressible(NativeScan{Select: LocationColumns}) {
 		t.Error("the location columns should be expressible")

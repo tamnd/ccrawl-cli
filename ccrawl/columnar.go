@@ -22,8 +22,21 @@ type ColumnarQuery struct {
 	Lang       string // content_languages (substring match)
 	PathPrefix string // url_path prefix
 	Status     int    // fetch_status (0 = any)
-	Select     []string
-	Limit      int
+
+	// Negated filters. A null counts as a match for all of these: a row whose
+	// content_languages is missing is exactly what "not Vietnamese" is hunting
+	// for, and SQL's own <> would drop it silently.
+	NotTLD    string // url_host_tld is null or something else
+	NotMIME   string // content_mime_detected is null or something else
+	NotLang   string // content_languages is null or does not contain this
+	NotStatus int    // fetch_status is null or something else (0 = unset)
+
+	// Set filters, for the cases where one host is not the question.
+	Hosts   []string // url_host_name in this set
+	Domains []string // url_host_registered_domain in this set
+
+	Select []string
+	Limit  int
 }
 
 // DefaultColumnarColumns are the columns selected when none are given.
@@ -82,6 +95,30 @@ func (q ColumnarQuery) SQL(src Source) string {
 	if q.Status != 0 {
 		where = append(where, "fetch_status = "+strconv.Itoa(q.Status))
 	}
+	if len(q.Hosts) > 0 {
+		where = append(where, inSet("url_host_name", q.Hosts))
+	}
+	if len(q.Domains) > 0 {
+		where = append(where, inSet("url_host_registered_domain", q.Domains))
+	}
+	// The negated forms all spell out IS NULL rather than relying on <>, which
+	// in SQL is unknown against a null and therefore drops the row. A row with
+	// no language label is the single most interesting row for --not-lang, so
+	// dropping it would defeat the flag.
+	if q.NotTLD != "" {
+		where = append(where, notEq("url_host_tld", q.NotTLD))
+	}
+	if q.NotMIME != "" {
+		where = append(where, notEq("content_mime_detected", q.NotMIME))
+	}
+	if q.NotLang != "" {
+		where = append(where, fmt.Sprintf(
+			"(content_languages IS NULL OR content_languages NOT LIKE '%%%s%%')", sqlEscape(q.NotLang)))
+	}
+	if q.NotStatus != 0 {
+		where = append(where, fmt.Sprintf(
+			"(fetch_status IS NULL OR fetch_status <> %d)", q.NotStatus))
+	}
 
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "SELECT %s\nFROM read_parquet('%s', hive_partitioning=1)", strings.Join(cols, ", "), src2)
@@ -96,6 +133,21 @@ func (q ColumnarQuery) SQL(src Source) string {
 
 func eq(col, val string) string { return fmt.Sprintf("%s = '%s'", col, sqlEscape(val)) }
 func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// notEq renders a negated equality that a null satisfies.
+func notEq(col, val string) string {
+	return fmt.Sprintf("(%s IS NULL OR %s <> '%s')", col, col, sqlEscape(val))
+}
+
+// inSet renders a set membership test. duckdb handles a large IN list fine, and
+// it is one query rather than one query per entry, which is the whole point.
+func inSet(col string, vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = "'" + sqlEscape(v) + "'"
+	}
+	return col + " IN (" + strings.Join(quoted, ", ") + ")"
+}
 
 // surtHostKey reverses a host's labels into the comma-separated form that begins
 // every url_surtkey: "www.example.com" -> "com,example,www". Unlike SURT it

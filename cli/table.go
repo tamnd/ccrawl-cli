@@ -20,15 +20,68 @@ type tableFlags struct {
 	subset     string
 	engine     string
 	print      bool
+
+	notTLD    string
+	notMIME   string
+	notLang   string
+	notStatus int
+
+	hostsFile   string
+	domainsFile string
 }
 
-func (tf *tableFlags) query(crawl string) ccrawl.ColumnarQuery {
-	return ccrawl.ColumnarQuery{
+// query renders the flags as a ColumnarQuery. It reads the set files, so it can
+// fail, which is why it returns an error rather than a bare query.
+func (tf *tableFlags) query(crawl string) (ccrawl.ColumnarQuery, error) {
+	q := ccrawl.ColumnarQuery{
 		Crawl: crawl, Subset: tf.subset,
 		Domain: tf.domain, Host: tf.host, TLD: tf.tld,
 		MIME: tf.mime, Lang: tf.lang, Status: tf.status,
 		PathPrefix: tf.pathPrefix,
+		NotTLD:     tf.notTLD, NotMIME: tf.notMIME,
+		NotLang: tf.notLang, NotStatus: tf.notStatus,
 	}
+	var err error
+	if q.Hosts, err = readSetFile("hosts", tf.hostsFile); err != nil {
+		return q, err
+	}
+	if q.Domains, err = readSetFile("domains", tf.domainsFile); err != nil {
+		return q, err
+	}
+	return q, nil
+}
+
+// readSetFile reads one value per line, skipping blanks and # comments so a host
+// list can carry a note about where it came from. An empty path reads nothing.
+// A file with no values left after the skipping is an error: it means the caller
+// asked to filter on a set and would otherwise silently get every row back.
+// kind names the list in the error, since the two callers read the same shape of
+// file for different columns.
+func readSetFile(kind, path string) ([]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	fail := func(err error) error { return fmt.Errorf("%s file: %w", kind, err) }
+	r, _, closeFn, err := openInput(path)
+	if err != nil {
+		return nil, fail(err)
+	}
+	defer closeFn()
+	var vals []string
+	err = readLines(r, func(line string) error {
+		if strings.HasPrefix(line, "#") {
+			return nil
+		}
+		vals = append(vals, line)
+		return nil
+	})
+	if err != nil {
+		return nil, fail(err)
+	}
+	if len(vals) == 0 {
+		return nil, fail(fmt.Errorf("%s holds no values", path))
+	}
+	return vals, nil
 }
 
 // bind registers the columnar filter flags shared by every table subcommand. It
@@ -42,6 +95,12 @@ func (tf *tableFlags) bind(f *kit.FlagSet) {
 	f.IntVar(&tf.status, "status", 0, "fetch_status (e.g. 200)")
 	f.StringVar(&tf.pathPrefix, "path-prefix", "", "url_path prefix")
 	f.StringVar(&tf.subset, "subset", "warc", "warc|crawldiagnostics|robotstxt")
+	f.StringVar(&tf.notTLD, "not-tld", "", "url_host_tld is missing or something else")
+	f.StringVar(&tf.notMIME, "not-mime", "", "content_mime_detected is missing or something else")
+	f.StringVar(&tf.notLang, "not-lang", "", "content_languages is missing or does not contain this")
+	f.IntVar(&tf.notStatus, "not-status", 0, "fetch_status is missing or something else")
+	f.StringVar(&tf.hostsFile, "hosts-file", "", "file of url_host_name values, one per line (- for stdin)")
+	f.StringVar(&tf.domainsFile, "domains-file", "", "file of url_host_registered_domain values, one per line")
 	f.StringVar(&tf.engine, "engine", "auto", "auto|duckdb|native|print")
 	f.BoolVar(&tf.print, "print", false, "print the SQL and exit")
 }
@@ -63,9 +122,15 @@ against a local duckdb binary. With --engine print the ready-to-run SQL is
 printed so you can paste it into Athena, Spark, Trino, or DuckDB yourself. Use
 --engine duckdb to send a filter query through duckdb too.
 
+Filters have negated forms (--not-tld, --not-mime, --not-lang, --not-status),
+where a row with the column missing counts as a match, and set forms
+(--hosts-file, --domains-file) that read one value per line.
+
 Examples:
   ccrawl columnar urls --domain example.com --status 200 -o url
   ccrawl columnar count --tld gov -c 2024-51
+  ccrawl columnar count --tld vn --not-lang vie
+  ccrawl columnar urls --hosts-file hosts.txt --not-tld vn -o url
   ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch -
   ccrawl columnar sql --tld gov --mime application/pdf --print
   ccrawl columnar query "SELECT url FROM ccindex LIMIT 10"`,
@@ -147,7 +212,10 @@ func (t *tableCmd) run(ctx context.Context, args []string) error {
 	case "count":
 		return t.runCount(ctx, app, id)
 	case "sql":
-		q := t.tf.query(id)
+		q, err := t.tf.query(id)
+		if err != nil {
+			return err
+		}
 		q.Limit = app.Limit
 		_, _ = fmt.Fprintln(cmdOut, q.SQL(app.Cfg.Source))
 		return nil
@@ -161,7 +229,10 @@ func (t *tableCmd) run(ctx context.Context, args []string) error {
 }
 
 func (t *tableCmd) runURLs(ctx context.Context, app *App, id string) error {
-	q := t.tf.query(id)
+	q, err := t.tf.query(id)
+	if err != nil {
+		return err
+	}
 	q.Select = []string{"url", "fetch_status", "content_mime_detected", "content_languages"}
 	q.Limit = app.Limit
 	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
@@ -170,7 +241,10 @@ func (t *tableCmd) runURLs(ctx context.Context, app *App, id string) error {
 }
 
 func (t *tableCmd) runLocations(ctx context.Context, app *App, id string) error {
-	q := t.tf.query(id)
+	q, err := t.tf.query(id)
+	if err != nil {
+		return err
+	}
 	q.Select = ccrawl.LocationColumns
 	q.Limit = app.Limit
 	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
@@ -189,7 +263,10 @@ func (t *tableCmd) runLocations(ctx context.Context, app *App, id string) error 
 }
 
 func (t *tableCmd) runCount(ctx context.Context, app *App, id string) error {
-	q := t.tf.query(id)
+	q, err := t.tf.query(id)
+	if err != nil {
+		return err
+	}
 	q.Select = []string{"count(*) AS n"}
 	return runColumnar(ctx, app, q, &t.tf, func(row map[string]any) error {
 		return app.Out.Emit(Row{Cols: []string{"count"}, Vals: []string{str(row["n"])}, Value: row})
@@ -198,7 +275,10 @@ func (t *tableCmd) runCount(ctx context.Context, app *App, id string) error {
 
 func (t *tableCmd) runBreakdown(ctx context.Context, app *App, id string) error {
 	col := t.groupCol
-	q := t.tf.query(id)
+	q, err := t.tf.query(id)
+	if err != nil {
+		return err
+	}
 	q.Select = []string{col, "count(*) AS n"}
 	sql := q.SQL(app.Cfg.Source) + "\nGROUP BY " + col + "\nORDER BY n DESC"
 	if app.Limit > 0 {

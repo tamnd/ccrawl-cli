@@ -73,7 +73,10 @@ func (d *dbLoadCmd) run(ctx context.Context, _ []string) error {
 	if err != nil {
 		return err
 	}
-	q := d.tf.query(id)
+	q, err := d.tf.query(id)
+	if err != nil {
+		return err
+	}
 	q.Select = ccrawl.DefaultColumnarColumns
 	q.Limit = app.Limit
 	if err := os.MkdirAll(filepath.Dir(app.Cfg.DBPath), 0o755); err != nil {
