@@ -3,6 +3,7 @@ module github.com/tamnd/ccrawl-cli
 go 1.26.5
 
 require (
+	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc
 	github.com/klauspost/compress v1.18.6
 	github.com/mattn/go-isatty v0.0.22
 	github.com/parquet-go/parquet-go v0.30.1
@@ -17,7 +18,6 @@ require (
 	codeberg.org/readeck/go-readability/v2 v2.1.2 // indirect
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
-	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/charmbracelet/fang v1.0.0 // indirect
