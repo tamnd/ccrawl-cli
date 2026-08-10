@@ -67,6 +67,10 @@ ccrawl crawl fetch https://example.com/ --robots
 It is off by default because a single manual fetch of a URL you already chose does not need it.
 Turn it on for anything automated.
 
+The parser follows [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html): `*` and `$` wildcards, longest match wins with an allow breaking ties, the most specific user agent group taking precedence over `*`, and `Sitemap` lines collected.
+A missing `robots.txt` leaves the host open, and a `robots.txt` that could not be fetched at all, whether the host returned a 5xx or never answered, disallows the whole host until the fetch is retried a few minutes later.
+That last rule is the spec's and it is deliberate: a site whose robots endpoint is down cannot tell you to stop, so you stop.
+
 The digest is the useful part for recrawl work.
 Fetch a URL, compare the digest with the `content_digest` the columnar index has for the same URL, and you know whether the page changed since the crawl without diffing any text.
 
@@ -110,16 +114,15 @@ See the [search index guide](/guides/search-index/) for the details.
 
 ## Planned
 
-The library under `ccrawl/crawl.go` already has the pieces a real crawl loop needs, and they compile and are tested:
+The library already has the pieces a real crawl loop needs, and they compile and are tested:
 
-- `Frontier`, a priority queue with a per-host politeness delay and anti-starvation
-- `RobotsCache`, a per-host cache of parsed rules with a TTL
+- `Frontier`, a SQLite-backed priority queue with a per-host politeness delay, resumable across a restart
+- `RobotsCache`, a per-host cache of RFC 9309 rules with a TTL
 - `WriteWARCResponse`, a WARC/1.1 response record writer
 - a shared connection pool, 200 idle connections and 10 per host
 
 None of it is reachable from a command yet.
 Wiring it into a `ccrawl crawl run` that takes a seed list, walks the frontier, honours robots, and writes WARC is tracked in [#54](https://github.com/tamnd/ccrawl-cli/issues/54).
-The frontier also has to survive a restart before that is useful at scale, which is [#51](https://github.com/tamnd/ccrawl-cli/issues/51), and the robots parser needs to be RFC 9309 correct first, which is [#52](https://github.com/tamnd/ccrawl-cli/issues/52).
 
 Until those land, if you need a bulk pipeline over Common Crawl URLs today, use [`ccrawl markdown refetch`](/guides/markdown-corpus/).
 It takes the URL list from a WARC shard, fetches every page live at high concurrency, and writes Parquet.

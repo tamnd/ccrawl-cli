@@ -706,6 +706,22 @@ func (f *Frontier) Retry(e FrontierEntry, at int64) error {
 	return nil
 }
 
+// Hold keeps a host idle until at least the given time, on top of whatever the
+// frontier's own politeness delay already reserved.
+//
+// This is where a robots.txt Crawl-delay lands. Pop reserves the configured
+// delay when it hands a URL out, because at that point nobody has read the
+// host's robots.txt yet; the caller that fetches it learns the host wants ten
+// seconds and says so here. Nothing is ever brought forward, so the effective
+// delay is the longest anyone asked for.
+func (f *Frontier) Hold(host string, until int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if at := f.hostNextAt(host); at < until {
+		f.setHostNextAt(host, until)
+	}
+}
+
 // hostNextAt reads a host's next eligible time, from the LRU when it is hot,
 // from the unflushed writes when it is not, and from the database otherwise. A
 // crawl touches a small set of hosts hard and a long tail once, which is the
