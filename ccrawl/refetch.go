@@ -46,6 +46,9 @@ type RefetchRow struct {
 	MarkdownLength int64  `parquet:"markdown_length"`
 	Markdown       string `parquet:"markdown"`
 	Error          string `parquet:"error"`
+
+	Language       string  `parquet:"language"`
+	LangConfidence float64 `parquet:"language_confidence"`
 }
 
 // RefetchStats summarises one shard's refetch run with per-phase breakdown.
@@ -78,6 +81,13 @@ type RefetchStats struct {
 	MDBytes    int64
 	DurConvert time.Duration
 
+	// LangDropped is how many rows the --lang filter kept out of the parquet, and
+	// LangCounts breaks every row down by detected language, with "" for the ones
+	// with no text to identify: the failures, the non-HTML, and the documents too
+	// short to call. LangCounts is set on the returned stats only.
+	LangDropped int64
+	LangCounts  map[string]int64
+
 	// Phase 4: parquet write.
 	ParquetBytes int64
 	DurExport    time.Duration
@@ -109,6 +119,16 @@ type RefetchPackConfig struct {
 	// pass over the stored html column, which can run on a bigger box or a
 	// cluster without holding back the crawl.
 	FetchOnly bool
+
+	// Lang, when set, keeps only documents identified as that ISO 639-3 language
+	// with at least MinLangConfidence, and drops every other row including the
+	// failures. The stats still count the whole attempt; it is the parquet that
+	// holds only what was asked for. Empty keeps everything and still records the
+	// detected language on every converted row.
+	Lang string
+	// MinLangConfidence is the floor Lang applies. 0 selects
+	// DefaultMinLangConfidence.
+	MinLangConfidence float64
 
 	// CacheDir, when set, is where the downloaded WARC is cached so a re-run of
 	// the same shard skips the multi-second download. The download streams to a
@@ -205,6 +225,11 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 
 	convertWorkers := runtime.NumCPU()
 	rows := make(chan RefetchRow, convertWorkers*4)
+	langCounts := map[string]int64{}
+	minConf := cfg.MinLangConfidence
+	if minConf <= 0 {
+		minConf = DefaultMinLangConfidence
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(convertWorkers)
@@ -251,6 +276,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 						md := convertGated(cfg.ConvertSem, res.Body, res.URL)
 						row.MarkdownLength = int64(len(md))
 						row.Markdown = md
+						row.Language, row.LangConfidence = DetectLanguage(md)
 					}
 				}
 				rows <- row
@@ -278,6 +304,14 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 				stats.Rows++
 			}
 		}
+		// The stats above count the whole attempt, failures included, because
+		// that is what tells you how the crawl went. The filter decides only what
+		// reaches the parquet.
+		langCounts[row.Language]++
+		if !LangMatches(cfg.Lang, row.Language, row.LangConfidence, minConf) {
+			stats.LangDropped++
+			continue
+		}
 		if werr := pw.Write(row); werr != nil {
 			go func() {
 				for range rows {
@@ -294,6 +328,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	// By here, rows is drained → workers exited → results was closed by the
 	// FetchBatch goroutine → fetchEndTime has been written.
 	stats.DurFetch = fetchEndTime.Sub(t1)
+	stats.LangCounts = langCounts
 	stats.DurConvert = time.Since(t2)
 
 	tExport := time.Now()

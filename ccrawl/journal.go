@@ -115,6 +115,14 @@ type RunEvent struct {
 	// not folded into Failed: a shard with a thousand dead hosts still succeeded.
 	FetchFailed int64 `json:"fetch_failed,omitempty"`
 
+	// LangDropped counts documents a --lang filter threw away, and LangCounts is
+	// the whole detected breakdown including the dropped ones. They ride on the
+	// events because the text summary at the end of a run is suppressed in the
+	// machine modes, and a filter's drop rate is the first thing to check when a
+	// shard comes out smaller than expected.
+	LangDropped int64            `json:"lang_dropped,omitempty"`
+	LangCounts  map[string]int64 `json:"lang_counts,omitempty"`
+
 	Rate     float64 `json:"rate_per_hour,omitempty"`
 	ETAS     float64 `json:"eta_s,omitempty"`
 	ElapsedS float64 `json:"elapsed_s,omitempty"`

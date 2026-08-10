@@ -110,6 +110,12 @@ type MarkdownExportConfig struct {
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
+	// Lang keeps only documents identified as that ISO 639-3 language, and
+	// MinLangConfidence is the floor it applies. Empty Lang keeps everything and
+	// still records the detected language on every row.
+	Lang              string
+	MinLangConfidence float64
+
 	// Progress is called once per committed batch with a snapshot of the run.
 	// It may be nil.
 	Progress func(MarkdownRunStats)
@@ -141,6 +147,14 @@ type MarkdownRunStats struct {
 	ETA           time.Duration // estimated time to finish the remaining shards
 	FreeDiskBytes int64
 	RSSBytes      int64 // resident set size at the last progress update
+
+	// LangDropped is how many converted documents the --lang filter threw away,
+	// and LangCounts breaks every converted document down by detected language
+	// with "" for the ones too short to identify. Kept per language is
+	// LangCounts minus the drops, which for a single language filter is just
+	// LangCounts[lang].
+	LangDropped int64
+	LangCounts  map[string]int64
 }
 
 // packShardFn is the function the orchestrator uses to convert one shard. It
@@ -262,6 +276,9 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 					OutPath:    outPath,
 					Workers:    c,
 					ConvertSem: sem,
+
+					Lang:              cfg.Lang,
+					MinLangConfidence: cfg.MinLangConfidence,
 				})
 				inflight.Add(-1)
 				// Per-shard wall-clock is the useful convert figure for a parallel
@@ -340,6 +357,8 @@ func markdownTickEvent(kind string, s *MarkdownRunStats, cfg MarkdownExportConfi
 		HTMLBytes:    s.HTMLBytes,
 		MDBytes:      s.MDBytes,
 		ParquetBytes: s.ParquetBytes,
+		LangDropped:  s.LangDropped,
+		LangCounts:   s.LangCounts,
 		Rate:         rate,
 		ETAS:         eta,
 		ElapsedS:     elapsed.Seconds(),
@@ -384,6 +403,13 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 			run.MDBytes += r.stats.MDBytes
 			run.ParquetBytes += r.stats.ParquetBytes
 			run.ConvertS += int64(r.stats.DurConvert.Seconds())
+			run.LangDropped += r.stats.LangDropped
+			for code, n := range r.stats.LangCounts {
+				if run.LangCounts == nil {
+					run.LangCounts = map[string]int64{}
+				}
+				run.LangCounts[code] += n
+			}
 		}
 
 		var readmeTmp string
@@ -446,6 +472,8 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 				HTMLBytes:    r.stats.HTMLBytes,
 				MDBytes:      r.stats.MDBytes,
 				ParquetBytes: r.stats.ParquetBytes,
+				LangDropped:  r.stats.LangDropped,
+				LangCounts:   r.stats.LangCounts,
 				ConvertS:     r.stats.DurConvert.Seconds(),
 			})
 		}

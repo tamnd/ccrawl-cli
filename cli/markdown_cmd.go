@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ type markdownExportCmd struct {
 	keepParquet bool // keep local parquet after commit
 	minFreeGB   int  // pause downloads below this much free disk
 	ledger      string
+
+	lang    string
+	minConf float64
 }
 
 func newMarkdownExportCmd() kit.Command {
@@ -46,15 +50,26 @@ Markdown with h2m (go-trafilatura tuned for recall plus a GFM renderer: cleaned
 prose, tables, absolute links), and write each shard to a zstd-compressed Parquet
 file. After each shard the Parquet is committed to a HuggingFace dataset repo.
 
-Output schema (open-markdown-v2):
-  doc_id          stable SHA-256 URL hash (16 bytes hex)
-  url             original page URL
-  host            hostname
-  crawl_date      WARC-Date YYYY-MM-DD
-  warc_record_id  WARC record ID
-  html_length     raw HTML body bytes before conversion
-  markdown_length converted Markdown bytes
-  markdown        converted Markdown text
+Output schema (open-markdown-v3):
+  doc_id              stable SHA-256 URL hash (16 bytes hex)
+  url                 original page URL
+  host                hostname
+  crawl_date          WARC-Date YYYY-MM-DD
+  warc_record_id      WARC record ID
+  html_length         raw HTML body bytes before conversion
+  markdown_length     converted Markdown bytes
+  markdown            converted Markdown text
+  language            ISO 639-3 code detected in the Markdown, "" if too short
+  language_confidence 0 to 1, how sure the identifier is
+
+v3 appends the last two columns and changes nothing else, so a v2 reader that
+projects the columns it knows about reads a v3 file unchanged.
+
+--lang keeps only the documents identified as that language, which is a document
+level check on the text actually extracted, not the CLD2 label Common Crawl
+computed over the raw HTML. It is a coarse pre-filter: a trigram identifier that
+answers "this looks like Vietnamese" well enough to cut a corpus down, and not a
+substitute for a language specific classifier if you need one.
 
 HF path layout:
   data/crawl=CC-MAIN-YYYY-WW/NNNNNN.parquet
@@ -67,10 +82,11 @@ local files, so the slow commit round trip stays off the per-shard critical path
 A ledger file records committed shards, so a killed run resumes where it stopped.
 
 Examples:
-  ccrawl markdown export --shards 0 --repo open-index/open-markdown-v2
-  ccrawl markdown export --shards 0-9 --repo open-index/open-markdown-v2
+  ccrawl markdown export --shards 0 --repo open-index/open-markdown-v3
+  ccrawl markdown export --shards 0-9 --repo open-index/open-markdown-v3
   ccrawl markdown export --shards all --parallel 4 --commit-batch 10
   ccrawl markdown export --shards 0-99 --push=false --out ~/data/md
+  ccrawl markdown export --shards 0-9 --lang vie --min-lang-confidence 0.8
   HF_TOKEN=hf_... ccrawl markdown export --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,
@@ -80,7 +96,7 @@ Examples:
 func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.shards, "shards", "0", "shard range: N, N-M, N,M, or all")
 	f.StringVar(&v.outDir, "out", "", "directory for parquet files (default: <data-dir>/markdown)")
-	f.StringVar(&v.repo, "repo", "open-index/open-markdown-v2", "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.repo, "repo", "open-index/open-markdown-v3", "HuggingFace dataset repo (org/name)")
 	f.IntVar(&v.workers, "workers", 0, "total conversion workers shared across shards (0 = NumCPU)")
 	f.IntVar(&v.limit, "limit", 0, "process at most this many shards (0 = all)")
 	f.BoolVar(&v.skip, "skip-errors", false, "continue past per-shard failures instead of aborting")
@@ -90,6 +106,8 @@ func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&v.keepParquet, "keep-parquet", false, "keep local parquet files after they are committed")
 	f.IntVar(&v.minFreeGB, "min-free-gb", 2, "pause new downloads when free disk drops below this many GiB")
 	f.StringVar(&v.ledger, "ledger", "", "resume ledger file (default: <out>/.committed)")
+	f.StringVar(&v.lang, "lang", "", "keep only documents detected as this ISO 639-3 language (e.g. vie)")
+	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
 }
 
 func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
@@ -172,6 +190,9 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		MinFreeBytes:   int64(v.minFreeGB) << 30,
 		Ledger:         ledger,
 		Reporter:       rep,
+
+		Lang:              v.lang,
+		MinLangConfidence: v.minConf,
 	})
 
 	rep.Textf(
@@ -179,6 +200,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		run.Committed, run.Skipped, run.Failed, run.Total, run.Rows,
 		humanBytes(run.HTMLBytes), humanBytes(run.MDBytes), humanBytes(run.ParquetBytes),
 		run.Elapsed.Round(time.Second), run.ShardsPerHour)
+	rep.Textf("%s", langSummary(v.lang, run.LangDropped, run.LangCounts))
 
 	// Per-shard conversion failures never abort the run; they are logged and
 	// counted (the committer keeps draining). runErr is only set for a fatal
@@ -237,4 +259,48 @@ func parseShardRange(spec string, total int) ([]int, error) {
 		return nil, fmt.Errorf("shard spec %q matched no shards", spec)
 	}
 	return out, nil
+}
+
+// langSummary renders the language breakdown for the end of a run. Without a
+// --lang filter it is still worth printing: it says what the shard turned out to
+// be, which is the thing you want before deciding what to filter on next time.
+// The empty code covers documents with no text to identify, and it is named
+// rather than left as a blank row.
+func langSummary(want string, dropped int64, counts map[string]int64) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	type pair struct {
+		code string
+		n    int64
+	}
+	var total int64
+	pairs := make([]pair, 0, len(counts))
+	for code, n := range counts {
+		total += n
+		if code == "" {
+			code = "unknown"
+		}
+		pairs = append(pairs, pair{code, n})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].n != pairs[j].n {
+			return pairs[i].n > pairs[j].n
+		}
+		return pairs[i].code < pairs[j].code
+	})
+	if len(pairs) > 8 {
+		pairs = pairs[:8]
+	}
+	var b strings.Builder
+	if want != "" {
+		fmt.Fprintf(&b, "language: --lang %s kept %d of %d documents, dropped %d (%.1f%%)\n",
+			want, total-dropped, total, dropped, 100*float64(dropped)/float64(total))
+	}
+	b.WriteString("language: detected")
+	for _, p := range pairs {
+		fmt.Fprintf(&b, " %s=%d", p.code, p.n)
+	}
+	b.WriteString("\n")
+	return b.String()
 }

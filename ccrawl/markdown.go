@@ -24,15 +24,23 @@ import (
 // MarkdownRow is the parquet schema for one converted HTML document. It matches
 // the open-index/open-markdown dataset layout so the output can be appended to
 // existing crawls without a schema migration.
+//
+// language and language_confidence make this open-markdown-v3. They are appended
+// at the end and every earlier column keeps its name and type, so a v2 reader
+// projecting the columns it knows about reads a v3 file without changes: parquet
+// is read by name, and a reader that never asks for the two new columns never
+// touches them.
 type MarkdownRow struct {
-	DocID          string `parquet:"doc_id"`
-	URL            string `parquet:"url"`
-	Host           string `parquet:"host"`
-	CrawlDate      string `parquet:"crawl_date"`
-	WARCRecordID   string `parquet:"warc_record_id"`
-	HTMLLength     int64  `parquet:"html_length"`
-	MarkdownLength int64  `parquet:"markdown_length"`
-	Markdown       string `parquet:"markdown"`
+	DocID          string  `parquet:"doc_id"`
+	URL            string  `parquet:"url"`
+	Host           string  `parquet:"host"`
+	CrawlDate      string  `parquet:"crawl_date"`
+	WARCRecordID   string  `parquet:"warc_record_id"`
+	HTMLLength     int64   `parquet:"html_length"`
+	MarkdownLength int64   `parquet:"markdown_length"`
+	Markdown       string  `parquet:"markdown"`
+	Language       string  `parquet:"language"`
+	LangConfidence float64 `parquet:"language_confidence"`
 }
 
 // MarkdownDocID returns a stable 16-byte hex document ID derived from the URL.
@@ -55,6 +63,25 @@ type MarkdownStats struct {
 	DurConvert   time.Duration
 	DurExport    time.Duration
 	DurPublish   time.Duration
+
+	// LangDropped counts documents a --lang filter threw away, and LangCounts
+	// breaks that down by the language they were identified as, with "" for the
+	// ones too short to identify. A drop rate on its own says the filter is
+	// working; the breakdown says what it is working on, which is the number
+	// worth looking at when the rate is not what you expected.
+	//
+	// LangCounts is filled in on the returned stats only, not on the snapshots
+	// handed to Progress, so nothing reads the map while it is being written.
+	LangDropped int64
+	LangCounts  map[string]int64
+}
+
+// candidateRow is a converted document on its way to the writer, carrying the
+// language filter's verdict. Dropped rows travel too, so the counting stays in
+// the single writer goroutine where it needs no lock.
+type candidateRow struct {
+	row  MarkdownRow
+	keep bool
 }
 
 // htmlRecord carries the extracted fields from one WARC response record.
@@ -88,6 +115,13 @@ type MarkdownPackConfig struct {
 	// sized to the CPU count so several shards can be in flight (hiding download
 	// latency) without oversubscribing the cores. nil means no global cap.
 	ConvertSem chan struct{}
+	// Lang, when set, keeps only documents identified as that ISO 639-3 language
+	// with at least MinLangConfidence. Empty keeps everything and still records
+	// the detected language on every row.
+	Lang string
+	// MinLangConfidence is the floor Lang applies. 0 selects
+	// DefaultMinLangConfidence.
+	MinLangConfidence float64
 	// Progress is called after each row is written. It may be nil.
 	Progress func(MarkdownStats)
 }
@@ -142,8 +176,14 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 		return stats, err
 	}
 
+	minConf := cfg.MinLangConfidence
+	if minConf <= 0 {
+		minConf = DefaultMinLangConfidence
+	}
+
 	records := make(chan htmlRecord, workers*4)
-	rows := make(chan MarkdownRow, workers*4)
+	rows := make(chan candidateRow, workers*4)
+	langCounts := map[string]int64{}
 
 	// Reader: iterate the WARC multi-member gzip stream, push HTML records.
 	var readErr error
@@ -197,15 +237,24 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 				if md == "" {
 					continue
 				}
-				rows <- MarkdownRow{
-					DocID:          MarkdownDocID(r.url),
-					URL:            r.url,
-					Host:           urlHostname(r.url),
-					CrawlDate:      r.date,
-					WARCRecordID:   r.recordID,
-					HTMLLength:     int64(len(r.html)),
-					MarkdownLength: int64(len(md)),
-					Markdown:       md,
+				// Identification runs on the extracted Markdown rather than the
+				// HTML, so the answer is about the text being kept and not about
+				// the nav bars and script tags that went in the bin.
+				code, conf := DetectLanguage(md)
+				rows <- candidateRow{
+					keep: LangMatches(cfg.Lang, code, conf, minConf),
+					row: MarkdownRow{
+						DocID:          MarkdownDocID(r.url),
+						URL:            r.url,
+						Host:           urlHostname(r.url),
+						CrawlDate:      r.date,
+						WARCRecordID:   r.recordID,
+						HTMLLength:     int64(len(r.html)),
+						MarkdownLength: int64(len(md)),
+						Markdown:       md,
+						Language:       code,
+						LangConfidence: conf,
+					},
 				}
 			}
 		}()
@@ -217,8 +266,13 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 
 	stats.DurDownload = time.Since(t0)
 
-	for row := range rows {
-		if werr := pw.Write(row); werr != nil {
+	for c := range rows {
+		langCounts[c.row.Language]++
+		if !c.keep {
+			stats.LangDropped++
+			continue
+		}
+		if werr := pw.Write(c.row); werr != nil {
 			go func() {
 				for range rows {
 				}
@@ -227,12 +281,13 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 			return stats, fmt.Errorf("write parquet: %w", werr)
 		}
 		stats.Rows++
-		stats.HTMLBytes += row.HTMLLength
-		stats.MDBytes += row.MarkdownLength
+		stats.HTMLBytes += c.row.HTMLLength
+		stats.MDBytes += c.row.MarkdownLength
 		if cfg.Progress != nil {
 			cfg.Progress(stats)
 		}
 	}
+	stats.LangCounts = langCounts
 
 	stats.DurConvert = time.Since(tConvert)
 
