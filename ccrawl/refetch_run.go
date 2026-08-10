@@ -394,7 +394,9 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 					return err
 				}
 			}
-			if !cfg.KeepParquet {
+			// Same rule as the export: the local copy is only redundant once it
+			// is on the hub, so a run with --push=false keeps what it wrote.
+			if cfg.Push && !cfg.KeepParquet {
 				_ = os.Remove(r.path)
 			}
 		}

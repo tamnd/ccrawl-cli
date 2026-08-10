@@ -61,13 +61,19 @@ func stubPack(t *testing.T, fn func(ctx context.Context, h *HTTPClient, cfg Mark
 	t.Cleanup(func() { packShardFn = prev })
 }
 
-func TestRunMarkdownExportConvertsAndDeletes(t *testing.T) {
+// TestRunMarkdownExportKeepsLocalParquetWithoutPush pins the rule that decides
+// whether the local parquet is redundant: it is redundant once it is on the hub
+// and not before. A run with --push=false has nowhere else to put it, so
+// deleting it would leave a run that reported rows and produced nothing.
+//
+// The delete side of the rule needs a real commit and is covered by the live
+// runs rather than here, since the HuggingFace endpoint is not injectable.
+func TestRunMarkdownExportKeepsLocalParquetWithoutPush(t *testing.T) {
 	dir := t.TempDir()
 
 	var packed int64
 	stubPack(t, func(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
 		atomic.AddInt64(&packed, 1)
-		// Write a placeholder parquet so the delete-after-commit path has a file.
 		if err := os.WriteFile(cfg.OutPath, []byte("parquet"), 0o644); err != nil {
 			return MarkdownStats{}, err
 		}
@@ -91,7 +97,7 @@ func TestRunMarkdownExportConvertsAndDeletes(t *testing.T) {
 		Indices:        indices,
 		WARCPaths:      paths,
 		OutDir:         dir,
-		Push:           false, // no HF; committer just records the ledger + deletes
+		Push:           false, // no HF; the committer just records the ledger
 		ShardParallel:  3,
 		ConvertWorkers: 2,
 		CommitBatch:    2,
@@ -113,11 +119,11 @@ func TestRunMarkdownExportConvertsAndDeletes(t *testing.T) {
 	if ledger.Count() != 5 {
 		t.Fatalf("ledger.Count = %d, want 5", ledger.Count())
 	}
-	// Parquet files must be gone (delete-after-commit is the default).
+	// Nothing was pushed, so every part the run wrote has to still be there.
 	for _, idx := range indices {
 		p := filepath.Join(dir, fmt.Sprintf("%06d.parquet", idx))
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Fatalf("parquet %s should have been deleted", p)
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("parquet %s went missing on a run that never pushed: %v", p, err)
 		}
 	}
 }
