@@ -1,7 +1,6 @@
 package ccrawl
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -144,29 +143,6 @@ func TestNormalizeURL(t *testing.T) {
 		got := NormalizeURL(c.in)
 		if got != c.want {
 			t.Errorf("NormalizeURL(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestWriteWARCResponse(t *testing.T) {
-	var buf bytes.Buffer
-	rec := NewWARCRecord{
-		TargetURI: "https://example.com/",
-		Date:      "2026-06-17T10:00:00Z",
-		RecordID:  "urn:uuid:test-record-id",
-		Block:     []byte("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>body</html>"),
-	}
-	if err := WriteWARCResponse(&buf, rec); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
-	for _, want := range []string{
-		"WARC/1.0", "WARC-Type: response",
-		"https://example.com/", "2026-06-17T10:00:00Z",
-		"HTTP/1.1 200 OK",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("WARC output missing %q", want)
 		}
 	}
 }

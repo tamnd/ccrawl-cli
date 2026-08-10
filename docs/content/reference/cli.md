@@ -628,11 +628,17 @@ Fetches one URL with the v2 crawler config: polite user-agent, brotli support, r
 ```sh
 ccrawl crawl fetch https://golang.org/ -o json
 ccrawl crawl fetch https://example.com/ --robots -o json
+ccrawl crawl fetch https://example.com/ --warc-dir warc/
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--robots` | Check robots.txt before fetching |
+| `--warc-dir` | Write the fetch to a WARC file in this directory |
+
+With `--warc-dir` the fetch is archived as an ISO 28500 WARC/1.0 file: a warcinfo record, then a request and response pair linked with `WARC-Concurrent-To`, with `WARC-Block-Digest` and `WARC-Payload-Digest` as `sha1:` base32, `WARC-IP-Address`, and `WARC-Truncated: length` when the body cap trips.
+The stored headers describe the stored body, so a decoded or dechunked response gets a rewritten `Content-Length` and loses the encoding headers that no longer apply.
+The path written is reported in the record as `warc_file`.
 
 ### crawl status
 

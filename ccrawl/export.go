@@ -89,7 +89,7 @@ func (e *WARCExporter) open() error {
 	e.w = f
 	e.written = 0
 	e.Files = append(e.Files, path)
-	member, err := gzipMember(warcinfoRecord(e.info, name, e.now().UTC()))
+	member, err := gzipMember(warcinfoRecord(e.info, name, "urn:uuid:"+newUUID(), e.now().UTC()))
 	if err != nil {
 		_ = f.Close()
 		return err
@@ -153,8 +153,10 @@ func gzipMember(b []byte) ([]byte, error) {
 }
 
 // warcinfoRecord builds an uncompressed WARC/1.0 warcinfo record holding the
-// provenance fields, ready to be written as a gzip member.
-func warcinfoRecord(info WARCInfo, filename string, t time.Time) []byte {
+// provenance fields, ready to be written as a gzip member. The record ID is
+// passed in rather than generated here because a writer that puts
+// WARC-Warcinfo-ID on every other record in the file needs to know it.
+func warcinfoRecord(info WARCInfo, filename, recordID string, t time.Time) []byte {
 	var fields strings.Builder
 	add := func(k, v string) {
 		if v != "" {
@@ -173,7 +175,7 @@ func warcinfoRecord(info WARCInfo, filename string, t time.Time) []byte {
 	rec.WriteString("WARC/1.0\r\n")
 	rec.WriteString("WARC-Type: warcinfo\r\n")
 	fmt.Fprintf(&rec, "WARC-Date: %s\r\n", t.Format("2006-01-02T15:04:05Z"))
-	fmt.Fprintf(&rec, "WARC-Record-ID: <urn:uuid:%s>\r\n", newUUID())
+	fmt.Fprintf(&rec, "WARC-Record-ID: <%s>\r\n", recordID)
 	fmt.Fprintf(&rec, "WARC-Filename: %s\r\n", filename)
 	rec.WriteString("Content-Type: application/warc-fields\r\n")
 	fmt.Fprintf(&rec, "Content-Length: %d\r\n\r\n", len(body))
