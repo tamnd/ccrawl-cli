@@ -179,7 +179,6 @@ func parseOneRecord(b []byte) (WARCRecord, error) {
 	return out, nil
 }
 
-
 // BatchFetchConfig configures a batched ranged fetch.
 type BatchFetchConfig struct {
 	Locations []Location
