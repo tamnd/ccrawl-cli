@@ -8,7 +8,15 @@ import (
 
 // FileURL turns a Common Crawl relative path into a fetchable URL for the given
 // source. HTTPS uses the CloudFront mirror; S3 uses the bucket URI.
+//
+// A path that is already an absolute URL is returned untouched, the same way
+// resolvePartURL treats a manifest entry. No real Common Crawl path starts with
+// a scheme, so this costs nothing, and it is what lets a test point the fetch
+// path at a local server.
 func FileURL(path string, src Source) string {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "s3://") {
+		return path
+	}
 	path = strings.TrimPrefix(path, "/")
 	if src == SourceS3 {
 		return S3BaseURL + path

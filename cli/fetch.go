@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,13 @@ type fetchCmd struct {
 	offset, length int64
 	outDir         string
 	asDir          bool
+
+	batch   bool
+	gap     int64
+	maxSpan int64
+	order   string
+	ledger  string
+	window  int
 }
 
 func newFetchCmd() kit.Command {
@@ -34,10 +42,18 @@ Give an explicit --file/--offset/--length, or pass "-" to read location records
 (filename, offset, length) as JSONL on stdin, which is exactly what
 "ccrawl search --locations" and "ccrawl columnar locations" produce.
 
+With --batch the locations are sorted by file and offset first, and records that
+sit within --gap bytes of each other are read in one ranged GET instead of one
+each. That is the mode for millions of locations: it turns random access across
+thousands of WARC files into a sweep through each file in turn. Pass --ledger to
+make the run resumable, and --order input to keep the output in the order the
+locations arrived rather than the order they sit on disk.
+
 Examples:
   ccrawl fetch --file crawl-data/.../x.warc.gz --offset 123 --length 4567 --text
   ccrawl search example.com --locations | ccrawl fetch - --markdown
-  ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/`,
+  ccrawl columnar locations --domain example.com -o jsonl | ccrawl fetch - --output dir --out-dir pages/
+  ccrawl columnar locations --tld vn -o jsonl | ccrawl fetch - --batch --ledger fetched.txt --dir`,
 		Flags: c.flags,
 		Run:   c.run,
 	}
@@ -50,6 +66,12 @@ func (c *fetchCmd) flags(f *kit.FlagSet) {
 	f.Int64Var(&c.length, "length", 0, "byte length of the record")
 	f.StringVar(&c.outDir, "out-dir", "pages", "output directory when --output dir")
 	f.BoolVar(&c.asDir, "dir", false, "write one file per record into --out-dir")
+	f.BoolVar(&c.batch, "batch", false, "coalesce nearby records in the same WARC file into shared ranged GETs")
+	f.Int64Var(&c.gap, "gap", ccrawl.DefaultFetchGap, "coalesce records at most this many bytes apart")
+	f.Int64Var(&c.maxSpan, "max-span", ccrawl.DefaultFetchMaxSpan, "never read more than this in one GET")
+	f.StringVar(&c.order, "order", "file", "input|file: emit in the order given or the order on disk")
+	f.StringVar(&c.ledger, "ledger", "", "file of finished locations, to skip on a resume")
+	f.IntVar(&c.window, "lookahead", 64, "ranged GETs allowed to run ahead of the writer")
 }
 
 func (c *fetchCmd) run(ctx context.Context, args []string) error {
@@ -59,9 +81,146 @@ func (c *fetchCmd) run(ctx context.Context, args []string) error {
 		return runFetchOne(ctx, app, loc, c.mode)
 	}
 	if len(args) == 1 && args[0] == "-" {
+		if c.batch {
+			return c.runBatch(ctx, app)
+		}
 		return runFetchStdin(ctx, app, c.mode, c.outDir, c.asDir)
 	}
 	return usageErr("provide --file/--offset/--length or pass - to read locations from stdin")
+}
+
+// runBatch is the --batch path: read every location, group them, and fetch the
+// groups. The records come back through the same renderers as the one at a time
+// path, so the only thing that changes is how many requests it took.
+func (c *fetchCmd) runBatch(ctx context.Context, app *App) error {
+	switch c.order {
+	case "input", "file":
+	default:
+		return usageErr("--order must be input or file")
+	}
+	asDir := c.asDir || app.Out.Format() == "dir"
+
+	locs, err := readLocations(os.Stdin)
+	if err != nil {
+		return err
+	}
+	if len(locs) == 0 {
+		return noResults("no location records on stdin")
+	}
+	if asDir {
+		if err := os.MkdirAll(c.outDir, 0o755); err != nil {
+			return err
+		}
+	}
+
+	// Grouping is pure arithmetic on the locations, so a dry run can report
+	// exactly what the real run would ask for without asking for any of it. That
+	// is the cheap way to pick a --gap: try a few and read the ratio.
+	if app.dryRun {
+		groups := ccrawl.GroupLocations(locs, c.gap, c.maxSpan)
+		var span, want int64
+		for _, g := range groups {
+			span += g.Span()
+		}
+		for _, l := range locs {
+			want += l.Length
+		}
+		_, _ = fmt.Fprintf(cmdErr, "%d locations in %d requests, %.1fx fewer than one at a time; %s read for %s of records, %.1fx amplification\n",
+			len(locs), len(groups), float64(len(locs))/float64(len(groups)),
+			humanBytes(span), humanBytes(want), float64(span)/float64(want))
+		return nil
+	}
+
+	ledger, err := ccrawl.OpenKeyLedger(c.ledger)
+	if err != nil {
+		return fmt.Errorf("open ledger: %w", err)
+	}
+	defer func() { _ = ledger.Close() }()
+
+	rep, stopRun, err := app.StartRun("fetch", "")
+	if err != nil {
+		return err
+	}
+	defer stopRun()
+	sp := ccrawl.StartStreamProgress(rep, "records", len(locs), 0)
+	defer sp.Stop()
+
+	// The index in the filename is the position in the input, not the position
+	// in the output, so the same location lands in the same file whichever
+	// order the run emitted it in and whether or not it resumed.
+	at := make(map[string]int, len(locs))
+	for i, l := range locs {
+		if _, seen := at[ccrawl.LocationKey(l)]; !seen {
+			at[ccrawl.LocationKey(l)] = i
+		}
+	}
+
+	var failed int
+	cfg := ccrawl.BatchFetchConfig{
+		Locations: locs,
+		Gap:       c.gap,
+		MaxSpan:   c.maxSpan,
+		Workers:   app.Workers,
+		InOrder:   c.order == "input",
+		Window:    c.window,
+		Ledger:    ledger,
+		Progress:  sp,
+		OnError: func(loc ccrawl.Location, err error) {
+			failed++
+			rep.Textf("warn: %s at %d: %v\n", loc.Filename, loc.Offset, err)
+		},
+	}
+	if asDir {
+		cfg.OnRecord = func(loc ccrawl.Location, rec ccrawl.WARCRecord) error {
+			name := fmt.Sprintf("%06d-%s", at[ccrawl.LocationKey(loc)], safeName(loc.URL))
+			return os.WriteFile(filepath.Join(c.outDir, name), contentBytes(c.mode, rec), 0o644)
+		}
+	} else {
+		cfg.OnRecord = func(_ ccrawl.Location, rec ccrawl.WARCRecord) error {
+			return c.mode.render(app.Out, rec)
+		}
+	}
+
+	stats, runErr := ccrawl.RunBatchFetch(ctx, app.HTTP, cfg)
+	sp.Stop()
+	if runErr != nil {
+		return runErr
+	}
+	if c.mode.structured() && !asDir {
+		if err := app.Out.Flush(); err != nil {
+			return err
+		}
+	}
+
+	// The request count against the record count is the whole argument for the
+	// mode, so it is reported rather than left to be measured from outside.
+	line := fmt.Sprintf("fetched %d records in %d requests (%s read)",
+		stats.Records, stats.Requests, humanBytes(stats.Bytes))
+	if stats.Requests > 0 {
+		line += fmt.Sprintf(", %.1fx fewer requests than one at a time",
+			float64(stats.Records+stats.Failed+stats.Skipped)/float64(stats.Requests))
+	}
+	if stats.Skipped > 0 {
+		line += fmt.Sprintf("; skipped %d already in the ledger", stats.Skipped)
+	}
+	if failed > 0 {
+		line += fmt.Sprintf("; %d failed", failed)
+	}
+	rep.Textf("%s\n", line)
+	return nil
+}
+
+// readLocations pulls every location record off a stream of JSONL, skipping the
+// lines that are not one.
+func readLocations(r io.Reader) ([]ccrawl.Location, error) {
+	var locs []ccrawl.Location
+	err := readLines(r, func(line string) error {
+		if loc, ok := parseLocationLine(line); ok {
+			locs = append(locs, loc)
+		}
+		return nil
+	})
+	return locs, err
 }
 
 func runFetchOne(ctx context.Context, app *App, loc ccrawl.Location, mode contentMode) error {
@@ -81,14 +240,8 @@ func runFetchOne(ctx context.Context, app *App, loc ccrawl.Location, mode conten
 func runFetchStdin(ctx context.Context, app *App, mode contentMode, outDir string, asDir bool) error {
 	asDir = asDir || app.Out.Format() == "dir"
 
-	var locs []ccrawl.Location
-	if err := readLines(os.Stdin, func(line string) error {
-		loc, ok := parseLocationLine(line)
-		if ok {
-			locs = append(locs, loc)
-		}
-		return nil
-	}); err != nil {
+	locs, err := readLocations(os.Stdin)
+	if err != nil {
 		return err
 	}
 	if len(locs) == 0 {

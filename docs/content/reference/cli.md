@@ -96,6 +96,53 @@ Locate a record with `--file`, `--offset`, `--length`, or stream JSONL locations
 Content flags: `--body` (default), `--text`, `--markdown`, `--links`, `--headers`, `--meta`.
 Write one file per record with `--dir` and `--out-dir`.
 
+### Batch mode
+
+One record per HTTP request is fine for a few thousand locations and hopeless for a few million.
+`--batch` sorts the locations by file and offset, coalesces the ones that sit close together, and reads each run of them in a single ranged GET.
+Records that share a request are sliced back apart by their own offset and length and parsed individually, so the output is byte for byte what the one at a time path produces.
+
+| Flag | Description |
+| --- | --- |
+| `--batch` | Coalesce nearby records in the same WARC file into shared ranged GETs |
+| `--gap` | Coalesce records at most this many bytes apart (default 1 MiB) |
+| `--max-span` | Never read more than this in one GET (default 16 MiB) |
+| `--order` | `input` or `file`: emit in the order given or the order on disk (default `file`) |
+| `--ledger` | File of finished locations, to skip on a resume |
+| `--lookahead` | Ranged GETs allowed to run ahead of the writer (default 64) |
+
+```sh
+ccrawl columnar locations --tld vn -o jsonl | ccrawl fetch - --batch --ledger fetched.txt --dir
+```
+
+### Choosing a gap
+
+`--gap` is the price you are willing to pay in wasted bytes to save one request.
+Every merge drops one round trip and reads the hole between the two records, so the flag is that trade written down as a number.
+Add `--dry-run` and nothing is fetched: the grouping is pure arithmetic on the locations, so it reports both halves of the trade and you can try a few values for free.
+
+```
+$ ccrawl fetch - --batch --dry-run --gap 65536 < locations.jsonl
+1000000 locations in 612078 requests, 1.6x fewer than one at a time; 10.1 GB read for 1.6 GB of records, 6.3x amplification
+
+$ ccrawl fetch - --batch --dry-run < locations.jsonl
+1000000 locations in 101238 requests, 9.9x fewer than one at a time; 116.0 GB read for 1.6 GB of records, 71.5x amplification
+```
+
+Those are real numbers from a million robots.txt locations, which is close to the worst case: tiny records scattered ten to a WARC file.
+The 71x amplification looks alarming and is still the right call, because a round trip to `data.commoncrawl.org` costs far more than a megabyte of transfer does.
+On 486 real records packed into 20 files the default gap turned 486 requests into 20 and finished in 6.6 seconds against 97.4 seconds for the one at a time path, a 14.7x speedup while reading 34x the bytes.
+Lower `--gap` when bandwidth is what you are paying for, raise it when latency is.
+`--max-span` is the separate ceiling that stops one dense file from becoming a single enormous read.
+
+`--order file` streams: groups are written out in the order they sit on disk and no more than `--lookahead` of them are ever in flight.
+`--order input` has to put back an ordering the grouping destroyed, so it holds finished records in memory until their turn comes, and a single slow group early in the input will hold everything behind it.
+Use it when something downstream is lining the output up against the input, and leave it alone otherwise.
+
+Pass `--ledger` and every finished location is appended to that file, flushed after each group.
+Rerunning the same command with the same ledger skips what is already in it, so a killed run picks up where it stopped rather than starting over.
+The ledger is one `filename@offset` per line, so it is greppable and safe to trim by hand.
+
 ---
 
 ## export
