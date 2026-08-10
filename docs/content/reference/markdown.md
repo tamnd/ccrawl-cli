@@ -37,6 +37,36 @@ ccrawl markdown export --shards all --limit 200
 An out-of-range index is a usage error, not a silent skip.
 `--limit` trims the resolved list after expansion, so `--shards all --limit 200` means the first 200 shards of the manifest.
 
+## Converting a location set instead of whole shards
+
+`--locations` replaces `--shards` as the source for `markdown export`.
+Instead of downloading whole WARC files, it reads exactly the records a stream of index locations points at, using coalesced ranged GETs, and runs the same conversion pipeline over them.
+This is the recovery pass shape: a columnar query picks out the pages you missed, and the export turns those pages and nothing else into Parquet.
+
+```sh
+ccrawl columnar locations --crawl CC-MAIN-2026-30 --lang vie -o jsonl \
+  | ccrawl markdown export --locations - --lang vie --dedup-digest --push=false --out ./md
+```
+
+The input is the JSONL that `columnar locations` and `index` emit: one object per line with `filename`, `offset`, `length`, and `url`.
+`--locations -` reads standard input, anything else is a path.
+Lines that are not location records are skipped, so a mixed stream is fine.
+
+A **part** is to a location run what a shard is to a full export: the unit that gets one Parquet file, one ledger entry, and one digest dedup set.
+`--part-size` sets how many locations go into a part, defaulting to 50 000, which is a few hundred megabytes of Markdown.
+Smaller parts mean more files and worse compression, larger parts mean a resumed run redoes more.
+The stream is cut in order, so the same input always cuts the same way and a ledger from an interrupted run still means what it said.
+
+`--gap` and `--max-span` tune the coalescing exactly as they do for [batch fetch](/reference/cli/#batch-mode): two records closer together than `--gap` are pulled in one request, and a coalesced range never grows past `--max-span`.
+Records that will not fetch are counted and skipped rather than failing the part, because a recovery pass runs against an index that can disagree with the archive.
+
+Two things do not combine with `--locations`.
+The `wet` extractor reads WET shards, which have no record offsets to point at, so the pair is a usage error.
+`--shards`, `--source-kind`, and the manifest fetch are all bypassed, since there is no manifest involved.
+
+The `warc_bytes` a location run reports is what the ranged reads actually pulled off the wire, holes between coalesced records included, rather than a shard size.
+Comparing it against the size of the shards those records live in is the whole argument for the flag.
+
 ## Output schemas
 
 ### open-markdown-v3, written by `markdown export`
@@ -393,6 +423,10 @@ Shared by `markdown export` and `markdown refetch`:
 |---|---|
 | `--skip-errors` | Continue past per-shard failures instead of aborting |
 | `--source-kind` | Manifest to read, `warc` or `wet` (default: whatever the extractor needs) |
+| `--locations` | Convert the records in this JSONL location stream instead of whole shards, `-` for stdin |
+| `--part-size` | Locations per Parquet part for `--locations` (default 50000) |
+| `--gap` | Coalesce `--locations` records closer together than this many bytes |
+| `--max-span` | Cap on the size of one coalesced ranged read |
 
 `markdown refetch` only:
 

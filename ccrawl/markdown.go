@@ -149,6 +149,25 @@ type MarkdownPackConfig struct {
 	DedupDigest bool
 	// Progress is called after each row is written. It may be nil.
 	Progress func(MarkdownStats)
+
+	// Locations, when non-empty, replaces WARCPath as the source: instead of
+	// downloading a whole shard, the pack reads exactly these records out of the
+	// crawl with coalesced ranged GETs. This is the recovery pass shape, where a
+	// columnar query picks a few thousand pages scattered over a few hundred
+	// WARC files and reading the files whole would move a thousand times the
+	// bytes.
+	//
+	// Everything downstream is identical: same extractor, same language filter,
+	// same digest dedup, same schema. Only where the records come from changes.
+	Locations []Location
+	// FetchGap and FetchMaxSpan tune the coalescing for Locations. 0 selects
+	// DefaultFetchGap and DefaultFetchMaxSpan.
+	FetchGap     int64
+	FetchMaxSpan int64
+	// FetchWorkers is how many ranged GETs run at once for Locations. 0 selects
+	// the conversion worker count, which is the right shape when the fetch is
+	// the slow side and the CPU is idle waiting for it.
+	FetchWorkers int
 }
 
 // PackMarkdownShard streams one WARC shard through the conversion pipeline and
@@ -166,6 +185,9 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	stats := MarkdownStats{ShardIdx: cfg.ShardIdx}
 
 	t0 := time.Now()
+	if len(cfg.Locations) > 0 {
+		return packLocations(ctx, h, cfg, stats, t0)
+	}
 	warcURL := h.DataURL(cfg.WARCPath)
 	resp, err := h.GetDownload(ctx, warcURL)
 	if err != nil {
@@ -182,12 +204,30 @@ func PackMarkdownShard(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfi
 	return packStream(ctx, resp.Body, cfg, stats, t0)
 }
 
+// recordSource yields the captured pages a pack is going to convert, calling
+// emit once per page and stopping early if emit says so.
+//
+// It exists so the conversion pipeline does not know or care whether the pages
+// arrived as a whole downloaded shard or as a few thousand ranged reads picked
+// out by an index query. Both go through the same extractor, filter, and writer.
+type recordSource func(ctx context.Context, emit func(htmlRecord) error) error
+
 // packStream runs the conversion pipeline over an already-open WARC byte stream
 // and writes the parquet file at cfg.OutPath. It is the core shared by the
 // network path (PackMarkdownShard) and the local-file benchmark, so both
 // exercise identical extract and encode work. t0 marks when the download
 // started so DurDownload covers the time until the first records flow.
 func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, stats MarkdownStats, t0 time.Time) (MarkdownStats, error) {
+	ex := cfg.Extractor
+	if ex == nil {
+		ex = Extractors[DefaultExtractor]
+	}
+	return packSource(ctx, streamSource(body, cfg, ex), cfg, stats, t0)
+}
+
+// packSource is the conversion pipeline: it pulls pages from src, converts them
+// in parallel, and writes the parquet file at cfg.OutPath.
+func packSource(ctx context.Context, src recordSource, cfg MarkdownPackConfig, stats MarkdownStats, t0 time.Time) (MarkdownStats, error) {
 	workers := cfg.Workers
 	if workers <= 0 {
 		workers = runtime.NumCPU()
@@ -222,7 +262,7 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 	var digestDropped int64
 	go func() {
 		defer close(records)
-		digestDropped, readErr = streamSourceRecords(ctx, body, cfg, ex, records)
+		digestDropped, readErr = drainSource(ctx, src, cfg, records)
 	}()
 
 	tConvert := time.Now()
@@ -325,13 +365,12 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 
-// streamSourceRecords reads the shard and pushes one record per page, returning
-// how many records --dedup-digest skipped. A WARC shard carries HTML in response
-// records; a WET shard carries text Common Crawl already extracted, in
-// conversion records. Both come out as the same struct, so everything downstream
-// of here is identical for the two sources and only the extractor knows the
-// difference.
-func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, ex *Extractor, records chan<- htmlRecord) (int64, error) {
+// drainSource pulls every page out of src and pushes it onto records, returning
+// how many pages --dedup-digest skipped.
+//
+// This is where the two policies that apply to any source live: the payload
+// digest set, and the record limit. Where the pages came from is src's problem.
+func drainSource(ctx context.Context, src recordSource, cfg MarkdownPackConfig, records chan<- htmlRecord) (int64, error) {
 	queued := 0
 	var dropped int64
 	errStop := errors.New("record limit reached")
@@ -345,7 +384,7 @@ func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackCo
 		seen = make(map[[sha256.Size]byte]struct{}, 8192)
 	}
 
-	push := func(rec htmlRecord) error {
+	err := src(ctx, func(rec htmlRecord) error {
 		if seen != nil {
 			sum := sha256.Sum256(rec.html)
 			if _, dup := seen[sum]; dup {
@@ -364,42 +403,60 @@ func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackCo
 			return errStop
 		}
 		return nil
-	}
-
-	var err error
-	if ex.SourceKind == "wet" {
-		err = IterateWET(body, cfg.CrawlID, func(rec WETRecord) error {
-			return push(htmlRecord{
-				url:      rec.URL,
-				date:     rec.Date.Format("2006-01-02"),
-				recordID: rec.RecordID,
-				html:     []byte(rec.Text),
-			})
-		})
-	} else {
-		err = IterateWARC(body, func(rec WARCRecord) error {
-			if rec.Header.Type != "response" || rec.Header.HTTPStatus != 200 {
-				return nil
-			}
-			if !isHTMLMIME(rec.Header.HTTPMIME) {
-				return nil
-			}
-			html := HTTPBody(rec.Block)
-			if len(html) == 0 {
-				return nil
-			}
-			return push(htmlRecord{
-				url:      rec.Header.TargetURI,
-				date:     rec.Header.Date.Format("2006-01-02"),
-				recordID: rec.Header.RecordID,
-				html:     html,
-			})
-		})
-	}
+	})
 	if errors.Is(err, errStop) {
 		return dropped, nil // a deliberate early stop is not a read failure
 	}
 	return dropped, err
+}
+
+// streamSource reads a whole shard off an open byte stream. A WARC shard carries
+// HTML in response records; a WET shard carries text Common Crawl already
+// extracted, in conversion records. Both come out as the same struct, so
+// everything downstream is identical for the two and only the extractor knows
+// the difference.
+func streamSource(body io.Reader, cfg MarkdownPackConfig, ex *Extractor) recordSource {
+	return func(_ context.Context, emit func(htmlRecord) error) error {
+		if ex.SourceKind == "wet" {
+			return IterateWET(body, cfg.CrawlID, func(rec WETRecord) error {
+				return emit(htmlRecord{
+					url:      rec.URL,
+					date:     rec.Date.Format("2006-01-02"),
+					recordID: rec.RecordID,
+					html:     []byte(rec.Text),
+				})
+			})
+		}
+		return IterateWARC(body, func(rec WARCRecord) error {
+			page, ok := htmlPageOf(rec)
+			if !ok {
+				return nil
+			}
+			return emit(page)
+		})
+	}
+}
+
+// htmlPageOf picks the HTML page out of a WARC record, reporting false for the
+// records a Markdown pack has no use for: requests, metadata, non-200 captures,
+// non-HTML payloads, and empty bodies.
+func htmlPageOf(rec WARCRecord) (htmlRecord, bool) {
+	if rec.Header.Type != "response" || rec.Header.HTTPStatus != 200 {
+		return htmlRecord{}, false
+	}
+	if !isHTMLMIME(rec.Header.HTTPMIME) {
+		return htmlRecord{}, false
+	}
+	html := HTTPBody(rec.Block)
+	if len(html) == 0 {
+		return htmlRecord{}, false
+	}
+	return htmlRecord{
+		url:      rec.Header.TargetURI,
+		date:     rec.Header.Date.Format("2006-01-02"),
+		recordID: rec.Header.RecordID,
+		html:     html,
+	}, true
 }
 
 // convertGated runs the extractor while holding a slot in sem, so the total
