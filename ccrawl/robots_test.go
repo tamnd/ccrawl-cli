@@ -442,7 +442,7 @@ func TestCrawlDelayHoldsTheHostInTheFrontier(t *testing.T) {
 	f.Add(FrontierEntry{URL: "https://slow.example/a", Host: "slow.example"})
 	f.Add(FrontierEntry{URL: "https://slow.example/b", Host: "slow.example"})
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	first, ok, err := f.Pop(now)
 	if err != nil || !ok {
 		t.Fatalf("first Pop: %v %v", ok, err)
@@ -452,16 +452,16 @@ func TestCrawlDelayHoldsTheHostInTheFrontier(t *testing.T) {
 	if delay != 10*time.Second {
 		t.Fatalf("CrawlDelay = %s, want 10s", delay)
 	}
-	f.Hold(first.Host, now+int64(delay.Seconds()))
+	f.Hold(first.Host, now+delay.Milliseconds())
 
-	for _, after := range []int64{1, 5, 9} {
+	for _, after := range []int64{1_000, 5_000, 9_000} {
 		if _, ok, err := f.Pop(now + after); err != nil {
 			t.Fatalf("Pop: %v", err)
 		} else if ok {
-			t.Fatalf("second URL came out %ds after the first, want at least 10s", after)
+			t.Fatalf("second URL came out %dms after the first, want at least 10s", after)
 		}
 	}
-	if _, ok, err := f.Pop(now + 10); err != nil {
+	if _, ok, err := f.Pop(now + 10_000); err != nil {
 		t.Fatalf("Pop: %v", err)
 	} else if !ok {
 		t.Error("the second URL should be available once the crawl delay has passed")

@@ -30,9 +30,14 @@ type FrontierEntry struct {
 	URL      string  // normalized URL
 	Host     string  // hostname for politeness grouping
 	Priority float32 // harmonic centrality (higher = crawl sooner)
-	NextAt   int64   // earliest Unix timestamp to fetch
+	NextAt   int64   // earliest Unix time in milliseconds to fetch
 	Depth    uint8   // BFS depth from seed
 	Retries  uint8
+
+	// claimAt is the host clock Pop set when it handed this entry out. It is
+	// how HoldClaim tells the worker that owns a host's slot from a worker that
+	// popped the same host a moment earlier and has been overtaken.
+	claimAt int64
 }
 
 // FrontierConfig configures a frontier. The zero value is a usable in memory
@@ -109,7 +114,7 @@ type Frontier struct {
 	mu    sync.Mutex
 	db    *sql.DB
 	cfg   FrontierConfig
-	delay int64 // politeness delay in seconds
+	delay int64 // politeness delay in milliseconds
 
 	seen    *seenCache
 	pending []FrontierEntry // admissions not yet written
@@ -245,7 +250,7 @@ func OpenFrontier(cfg FrontierConfig) (*Frontier, error) {
 	f := &Frontier{
 		db:         db,
 		cfg:        cfg,
-		delay:      int64(cfg.Delay / time.Second),
+		delay:      cfg.Delay.Milliseconds(),
 		seen:       newSeenCache(cfg.SeenURLs),
 		hosts:      make(map[string]*list.Element),
 		hostLRU:    list.New(),
@@ -476,7 +481,10 @@ func (f *Frontier) Stats() FrontierStats {
 }
 
 // Pop returns the highest priority URL that is eligible to crawl at now, and
-// records the fetch against its host's politeness clock.
+// records the fetch against its host's politeness clock. Times are Unix
+// milliseconds, here and everywhere else the frontier takes one: a crawler that
+// asks for 250ms between requests to a host has to be able to say so, and a
+// clock that only counts seconds would quietly round that down to nothing.
 //
 // A false second return means nothing is eligible yet, which is a wait rather
 // than an end: check Len to tell "come back in a moment" from "finished".
@@ -497,7 +505,8 @@ func (f *Frontier) Pop(now int64) (FrontierEntry, bool, error) {
 				f.defer_ = append(f.defer_, e)
 				continue
 			}
-			f.setHostNextAt(e.Host, now+f.delay)
+			e.claimAt = now + f.delay
+			f.setHostNextAt(e.Host, e.claimAt)
 			f.stats.Claimed++
 			f.queued--
 			return e, true, nil
@@ -690,8 +699,9 @@ func (f *Frontier) flushFinishedLocked() error {
 	return nil
 }
 
-// Retry puts a URL back in the queue at a later time with its retry count
-// bumped, which is what a transient fetch failure deserves.
+// Retry puts a URL back in the queue at a later time, in Unix milliseconds,
+// with its retry count bumped, which is what a transient fetch failure
+// deserves.
 func (f *Frontier) Retry(e FrontierEntry, at int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -706,8 +716,8 @@ func (f *Frontier) Retry(e FrontierEntry, at int64) error {
 	return nil
 }
 
-// Hold keeps a host idle until at least the given time, on top of whatever the
-// frontier's own politeness delay already reserved.
+// Hold keeps a host idle until at least the given time, in Unix milliseconds,
+// on top of whatever the frontier's own politeness delay already reserved.
 //
 // This is where a robots.txt Crawl-delay lands. Pop reserves the configured
 // delay when it hands a URL out, because at that point nobody has read the
@@ -720,6 +730,41 @@ func (f *Frontier) Hold(host string, until int64) {
 	if at := f.hostNextAt(host); at < until {
 		f.setHostNextAt(host, until)
 	}
+}
+
+// HoldClaim is Hold for a worker that is holding a claim on the host, and it
+// reports whether that worker may go ahead with its fetch.
+//
+// The case it exists for is two workers popping the same host before anyone has
+// read its robots.txt. Both are inside the run's own delay, both then learn the
+// host wants ten seconds, and only one of them can have the slot. The host
+// clock decides: Pop wrote a reservation when it handed each claim out, so the
+// worker whose reservation is still the one standing owns the host and gets
+// true, and the worker that was overtaken gets false and has to put its URL
+// back with Defer.
+func (f *Frontier) HoldClaim(e FrontierEntry, until int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if at := f.hostNextAt(e.Host); at != e.claimAt {
+		return false
+	}
+	f.setHostNextAt(e.Host, until)
+	return true
+}
+
+// Defer puts a claimed URL back in the queue at a later time without counting a
+// retry against it. Nothing was fetched and nothing failed: the crawler only
+// found out the host wanted more room than the claim had reserved.
+func (f *Frontier) Defer(e FrontierEntry, at int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.db.Exec(`UPDATE frontier SET state = ?, next_at = ? WHERE url_hash = ?`,
+		frontierPending, at, urlHashBytes(e.URL)); err != nil {
+		return fmt.Errorf("frontier defer %s: %w", e.URL, err)
+	}
+	f.queued++
+	f.stats.Deferred++
+	return nil
 }
 
 // hostNextAt reads a host's next eligible time, from the LRU when it is hot,

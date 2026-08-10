@@ -322,16 +322,22 @@ func robotsToken(userAgent string) string {
 type RobotsCache struct {
 	mu      sync.RWMutex
 	entries map[string]*RobotsEntry
-	ttl     time.Duration
-	ua      string // the crawler's user agent, matched against the groups
+	// inflight holds one channel per host being fetched, closed when the fetch
+	// lands. Without it, sixty four workers arriving at a new host together ask
+	// that host for robots.txt sixty four times, which is a rude way to open a
+	// conversation about politeness.
+	inflight map[string]chan struct{}
+	ttl      time.Duration
+	ua       string // the crawler's user agent, matched against the groups
 }
 
 // NewRobotsCache creates a cache with the given TTL and user agent string.
 func NewRobotsCache(ttl time.Duration, userAgent string) *RobotsCache {
 	return &RobotsCache{
-		entries: make(map[string]*RobotsEntry),
-		ttl:     ttl,
-		ua:      userAgent,
+		entries:  make(map[string]*RobotsEntry),
+		inflight: make(map[string]chan struct{}),
+		ttl:      ttl,
+		ua:       userAgent,
 	}
 }
 
@@ -362,13 +368,35 @@ func (rc *RobotsCache) Put(host string, e *RobotsEntry) {
 }
 
 // Fetch returns the robots entry for a host, fetching and caching it on a miss.
+// Concurrent misses on the same host share one fetch: the first caller goes to
+// the network and the rest wait for it.
 func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme string) *RobotsEntry {
-	if e := rc.Get(host); e != nil {
+	for {
+		if e := rc.Get(host); e != nil {
+			return e
+		}
+		rc.mu.Lock()
+		if wait, ok := rc.inflight[host]; ok {
+			rc.mu.Unlock()
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				return robotsUnreachable()
+			}
+			continue
+		}
+		done := make(chan struct{})
+		rc.inflight[host] = done
+		rc.mu.Unlock()
+
+		e := FetchRobots(ctx, h, host, scheme, rc.ua)
+		rc.Put(host, e)
+		rc.mu.Lock()
+		delete(rc.inflight, host)
+		rc.mu.Unlock()
+		close(done)
 		return e
 	}
-	e := FetchRobots(ctx, h, host, scheme, rc.ua)
-	rc.Put(host, e)
-	return e
 }
 
 // FetchRobots fetches and parses robots.txt for one host.

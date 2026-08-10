@@ -602,6 +602,7 @@ Recrawl engine commands for seeding and fetching live URLs.
 |---|---|
 | `crawl seed` | Generate seed URLs from the web-graph rank table |
 | `crawl fetch <url>` | Crawl a single URL with robots.txt checking and content digest |
+| `crawl run` | Run a crawl from a seed file, with a resumable frontier and WARC output |
 | `crawl status` | Show daily crawl budget allocation across the five recrawl tiers |
 
 ### crawl seed
@@ -639,6 +640,33 @@ ccrawl crawl fetch https://example.com/ --warc-dir warc/
 With `--warc-dir` the fetch is archived as an ISO 28500 WARC/1.0 file: a warcinfo record, then a request and response pair linked with `WARC-Concurrent-To`, with `WARC-Block-Digest` and `WARC-Payload-Digest` as `sha1:` base32, `WARC-IP-Address`, and `WARC-Truncated: length` when the body cap trips.
 The stored headers describe the stored body, so a decoded or dechunked response gets a rewritten `Content-Length` and loses the encoding headers that no longer apply.
 The path written is reported in the record as `warc_file`.
+
+### crawl run
+
+Drives a whole crawl from a seed file: the frontier hands out URLs in priority order, one host at a time, robots.txt is fetched once per host and enforced, every fetch is written to WARC, and outlinks go back in the queue up to `--max-depth`.
+
+```sh
+ccrawl crawl seed -n 100000 -o jsonl > seeds.jsonl
+ccrawl crawl run --seeds seeds.jsonl --out warc/ --state crawl.db --max-pages 100000 -j 64
+ccrawl crawl run --seeds - --out warc/ --state crawl.db --max-depth 2 --same-host
+```
+
+| Flag | Meaning |
+|---|---|
+| `--seeds` | Seed file: `crawl seed` JSONL or one URL per line, `-` for stdin |
+| `--out` | Directory to write WARC files into (empty fetches without archiving) |
+| `--state` | Frontier state file, so a run resumes after a restart |
+| `--delay` | Minimum spacing between two requests to the same host |
+| `--max-depth` | How far from a seed to follow links (default 0, the seeds only) |
+| `--max-pages` | Stop after this many fetches (0 = no limit) |
+| `--same-host` | Stay on the hosts the seeds named |
+| `--no-robots` | Do not check robots.txt |
+| `--robots` | Check robots.txt, which is already the default |
+| `--warc-size` | Rotate to a new WARC file past this many bytes |
+| `--prefix` | File name prefix for the WARC output |
+
+The frontier in `--state` is the whole resume story: a run that is killed leaves its queue, its politeness clocks and its seen set on disk, and the next run over the same file picks up where the last one stopped rather than refetching what is done.
+Politeness is per host and it is the longer of `--delay` and the host's own `Crawl-delay`, so raising `--workers` adds hosts in flight and never adds requests to one host.
 
 ### crawl status
 
