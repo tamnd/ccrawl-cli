@@ -87,9 +87,16 @@ func TestFrontierScale(t *testing.T) {
 			report("pop", popped, time.Since(start))
 		}
 	}
+	popRate := float64(popped) / time.Since(start).Seconds()
 	report("pop", popped, time.Since(start))
 	if popped != n {
 		t.Errorf("popped %d of %d admitted, the frontier lost URLs", popped, n)
+	}
+	// The floor from E4. It is asserted here rather than in the ordinary test
+	// suite because this only runs when someone asks for it on a machine they
+	// chose, which is the only place a throughput number means anything.
+	if popRate < 5000 {
+		t.Errorf("pop rate %.0f/s over %d URLs, want at least 5000/s", popRate, n)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
