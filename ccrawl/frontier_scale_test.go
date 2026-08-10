@@ -68,7 +68,7 @@ func TestFrontierScale(t *testing.T) {
 		t.Logf("database %.2f GB for %d URLs", float64(fi.Size())/(1<<30), n)
 	}
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	start = time.Now()
 	var popped int
 	for popped < n {

@@ -69,6 +69,11 @@ type CrawlConfig struct {
 	// the cap and flagged truncated rather than dropped, which is what the WARC
 	// spec's WARC-Truncated is for. Zero means DefaultMaxBody.
 	MaxBody int64
+	// OnRequestWritten, when set, is called with the instant the request bytes
+	// went out, once per hop of a redirect chain. It is how a caller holding a
+	// host to one request per delay measures from the wire rather than from its
+	// own dispatch, which are a connection setup apart.
+	OnRequestWritten func(time.Time)
 }
 
 // DefaultMaxBody is the default cap on a stored response body.
@@ -121,6 +126,11 @@ func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult
 		GotConn: func(info httptrace.GotConnInfo) {
 			if info.Conn != nil {
 				remoteAddr = info.Conn.RemoteAddr().String()
+			}
+		},
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			if cfg.OnRequestWritten != nil {
+				cfg.OnRequestWritten(time.Now())
 			}
 		},
 	}))

@@ -40,7 +40,7 @@ func TestFrontierPriority(t *testing.T) {
 	f.Add(FrontierEntry{URL: "https://high.com/", Host: "high.com", Priority: 100.0})
 	f.Add(FrontierEntry{URL: "https://mid.com/", Host: "mid.com", Priority: 50.0})
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	e1, ok, err := f.Pop(now)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
@@ -60,7 +60,7 @@ func TestFrontierPoliteness(t *testing.T) {
 	f.Add(FrontierEntry{URL: "https://example.com/a", Host: "example.com", Priority: 1.0})
 	f.Add(FrontierEntry{URL: "https://example.com/b", Host: "example.com", Priority: 0.5})
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	e1, ok, err := f.Pop(now)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
@@ -78,7 +78,7 @@ func TestFrontierPoliteness(t *testing.T) {
 		t.Error("second Pop for same host within delay should fail")
 	}
 	// after delay has elapsed it should succeed
-	e3, ok3, err := f.Pop(now + 15)
+	e3, ok3, err := f.Pop(now + 15_000)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}

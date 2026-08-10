@@ -1,15 +1,14 @@
 ---
 title: "Building a recrawl engine"
-description: "What the crawl group does today: pick seed hosts from the web graph, fetch a URL politely, and see the tier budget."
+description: "What the crawl group does today: pick seed hosts from the web graph, run a resumable crawl that writes WARC, and see the tier budget."
 weight: 70
 ---
 
 `ccrawl crawl` is the recrawl side of the tool: decide which hosts are worth crawling again, and fetch pages the way a well-behaved crawler should.
 
-Read this first, because it decides whether the guide is useful to you today.
-What ships right now is the seeding half and a single-URL fetcher that can write WARC.
-There is no bulk crawl loop yet and no shared frontier behind a command.
-The [planned](#planned) section at the bottom says what is coming and where to follow it.
+What ships right now is the whole path: pick the seeds, run the crawl, get WARC out.
+`crawl run` drives a resumable frontier, so a run that is killed picks up where it stopped.
+The [planned](#planned) section at the bottom says what is still missing.
 
 ## What ships today
 
@@ -17,6 +16,7 @@ The [planned](#planned) section at the bottom says what is coming and where to f
 |---|---|
 | `crawl seed` | Stream the web-graph host rank table and emit one seed URL per host |
 | `crawl fetch <url>` | Fetch one URL with the crawler config, optionally checking robots.txt |
+| `crawl run` | Crawl a seed list through a resumable frontier and write WARC |
 | `crawl status` | Show the daily page budget across the five recrawl tiers |
 
 Tier assignment itself lives in `ccrawl sched`, covered in [recrawl scheduling](/guides/scheduling/).
@@ -107,7 +107,43 @@ ccrawl crawl seed -n 50 -o jsonl \
 
 That is a shell loop, not a crawler.
 It has no shared frontier, no per-host politeness across workers, and no resume.
-It is fine for a few thousand URLs and wrong for a few million, which is exactly the gap the planned `crawl run` fills.
+It is fine for a few hundred URLs and wrong for a few million, which is what `crawl run` is for.
+
+## Running a crawl
+
+`crawl run` is the loop: it reads a seed file, walks the frontier, fetches, archives, and puts the outlinks it finds back in the queue.
+
+```bash
+ccrawl crawl seed -n 100000 -o jsonl > seeds.jsonl
+ccrawl crawl run --seeds seeds.jsonl --out warc/ --state crawl.db --max-pages 100000 -j 64
+```
+
+`--seeds` takes the JSONL `crawl seed` writes, so the harmonic centrality in it becomes the queue priority and the most central hosts are crawled first.
+It also takes a plain list of URLs, one per line, and `-` for stdin.
+
+Three things are worth knowing before you point it at the open web.
+
+Politeness is per host, and it is the longer of `--delay` and whatever the host's own `Crawl-delay` asks for.
+Workers share one frontier, and the frontier hands out at most one URL per host per delay, so `--workers 64` means 64 hosts in flight and never 64 requests at one host.
+
+robots.txt is fetched once per host, cached for a day, and enforced.
+A host that answers 5xx or does not answer at all is treated as fully disallowed for five minutes, which is what RFC 9309 asks for, so an outage is not read as an invitation.
+`--no-robots` turns the whole check off, and you should have a reason.
+
+The frontier lives in `--state`, and it is the resume story.
+The queue, the seen set and the per-host clocks are all in that file, committed as the crawl goes, so a run that is killed halfway through 100 000 pages restarts on the remainder rather than on the whole list.
+Point a second run at the same state file with the same seeds and it crawls what is left.
+
+```bash
+# stop it, restart it, and watch it carry on rather than start over
+ccrawl crawl run --seeds seeds.jsonl --out warc/ --state crawl.db -j 64
+```
+
+What comes out in `--out` is ISO 28500 WARC, the same records `crawl fetch --warc-dir` writes, rotated at `--warc-size` and named with `--prefix`.
+Every page is also emitted as a record on stdout, so `-o jsonl` gives you a log of the crawl next to the archive.
+
+Two limits keep a run bounded: `--max-pages` stops after that many fetches, and `--max-depth` decides how far from a seed links are followed, with the default of 0 meaning the seeds and nothing else.
+`--same-host` keeps the crawl to the hosts the seeds named, which is what you want when the seed list is the point rather than a starting position.
 
 ## Crawl budget
 
@@ -135,16 +171,12 @@ See the [search index guide](/guides/search-index/) for the details.
 
 ## Planned
 
-The library already has the pieces a real crawl loop needs, and they compile and are tested:
+`crawl run` crawls, and there is a list of things it does not do yet:
 
-- `Frontier`, a SQLite-backed priority queue with a per-host politeness delay, resumable across a restart
-- `RobotsCache`, a per-host cache of RFC 9309 rules with a TTL
-- `WARCWriter`, the ISO 28500 writer behind `--warc-dir`, rotating at a size target
-- a shared connection pool, 200 idle connections and 10 per host
+- no distributed frontier, so a run is one machine and one state file
+- no sitemap discovery, so the only way in is the seed list and the links on the pages
+- no per-tier scheduling inside a run, so `sched assign` picks the tiers and you pass the seeds yourself
+- no CDX or index write on the way out, so the WARC files are indexed after the fact with `ccrawl index`
 
-None of it is reachable from a command yet.
-Wiring it into a `ccrawl crawl run` that takes a seed list, walks the frontier, honours robots, and writes WARC is tracked in [#54](https://github.com/tamnd/ccrawl-cli/issues/54).
-
-Until those land, if you need a bulk pipeline over Common Crawl URLs today, use [`ccrawl markdown refetch`](/guides/markdown-corpus/).
+If the URL set is fixed up front rather than discovered from links, [`ccrawl markdown refetch`](/guides/markdown-corpus/) is the better fit.
 It takes the URL list from a WARC shard, fetches every page live at high concurrency, and writes Parquet.
-It is a different shape from a general crawler, since the URL set is fixed up front rather than discovered from links, but it is the one that exists and it is fast.

@@ -48,7 +48,7 @@ func drain(tb testing.TB, f *Frontier, now int64) []string {
 // does not hand back what it had.
 func TestFrontierResumesWithoutRefetching(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "frontier.db")
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 
 	f, err := OpenFrontier(FrontierConfig{Path: path})
 	if err != nil {
@@ -101,7 +101,7 @@ func TestFrontierResumesWithoutRefetching(t *testing.T) {
 // only one of those readings is safe, so they go back in the queue.
 func TestFrontierReclaimsClaimsLeftInFlight(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "frontier.db")
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 
 	f, err := OpenFrontier(FrontierConfig{Path: path})
 	if err != nil {
@@ -174,7 +174,7 @@ func TestFrontierDedupsAcrossRestart(t *testing.T) {
 // batch, so this only holds for a clean Close, which is what the test does.
 func TestFrontierPolitenessSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "frontier.db")
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 
 	f, err := OpenFrontier(FrontierConfig{Path: path, Delay: 30 * time.Second})
 	if err != nil {
@@ -198,28 +198,28 @@ func TestFrontierPolitenessSurvivesRestart(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer func() { _ = f2.Close() }()
-	if _, ok, err := f2.Pop(now + 5); err != nil {
+	if _, ok, err := f2.Pop(now + 5_000); err != nil {
 		t.Fatalf("Pop: %v", err)
 	} else if ok {
 		t.Error("a restart popped a host it was 5 seconds into a 30 second delay on")
 	}
-	if _, ok, err := f2.Pop(now + 31); err != nil {
+	if _, ok, err := f2.Pop(now + 31_000); err != nil {
 		t.Fatalf("Pop: %v", err)
 	} else if !ok {
 		t.Error("Pop after the delay elapsed should succeed")
 	}
 }
 
-// TestFrontierDeferredURLsAreNotLost is the politeness write back: an entry
-// claimed while its host is inside the delay goes back to pending rather than
-// evaporating with the claim buffer.
+// TestFrontierDeferredURLsAreNotLost is the politeness case: a second URL for a
+// host that was just handed out waits its turn and is still there when the
+// delay is up, rather than evaporating with the claim buffer.
 func TestFrontierDeferredURLsAreNotLost(t *testing.T) {
 	f := NewFrontier(60 * time.Second)
 	defer func() { _ = f.Close() }()
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 
 	// One busy host and one quiet one. The busy host's second URL has to be
-	// deferred to reach the quiet host's, and then still be there afterwards.
+	// passed over to reach the quiet host's, and then still be there afterwards.
 	f.Add(FrontierEntry{URL: "https://busy.example/1", Host: "busy.example", Priority: 10})
 	f.Add(FrontierEntry{URL: "https://busy.example/2", Host: "busy.example", Priority: 9})
 	f.Add(FrontierEntry{URL: "https://quiet.example/1", Host: "quiet.example", Priority: 1})
@@ -229,12 +229,12 @@ func TestFrontierDeferredURLsAreNotLost(t *testing.T) {
 		t.Fatalf("first pass popped %v, want busy/1 then quiet/1", got)
 	}
 	if f.Len() != 1 {
-		t.Fatalf("Len = %d, want 1 deferred URL still queued", f.Len())
+		t.Fatalf("Len = %d, want 1 URL still queued for the busy host", f.Len())
 	}
-	if s := f.Stats(); s.Deferred == 0 {
-		t.Error("Stats.Deferred = 0, want the write back to have been counted")
+	if s := f.Stats(); s.Claimed != 2 {
+		t.Errorf("Claimed = %d, want 2: a URL that cannot be handed out should not be claimed", s.Claimed)
 	}
-	later := drain(t, f, now+61)
+	later := drain(t, f, now+61_000)
 	if len(later) != 1 || later[0] != "https://busy.example/2" {
 		t.Fatalf("after the delay popped %v, want busy/2", later)
 	}
@@ -243,20 +243,20 @@ func TestFrontierDeferredURLsAreNotLost(t *testing.T) {
 func TestFrontierRetryRequeues(t *testing.T) {
 	f := NewFrontier(0)
 	defer func() { _ = f.Close() }()
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 
 	f.Add(FrontierEntry{URL: "https://flaky.example/", Host: "flaky.example"})
 	e, ok, err := f.Pop(now)
 	if err != nil || !ok {
 		t.Fatalf("Pop: ok=%v err=%v", ok, err)
 	}
-	if err := f.Retry(e, now+10); err != nil {
+	if err := f.Retry(e, now+10_000); err != nil {
 		t.Fatalf("Retry: %v", err)
 	}
 	if _, ok, _ := f.Pop(now); ok {
 		t.Error("a URL retried for later should not be eligible now")
 	}
-	e2, ok, err := f.Pop(now + 11)
+	e2, ok, err := f.Pop(now + 11_000)
 	if err != nil || !ok {
 		t.Fatalf("Pop after retry time: ok=%v err=%v", ok, err)
 	}
@@ -293,7 +293,7 @@ func TestFrontierThroughput(t *testing.T) {
 	seedFrontier(t, f, n, 5000)
 	admit := time.Since(start)
 
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	start = time.Now()
 	var popped int
 	for {
@@ -349,7 +349,7 @@ func BenchmarkFrontierPop(b *testing.B) {
 	}
 	defer func() { _ = f.Close() }()
 	seedFrontier(b, f, b.N, 5000)
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		e, ok, err := f.Pop(now)
