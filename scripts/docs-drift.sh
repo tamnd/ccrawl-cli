@@ -147,7 +147,9 @@ check_flags_in() {
   while IFS= read -r line; do
     case "$line" in
       '## '*)  path=$(scope_for "${line#\#\# }" "$fallback"); continue ;;
-      '### '*) path=$(scope_for "${line#\#\#\# }" "$fallback"); continue ;;
+      # A third level heading is a subsection of the command above it, so a prose
+      # one keeps that command's scope rather than falling back to the whole page.
+      '### '*) path=$(scope_for "${line#\#\#\# }" "$path"); continue ;;
     esac
     for tok in $(printf '%s\n' "$line" | grep -oE -- '--[a-z][a-z0-9-]*' || true); do
       listed "$tok" "$SKIP_FLAGS" && continue
