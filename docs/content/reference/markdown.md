@@ -163,6 +163,7 @@ Nothing is recomputed and nothing is committed twice.
 
 Local Parquet files are deleted after they commit, which is what keeps a `--shards all` run inside a fixed disk budget.
 Pass `--keep-parquet` to hold on to them, and watch the disk if you do.
+A run with `--push=false` always keeps them, since the local copy is only redundant once it is on the hub.
 `--min-free-gb` (default 2) pauses new downloads when free space drops below the threshold rather than failing mid-shard.
 
 A per-shard conversion failure is logged and counted, and the run keeps going.

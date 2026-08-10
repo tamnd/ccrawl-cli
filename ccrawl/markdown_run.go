@@ -477,13 +477,15 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 		}
 
 		// Record the ledger and reclaim disk now that the files are safe on HF.
+		// Without a push there is nowhere else the parquet exists, so deleting it
+		// would leave a run that reported rows and produced nothing.
 		for _, r := range batch {
 			if cfg.Ledger != nil {
 				if err := cfg.Ledger.Mark(r.idx); err != nil {
 					return err
 				}
 			}
-			if !cfg.KeepParquet {
+			if cfg.Push && !cfg.KeepParquet {
 				_ = os.Remove(r.path)
 			}
 		}
