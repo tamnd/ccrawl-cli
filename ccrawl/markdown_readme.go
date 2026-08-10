@@ -25,6 +25,15 @@ type MarkdownDatasetStats struct {
 	ConvertS  int64
 	ExportS   int64
 	PublishS  int64
+
+	// Extractor is the engine that produced the text, as name@version. A dataset
+	// that does not say which extractor built it cannot be reproduced or
+	// compared against another one, so the card says it in the processing steps
+	// and the schema carries it per row. Empty falls back to the default engine's
+	// description.
+	Extractor string
+	// Lang, when set, is the ISO 639-3 language the run filtered to.
+	Lang string
 }
 
 // GenerateMarkdownREADME produces the HuggingFace dataset card for
@@ -63,6 +72,28 @@ func GenerateMarkdownREADME(s MarkdownDatasetStats) string {
 		pct := float64(html-md) / float64(html) * 100
 		reduction = fmt.Sprintf(" Processed %s%s of raw HTML into %s%s of clean Markdown, a **%.1f%% reduction**.",
 			approx, fmtBytes(html), approx, fmtBytes(md), pct)
+	}
+
+	extractorID := s.Extractor
+	if extractorID == "" {
+		extractorID = Extractors[DefaultExtractor].ID(s.CrawlID)
+	}
+	convertStep := extractorCardStep(extractorID)
+	// The WET source reads a different manifest and skips extraction, so the
+	// steps describing the input have to change with it. A card that says
+	// "download .warc.gz" over a dataset built from WET files is wrong in the one
+	// place a reader goes to find out where the text came from.
+	downloadStep := "raw .warc.gz files from Common Crawl S3 (each file is roughly 1 GB compressed)"
+	filterStep := "to keep only HTTP 200 responses with a `text/html` content type, discarding images, scripts, redirects, and error pages"
+	streamLine := "The pipeline streams from the compressed WARC through conversion directly into Parquet. Pages that produce empty conversions are dropped."
+	if name, _, _ := strings.Cut(extractorID, "@"); name == "wet" {
+		downloadStep = "raw .warc.wet.gz files from Common Crawl S3, which hold the text Common Crawl extracted and are a fraction of the size of the WARC files they came from"
+		filterStep = "to keep only conversion records, which is every page Common Crawl produced text for"
+		streamLine = "The pipeline streams from the compressed WET file straight into Parquet. Pages that came with no text are dropped."
+	}
+	langStep := ""
+	if s.Lang != "" {
+		langStep = fmt.Sprintf(". This dataset was filtered to `%s`, so documents identified as anything else were dropped", s.Lang)
 	}
 
 	var b strings.Builder
@@ -193,7 +224,10 @@ The following is an example row from the dataset:
   "warc_record_id": "<urn:uuid:a1b2c3d4-e5f6-7890-abcd-ef1234567890>",
   "html_length": 48210,
   "markdown_length": 3847,
-  "markdown": "# Interesting Topic\n\nThis is the main content of the page..."
+  "markdown": "# Interesting Topic\n\nThis is the main content of the page...",
+  "language": "eng",
+  "language_confidence": 1.0,
+  "extractor": "%s"
 }
 `+"```"+`
 
@@ -209,6 +243,9 @@ The following is an example row from the dataset:
 | `+"`html_length`"+` | int64 | Byte length of the original HTML body before conversion |
 | `+"`markdown_length`"+` | int64 | Byte length of the converted Markdown body |
 | `+"`markdown`"+` | string | Clean Markdown content extracted from the page |
+| `+"`language`"+` | string | ISO 639-3 language detected in the Markdown, empty when there was too little text to identify |
+| `+"`language_confidence`"+` | double | How sure the identifier is, 0 to 1 |
+| `+"`extractor`"+` | string | Engine that produced the Markdown, as `+"`name@version`"+`. Extraction changes between releases, so the version is part of the answer |
 
 ### Data Splits
 
@@ -228,21 +265,31 @@ The source data consists of web pages crawled by the [Common Crawl](https://comm
 
 The processing pipeline runs as a single streaming pass with no intermediate files:
 
-1. **Download** raw .warc.gz files from Common Crawl S3 (each file is roughly 1 GB compressed)
-2. **Filter** to keep only HTTP 200 responses with a `+"`text/html`"+` content type, discarding images, scripts, redirects, and error pages
-3. **Convert** HTML to clean Markdown. [go-trafilatura](https://github.com/markusmobius/go-trafilatura) tuned for recall (`+"`FavorRecall`"+`, with Readability and DomDistiller fallbacks) isolates the main content node and strips navigation, ads, and boilerplate, then a direct node-tree walk renders GitHub-flavored Markdown with links resolved to absolute URLs
-4. **Export** straight to Apache Parquet with Zstd compression
+1. **Download** %s
+2. **Filter** %s
+3. **Convert** %s
+4. **Identify** the language of the converted text and record it with the identifier's confidence%s
+5. **Export** straight to Apache Parquet with Zstd compression
 
-The pipeline streams from the compressed WARC through conversion directly into Parquet. Pages that produce empty conversions are dropped.
+%s
+
+Every row records the engine that produced it as `+"`%s`"+`, so two shards built with different engines are never mistaken for one corpus.
 
 `,
 		s.CrawlID, docsStr, fmtInt(int64(shards)), reduction, // intro line
-		s.CrawlID, // file tree
-		s.CrawlID, // datasets name=
-		s.CrawlID, // datasets data_files=
-		s.CrawlID, // huggingface_hub allow_patterns=
-		s.CrawlID, // duckdb path
-		s.CrawlID, // data splits example
+		s.CrawlID,    // file tree
+		s.CrawlID,    // datasets name=
+		s.CrawlID,    // datasets data_files=
+		s.CrawlID,    // huggingface_hub allow_patterns=
+		s.CrawlID,    // duckdb path
+		extractorID,  // example row extractor
+		s.CrawlID,    // data splits example
+		downloadStep, // processing step 1
+		filterStep,   // processing step 2
+		convertStep,  // processing step 3
+		langStep,     // processing step 4
+		streamLine,   // what the pipeline streams through
+		extractorID,  // engine stamped on every row
 	)
 
 	// Compression Ratios table. Rows are rendered only when we have data for
@@ -432,4 +479,21 @@ func fmtInt(n int64) string {
 	}
 	parts = append([]string{s}, parts...)
 	return strings.Join(parts, ",")
+}
+
+// extractorCardStep describes one engine for the dataset card's processing
+// steps. The name is taken from the recorded name@version so the prose and the
+// column can never drift apart.
+func extractorCardStep(id string) string {
+	name, _, _ := strings.Cut(id, "@")
+	switch name {
+	case "readability":
+		return "HTML to Markdown with [go-readability](https://github.com/go-shiori/go-readability), a port of Mozilla's Readability.js, which isolates the article node and drops the rest, then renders Markdown with links resolved to absolute URLs"
+	case "raw":
+		return "the whole HTML document to Markdown with no extraction step at all, so navigation, footers, and boilerplate are all still there. This is the control corpus: it says what was on the page before any extractor made a judgement about it"
+	case "wet":
+		return "nothing. The text is what Common Crawl's own extractor produced in the WET files, kept as it was given, so this dataset costs no extraction and inherits whatever that extractor decided"
+	default:
+		return "HTML to clean Markdown. [go-trafilatura](https://github.com/markusmobius/go-trafilatura) tuned for recall (`FavorRecall`, with Readability and DomDistiller fallbacks) isolates the main content node and strips navigation, ads, and boilerplate, then a direct node-tree walk renders GitHub-flavored Markdown with links resolved to absolute URLs"
+	}
 }

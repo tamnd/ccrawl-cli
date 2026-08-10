@@ -4,44 +4,9 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
-
-	"net/url"
-
-	"github.com/tamnd/yomi/extract"
-	"github.com/tamnd/yomi/mdconv"
-	"golang.org/x/net/html/charset"
 )
-
-// htmlToMarkdownReadability is the engine open-markdown-v2 originally shipped:
-// yomi's go-readability extraction plus mdconv rendering. It is kept here only
-// so TestEngineComparison can measure it head to head against the h2m
-// (trafilatura, FavorRecall) engine that htmlToMarkdown now uses.
-func htmlToMarkdownReadability(body []byte, pageURL string) string {
-	if len(body) == 0 {
-		return ""
-	}
-	r, err := charset.NewReader(strings.NewReader(string(body)), "")
-	if err != nil {
-		return ""
-	}
-	utf8Body, err := io.ReadAll(r)
-	if err != nil || len(utf8Body) == 0 {
-		return ""
-	}
-	art, err := extract.FromHTML(utf8Body, pageURL)
-	if err != nil || art.Node == nil {
-		return ""
-	}
-	base, _ := url.Parse(pageURL)
-	md, err := mdconv.Convert(art.Node, mdconv.Options{Base: base})
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(md)
-}
 
 type engineRun struct {
 	name    string
@@ -121,8 +86,9 @@ func TestEngineComparison(t *testing.T) {
 		name string
 		conv func([]byte, string) string
 	}{
-		{"h2m (trafilatura, FavorRecall)", htmlToMarkdown},
-		{"v2 (yomi readability + mdconv)", htmlToMarkdownReadability},
+		{"h2m (trafilatura, FavorRecall)", htmlToMarkdownH2M},
+		{"readability (yomi + mdconv)", htmlToMarkdownReadability},
+		{"raw (whole document, no extraction)", htmlToMarkdownRaw},
 	}
 
 	var runs []engineRun
@@ -169,7 +135,7 @@ func TestEngineComparison(t *testing.T) {
 			if dumped >= n {
 				break
 			}
-			a := htmlToMarkdown(p.html, p.url)
+			a := htmlToMarkdownH2M(p.html, p.url)
 			b := htmlToMarkdownReadability(p.html, p.url)
 			if a == "" || b == "" {
 				continue

@@ -116,6 +116,10 @@ type MarkdownExportConfig struct {
 	Lang              string
 	MinLangConfidence float64
 
+	// Extractor is the engine every shard in the run uses. nil selects the
+	// default.
+	Extractor *Extractor
+
 	// Progress is called once per committed batch with a snapshot of the run.
 	// It may be nil.
 	Progress func(MarkdownRunStats)
@@ -279,6 +283,7 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 
 					Lang:              cfg.Lang,
 					MinLangConfidence: cfg.MinLangConfidence,
+					Extractor:         cfg.Extractor,
 				})
 				inflight.Add(-1)
 				// Per-shard wall-clock is the useful convert figure for a parallel
@@ -426,6 +431,8 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 				ParquetBytes:    run.ParquetBytes,
 				ConvertS:        run.ConvertS,
 				PublishS:        run.PublishS,
+				Extractor:       cfg.Extractor.ID(cfg.CrawlID),
+				Lang:            cfg.Lang,
 			}
 			tmp, err := writeTempREADME(dstats)
 			if err != nil {

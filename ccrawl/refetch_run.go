@@ -51,6 +51,10 @@ type RefetchExportConfig struct {
 	// still records the detected language on every converted row.
 	Lang              string
 	MinLangConfidence float64
+
+	// Extractor is the engine every shard in the run uses. nil selects the
+	// default.
+	Extractor *Extractor
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
@@ -212,6 +216,7 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 
 					Lang:              cfg.Lang,
 					MinLangConfidence: cfg.MinLangConfidence,
+					Extractor:         cfg.Extractor,
 				})
 				inflight.Add(-1)
 				if err != nil {
