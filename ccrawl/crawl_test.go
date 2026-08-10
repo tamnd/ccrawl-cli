@@ -12,6 +12,8 @@ import (
 
 func TestFrontierAddDedup(t *testing.T) {
 	f := NewFrontier(time.Second)
+	defer func() { _ = f.Close() }()
+
 	added := f.Add(FrontierEntry{URL: "https://example.com/", Host: "example.com", Priority: 1.0})
 	if !added {
 		t.Error("first Add should return true")
@@ -20,19 +22,30 @@ func TestFrontierAddDedup(t *testing.T) {
 	if added2 {
 		t.Error("duplicate URL should not be added again")
 	}
+	if err := f.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
 	if f.Len() != 1 {
 		t.Errorf("Frontier.Len = %d, want 1", f.Len())
+	}
+	if s := f.Stats(); s.Admitted != 1 || s.Duplicates != 1 {
+		t.Errorf("Stats = %+v, want Admitted 1 and Duplicates 1", s)
 	}
 }
 
 func TestFrontierPriority(t *testing.T) {
 	f := NewFrontier(0) // no delay for test
+	defer func() { _ = f.Close() }()
+
 	f.Add(FrontierEntry{URL: "https://low.com/", Host: "low.com", Priority: 1.0})
 	f.Add(FrontierEntry{URL: "https://high.com/", Host: "high.com", Priority: 100.0})
 	f.Add(FrontierEntry{URL: "https://mid.com/", Host: "mid.com", Priority: 50.0})
 
 	now := time.Now().Unix()
-	e1, ok := f.Pop(now)
+	e1, ok, err := f.Pop(now)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
 	if !ok {
 		t.Fatal("Pop returned nothing")
 	}
@@ -43,11 +56,16 @@ func TestFrontierPriority(t *testing.T) {
 
 func TestFrontierPoliteness(t *testing.T) {
 	f := NewFrontier(10 * time.Second)
+	defer func() { _ = f.Close() }()
+
 	f.Add(FrontierEntry{URL: "https://example.com/a", Host: "example.com", Priority: 1.0})
 	f.Add(FrontierEntry{URL: "https://example.com/b", Host: "example.com", Priority: 0.5})
 
 	now := time.Now().Unix()
-	e1, ok := f.Pop(now)
+	e1, ok, err := f.Pop(now)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
 	if !ok {
 		t.Fatal("first Pop should succeed")
 	}
@@ -55,12 +73,16 @@ func TestFrontierPoliteness(t *testing.T) {
 		t.Fatalf("unexpected host %s", e1.Host)
 	}
 	// second Pop for same host should fail (delay not elapsed)
-	_, ok2 := f.Pop(now)
-	if ok2 {
+	if _, ok2, err := f.Pop(now); err != nil {
+		t.Fatalf("Pop: %v", err)
+	} else if ok2 {
 		t.Error("second Pop for same host within delay should fail")
 	}
 	// after delay has elapsed it should succeed
-	e3, ok3 := f.Pop(now + 15)
+	e3, ok3, err := f.Pop(now + 15)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
 	if !ok3 {
 		t.Error("Pop after delay elapsed should succeed")
 	}
