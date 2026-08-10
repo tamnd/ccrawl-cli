@@ -45,6 +45,12 @@ type RefetchExportConfig struct {
 	// fetch step runs at its true ceiling and Markdown is produced by a separate
 	// offline pass over the stored html column.
 	FetchOnly bool
+
+	// Lang keeps only documents identified as that ISO 639-3 language, and
+	// MinLangConfidence is the floor it applies. Empty Lang keeps everything and
+	// still records the detected language on every converted row.
+	Lang              string
+	MinLangConfidence float64
 	// Ledger, when set, skips already-committed shards and records new ones.
 	Ledger *Ledger
 
@@ -90,6 +96,11 @@ type RefetchRunStats struct {
 	ETA           time.Duration
 	FreeDiskBytes int64
 	RSSBytes      int64 // resident set size at the last progress update
+
+	// LangDropped is how many rows the --lang filter kept out of the parquet, and
+	// LangCounts breaks every row down by detected language.
+	LangDropped int64
+	LangCounts  map[string]int64
 }
 
 // packRefetchFn is the function the orchestrator uses to refetch one shard.
@@ -198,6 +209,9 @@ func RunRefetchExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Refe
 					ConvertSem: sem,
 					CacheDir:   cfg.CacheDir,
 					FetchOnly:  cfg.FetchOnly,
+
+					Lang:              cfg.Lang,
+					MinLangConfidence: cfg.MinLangConfidence,
 				})
 				inflight.Add(-1)
 				if err != nil {
@@ -271,6 +285,8 @@ func refetchTickEvent(kind string, s *RefetchRunStats, cfg RefetchExportConfig, 
 		HTMLBytes:    s.HTMLBytes,
 		MDBytes:      s.MDBytes,
 		ParquetBytes: s.ParquetBytes,
+		LangDropped:  s.LangDropped,
+		LangCounts:   s.LangCounts,
 		Rate:         rate,
 		ETAS:         eta,
 		ElapsedS:     elapsed.Seconds(),
@@ -320,6 +336,13 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 			run.ErrRefused += r.stats.ErrRefused
 			run.ErrSkip += r.stats.ErrSkip
 			run.ErrOther += r.stats.ErrOther
+			run.LangDropped += r.stats.LangDropped
+			for code, n := range r.stats.LangCounts {
+				if run.LangCounts == nil {
+					run.LangCounts = map[string]int64{}
+				}
+				run.LangCounts[code] += n
+			}
 		}
 
 		if cfg.Push {
@@ -378,6 +401,8 @@ func runRefetchCommitter(ctx context.Context, hf *HFClient, cfg RefetchExportCon
 				HTMLBytes:    r.stats.HTMLBytes,
 				MDBytes:      r.stats.MDBytes,
 				ParquetBytes: r.stats.ParquetBytes,
+				LangDropped:  r.stats.LangDropped,
+				LangCounts:   r.stats.LangCounts,
 				FetchFailed:  r.stats.Failed,
 				ExtractS:     r.stats.DurExtract.Seconds(),
 				FetchS:       r.stats.DurFetch.Seconds(),

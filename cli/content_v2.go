@@ -14,6 +14,73 @@ func registerContentV2(app *kit.App) {
 	registerContentExtract(app)
 	registerContentQuality(app)
 	registerContentLinksV2(app)
+	registerContentLang(app)
+}
+
+// ── content lang ──────────────────────────────────────────────────────────────
+
+type contentLangIn struct {
+	App *App   `kit:"inject"`
+	URL string `kit:"arg" name:"url" help:"URL to fetch and identify"`
+}
+
+// LangReport is what the markdown pipelines decide on for one URL.
+type LangReport struct {
+	URL        string  `json:"url" table:"url"`
+	Language   string  `json:"language" table:"language"`
+	Confidence float64 `json:"confidence" table:"confidence"`
+	CCLanguage string  `json:"cc_language,omitempty" table:"cc_language"`
+	Chars      int     `json:"chars" table:"chars"`
+
+	// Sample is the text the identifier actually saw, truncated. When an answer
+	// looks wrong this is the first thing to look at, because it is usually the
+	// input that is wrong and not the identifier.
+	Sample string `json:"sample" table:"sample"`
+}
+
+func registerContentLang(app *kit.App) {
+	kit.Handle(app, kit.OpMeta{
+		Name:    "lang",
+		Parent:  "content",
+		Single:  true,
+		Summary: "Identify the language of a page the way the markdown pipelines do",
+		Long: `Fetch a URL, convert it to Markdown, and run the same identifier that
+"markdown export --lang" applies, so a document that was kept or dropped can be
+asked about one URL at a time.
+
+The language is detected in the extracted Markdown, not in the raw HTML and not
+taken from the page's own lang attribute, because that is what the pipelines
+filter on. cc_language is what the page declares, shown alongside so a
+disagreement is visible rather than silent.
+
+This is a coarse pre-filter. A trigram identifier tells Vietnamese from Malay
+well enough to cut a corpus down, and it is not a substitute for a language
+specific classifier.
+
+Examples:
+  ccrawl content lang https://vnexpress.net/
+  ccrawl content lang https://example.com/ -o json`,
+		Args: []kit.Arg{{Name: "url"}},
+	}, func(ctx context.Context, in contentLangIn, emit func(LangReport) error) error {
+		rawURL := in.URL
+		if !strings.HasPrefix(rawURL, "http") {
+			rawURL = "https://" + rawURL
+		}
+		res, err := ccrawl.CrawlURL(ctx, rawURL, ccrawl.DefaultCrawlConfig)
+		if err != nil {
+			return fmt.Errorf("fetch %s: %w", rawURL, err)
+		}
+		md, _ := ccrawl.ExtractMarkdown(res.Body)
+		code, conf := ccrawl.DetectLanguage(md)
+		return emit(LangReport{
+			URL:        res.FinalURL,
+			Language:   code,
+			Confidence: conf,
+			CCLanguage: ccrawl.ExtractContent(res.Body).Language,
+			Chars:      len([]rune(md)),
+			Sample:     ccrawl.LangSample(md, 200),
+		})
+	})
 }
 
 // ── content extract ───────────────────────────────────────────────────────────

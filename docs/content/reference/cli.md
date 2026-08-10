@@ -224,12 +224,32 @@ Unlike `extract`, these commands use the v2 crawler config (10 MB body limit, br
 | `content extract <url>` | Clean text, title, description, canonical URL, language, word count |
 | `content outlinks <url>` | Structured outbound links with anchor text |
 | `content quality <url>` | Quality signals: word count, spam score, parked detection, short-content flag |
+| `content lang <url>` | The language the markdown pipelines would detect, with the confidence and the text it judged |
 
 ```sh
 ccrawl content extract https://golang.org/
 ccrawl content quality https://example.com/ -o json
 ccrawl content outlinks https://news.ycombinator.com/ -n 20
+ccrawl content lang https://vnexpress.net/ -o json
 ```
+
+### content lang
+
+`content lang` runs the same identifier `markdown export --lang` applies, on one URL at a time, so a document that was kept or dropped can be asked about directly.
+
+```
+$ ccrawl content lang https://vnexpress.net/ -o json
+{
+  "url": "https://vnexpress.net/",
+  "language": "vie",
+  "confidence": 1,
+  "cc_language": "vi",
+  "chars": 24196,
+  "sample": "Báo tiếng Việt nhiều người xem nhất Thứ hai, 3/8/2026 ..."
+}
+```
+
+`language` is detected in the extracted Markdown, not in the raw HTML and not read off the page's own `lang` attribute, because the Markdown is what the pipelines keep and filter on. `cc_language` is what the page declares, printed next to it so a disagreement is visible instead of silent. `sample` is the text the identifier actually saw, truncated; when an answer looks wrong it is almost always the input that is wrong.
 
 ---
 
@@ -287,6 +307,33 @@ ccrawl markdown refetch --shards 0-9 --fetch-workers 400 --repo org/name
 
 Both take `--shards` (`N`, `N-M`, `N,M`, or `all`), resume from a ledger at `<out>/.committed`, and need `HF_TOKEN` unless `--push=false`.
 The [markdown reference](/reference/markdown/) has both schemas, the HuggingFace path layout, and the tuning flags.
+
+### Language filtering
+
+Both subcommands label every row with a detected language and can keep only one of them.
+
+| Flag | Default | Does |
+|---|---|---|
+| `--lang` | (off) | Keep only documents detected as this ISO 639-3 language, for example `vie` |
+| `--min-lang-confidence` | `0.8` | Confidence a document has to clear for `--lang` |
+
+```sh
+ccrawl markdown export --shards 0 --lang vie --push=false --out ./md
+ccrawl markdown export --shards 0 --lang vie --min-lang-confidence 0.9 --push=false --out ./md
+```
+
+The language is detected in the extracted Markdown, so it describes the text in the row rather than whatever the page declared. Without `--lang` nothing is dropped and every row still carries `language` and `language_confidence`, which is what makes an unfiltered shard filterable later without extracting it again.
+
+A document with too little text to identify is dropped by `--lang` rather than kept: a filtered export asks for documents known to be in one language, and "we could not tell" is not that. The run prints both the drop rate and the detected mix, so a filter that threw away more than expected says so:
+
+```
+language: --lang vie kept 21482 of 43110 documents, dropped 21628 (50.2%)
+language: detected vie=21482 eng=17903 unknown=2011 zho=884 ...
+```
+
+`--lang` cannot be combined with `markdown refetch --fetch-only`, since fetch-only never produces the Markdown the identifier reads.
+
+This is a coarse pre-filter. A trigram identifier tells Vietnamese from Malay well enough to cut a corpus down to something worth looking at, and it is not a substitute for a language specific classifier.
 
 ---
 

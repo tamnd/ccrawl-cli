@@ -15,7 +15,7 @@ There are two pipelines and they answer different questions.
 Both walk the same unit of work: one WARC file from a crawl's manifest is one shard, one shard becomes one Parquet file, and one Parquet file lands at a fixed path in the repo.
 
 ```sh
-ccrawl markdown export --shards 0 --repo open-index/open-markdown-v2
+ccrawl markdown export --shards 0 --repo open-index/open-markdown-v3
 ccrawl markdown refetch --shards 0 --repo open-index/open-markdown-refetch-v1
 ```
 
@@ -39,7 +39,7 @@ An out-of-range index is a usage error, not a silent skip.
 
 ## Output schemas
 
-### open-markdown-v2, written by `markdown export`
+### open-markdown-v3, written by `markdown export`
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -51,6 +51,11 @@ An out-of-range index is a usage error, not a silent skip.
 | `html_length` | int | raw HTML body bytes before conversion |
 | `markdown_length` | int | converted Markdown bytes |
 | `markdown` | string | the converted Markdown |
+| `language` | string | ISO 639-3 language detected in the Markdown, empty when there was too little text |
+| `language_confidence` | double | the identifier's confidence, 0 to 1 |
+
+v3 appends the last two columns and changes nothing else, so a reader written against v2 loads a v3 file and gets every column it asks for.
+The default repo moved to `open-index/open-markdown-v3` to keep the two schemas in separate repos.
 
 ### open-markdown-refetch-v1, written by `markdown refetch`
 
@@ -80,6 +85,8 @@ Everything the export schema has, plus the live response and its timings.
 | `html_length` | int | HTML body bytes, set only when the response is HTML |
 | `markdown_length` | int | converted Markdown bytes |
 | `markdown` | string | the converted Markdown |
+| `language` | string | ISO 639-3 language detected in the Markdown |
+| `language_confidence` | double | the identifier's confidence, 0 to 1 |
 | `error` | string | fetch error, empty on success |
 
 A failed fetch still produces a row.
@@ -138,6 +145,49 @@ They exit 0 on success and 1 on a fatal error, and you re-run the same command t
 
 `urls publish` and `domains publish` are the commands that exit 75, because those runs commit into a single growing dataset and have a stall clock.
 See [exit codes](/reference/exit-codes/) for the full contract.
+
+## Language filtering
+
+Every row is labelled with a detected language, and `--lang` keeps only one of them.
+
+```sh
+ccrawl markdown export --shards 0-9 --lang vie --push=false --out ./md
+ccrawl markdown refetch --shards 0-9 --lang vie --min-lang-confidence 0.9
+```
+
+The identifier reads the extracted Markdown, not the raw HTML and not the page's own `lang` attribute.
+That is the whole point of doing it here: the columnar index already carries CLD2 labels computed by Common Crawl over the raw HTML, and those labels are unreliable for low resource languages and missing outright on a good share of rows.
+Running the identifier over the Markdown asks the question about the text that ends up in the dataset.
+
+`--min-lang-confidence` defaults to 0.8, which is the identifier's own reliability threshold.
+Raise it when precision matters more than volume.
+
+Documents with too little text to identify come out with an empty `language`, and a `--lang` filter drops them.
+A filtered export asks for documents known to be in one language, and "we could not tell" is not that.
+Without `--lang` nothing is dropped at all and the columns are still filled in, so an unfiltered shard can be filtered later without extracting it again.
+
+Both commands report the drop rate and the detected mix at the end of the run.
+Three shards of `CC-MAIN-2026-30` filtered to Vietnamese look like this:
+
+```
+markdown: 3 committed, 0 skipped, 0 failed of 3 | 647 rows | html=110.1 MB md=3.7 MB parquet=1.5 MB | 4m46s elapsed
+language: --lang vie kept 647 of 62824 documents, dropped 62177 (99.0%)
+language: detected eng=24266 fra=4165 deu=3915 rus=3786 spa=3388 cmn=2984 jpn=2702 por=1814
+```
+
+Those two lines only print in text mode, so the same numbers ride on the journal events as `lang_dropped` and `lang_counts` for a run whose progress is JSON.
+The breakdown is worth reading even when you did not filter, because it tells you what the crawl actually holds: Vietnamese is roughly 1 percent of a general Common Crawl shard, so a `--lang vie` run throws away 99 percent of it by design.
+
+The failure mode to know about is mojibake.
+A page served as UTF-8 but labelled Latin-1 comes out of extraction as garbled text, and garbled Cyrillic in particular carries enough accented Latin characters to read as Vietnamese.
+In a 200 document manual sample of the run above, 199 were Vietnamese and the one miss was a mojibake Ukrainian page.
+Romanized Vietnamese written without tone marks is detected as Vietnamese, which is usually what you want and worth knowing if it is not.
+
+Two limits worth knowing before you rely on it.
+`--lang` cannot be combined with `markdown refetch --fetch-only`, because fetch-only never produces the Markdown the identifier reads, and asking for both is a usage error rather than a silently ignored flag.
+And this is a coarse pre-filter: a trigram identifier separates Vietnamese from Malay well enough to cut a corpus down to something worth looking at, and it is not a substitute for a language specific classifier.
+
+`ccrawl content lang <url>` runs the same identifier on a single URL and prints the text it judged, which is the way to find out why a page was kept or dropped.
 
 ## Tuning: parallel, workers, commit-batch
 
@@ -212,6 +262,8 @@ Shared by `markdown export` and `markdown refetch`:
 | `--keep-parquet` | Keep local Parquet after it commits |
 | `--min-free-gb` | Pause new downloads below this much free disk |
 | `--ledger` | Resume ledger path (default `<out>/.committed`) |
+| `--lang` | Keep only documents detected as this ISO 639-3 language, for example `vie` |
+| `--min-lang-confidence` | Confidence a document has to clear for `--lang` (default 0.8) |
 
 `markdown export` only:
 

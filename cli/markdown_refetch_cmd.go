@@ -44,6 +44,8 @@ type markdownRefetchCmd struct {
 	warcCacheDir string // where to cache downloaded WARC shards ("" = default)
 	noWARCCache  bool   // disable WARC caching entirely
 	fetchOnly    bool   // store raw HTML, skip the convert phase
+	lang         string
+	minConf      float64
 }
 
 func newMarkdownRefetchCmd() kit.Command {
@@ -110,6 +112,8 @@ func (v *markdownRefetchCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.ledger, "ledger", "", "resume ledger file (default: <out>/.committed)")
 	f.StringVar(&v.warcCacheDir, "warc-cache-dir", "", "cache downloaded WARC shards here (default: <data-dir>/ami/warc)")
 	f.BoolVar(&v.noWARCCache, "no-warc-cache", false, "do not cache downloaded WARC shards to disk")
+	f.StringVar(&v.lang, "lang", "", "keep only documents detected as this ISO 639-3 language (e.g. vie)")
+	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
 	f.BoolVar(&v.fetchOnly, "fetch-only", false, "store raw HTML and skip the convert phase, so fetch runs at full speed (convert offline later over the html column)")
 }
 
@@ -232,6 +236,12 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	if v.fetchOnly {
 		fmt.Fprintf(os.Stderr, "refetch: fetch-only mode, storing raw HTML and skipping convert\n")
 	}
+	// Detection runs on the extracted Markdown, and --fetch-only never extracts
+	// any, so the two together would drop every row and report a filter working
+	// perfectly. Refuse instead.
+	if v.lang != "" && v.fetchOnly {
+		return usageErr("lang cannot be used with fetch-only: the language is detected in the converted Markdown, which fetch-only does not produce")
+	}
 
 	// The journal lands beside the ledger, so a resumed run's events sit next to
 	// the record of what it resumed from.
@@ -261,6 +271,9 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 		CacheDir:       warcCacheDir,
 		FetchOnly:      v.fetchOnly,
 		Reporter:       rep,
+
+		Lang:              v.lang,
+		MinLangConfidence: v.minConf,
 	})
 
 	n := int64(run.Committed)
@@ -287,6 +300,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 			"failures: %d total | dns=%d timeout=%d refused=%d skip=%d other=%d\n",
 			run.Failures, run.ErrDNS, run.ErrTimeout, run.ErrRefused, run.ErrSkip, run.ErrOther)
 	}
+	rep.Textf("%s", langSummary(v.lang, run.LangDropped, run.LangCounts))
 
 	return runErr
 }
