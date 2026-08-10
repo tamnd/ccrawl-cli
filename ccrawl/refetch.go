@@ -49,6 +49,7 @@ type RefetchRow struct {
 
 	Language       string  `parquet:"language"`
 	LangConfidence float64 `parquet:"language_confidence"`
+	Extractor      string  `parquet:"extractor"`
 }
 
 // RefetchStats summarises one shard's refetch run with per-phase breakdown.
@@ -129,6 +130,11 @@ type RefetchPackConfig struct {
 	// MinLangConfidence is the floor Lang applies. 0 selects
 	// DefaultMinLangConfidence.
 	MinLangConfidence float64
+
+	// Extractor is the engine that turns a fetched page into Markdown. nil
+	// selects the default. The wet engine is not usable here: a live fetch
+	// returns HTML, and there is no Common Crawl text to pass through.
+	Extractor *Extractor
 
 	// CacheDir, when set, is where the downloaded WARC is cached so a re-run of
 	// the same shard skips the multi-second download. The download streams to a
@@ -230,6 +236,11 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 	if minConf <= 0 {
 		minConf = DefaultMinLangConfidence
 	}
+	ex := cfg.Extractor
+	if ex == nil {
+		ex = Extractors[DefaultExtractor]
+	}
+	exID := ex.ID(cfg.CrawlID)
 
 	var wg sync.WaitGroup
 	wg.Add(convertWorkers)
@@ -256,6 +267,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 					TTFBMS:       res.TTFB.Milliseconds(),
 					BodyLength:   int64(len(res.Body)),
 					Digest:       res.Digest,
+					Extractor:    exID,
 				}
 				if res.Header != nil {
 					row.ContentType = res.Header.Get("Content-Type")
@@ -273,7 +285,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 						// the CPU-bound conversion, so fetch is not throttled by it.
 						row.HTML = string(res.Body)
 					} else {
-						md := convertGated(cfg.ConvertSem, res.Body, res.URL)
+						md := convertGated(cfg.ConvertSem, ex, res.Body, res.URL)
 						row.MarkdownLength = int64(len(md))
 						row.Markdown = md
 						row.Language, row.LangConfidence = DetectLanguage(md)

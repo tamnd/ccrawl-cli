@@ -38,6 +38,9 @@ type markdownExportCmd struct {
 
 	lang    string
 	minConf float64
+
+	extractor  string
+	sourceKind string
 }
 
 func newMarkdownExportCmd() kit.Command {
@@ -45,10 +48,9 @@ func newMarkdownExportCmd() kit.Command {
 	return kit.Command{
 		Use:   "export",
 		Short: "Stream CC WARCs → Markdown → Parquet → HuggingFace",
-		Long: `Download one or more Common Crawl WARC files, extract HTML bodies, convert to
-Markdown with h2m (go-trafilatura tuned for recall plus a GFM renderer: cleaned
-prose, tables, absolute links), and write each shard to a zstd-compressed Parquet
-file. After each shard the Parquet is committed to a HuggingFace dataset repo.
+		Long: `Download one or more Common Crawl shards, turn each captured page into
+Markdown, and write each shard to a zstd-compressed Parquet file. After each
+shard the Parquet is committed to a HuggingFace dataset repo.
 
 Output schema (open-markdown-v3):
   doc_id              stable SHA-256 URL hash (16 bytes hex)
@@ -61,9 +63,26 @@ Output schema (open-markdown-v3):
   markdown            converted Markdown text
   language            ISO 639-3 code detected in the Markdown, "" if too short
   language_confidence 0 to 1, how sure the identifier is
+  extractor           engine that produced the text, as name@version
 
-v3 appends the last two columns and changes nothing else, so a v2 reader that
+v3 appends the last three columns and changes nothing else, so a v2 reader that
 projects the columns it knows about reads a v3 file unchanged.
+
+Extractors (--extractor):
+  h2m          go-trafilatura tuned for recall, rendered as GFM (default)
+  readability  go-readability extraction, the engine open-markdown-v2 shipped
+  raw          the whole document as Markdown, no boilerplate removal
+  wet          the plain text Common Crawl already extracted, needs --source-kind wet
+
+Which extractor you use is a corpus quality decision, so it is a flag and not a
+build time constant. The same shard run through two engines is two different
+corpora, and the version is recorded next to the name because extraction changes
+between releases.
+
+--source-kind picks the manifest: warc reads warc.paths.gz and extracts the HTML
+yourself, wet reads wet.paths.gz and takes the text Common Crawl already
+extracted. They are not interchangeable, so wet pairs with --extractor wet and
+nothing else.
 
 --lang keeps only the documents identified as that language, which is a document
 level check on the text actually extracted, not the CLD2 label Common Crawl
@@ -87,6 +106,8 @@ Examples:
   ccrawl markdown export --shards all --parallel 4 --commit-batch 10
   ccrawl markdown export --shards 0-99 --push=false --out ~/data/md
   ccrawl markdown export --shards 0-9 --lang vie --min-lang-confidence 0.8
+  ccrawl markdown export --shards 0 --extractor readability --push=false
+  ccrawl markdown export --shards 0 --source-kind wet --extractor wet --push=false
   HF_TOKEN=hf_... ccrawl markdown export --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,
@@ -108,6 +129,8 @@ func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.ledger, "ledger", "", "resume ledger file (default: <out>/.committed)")
 	f.StringVar(&v.lang, "lang", "", "keep only documents detected as this ISO 639-3 language (e.g. vie)")
 	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
+	f.StringVar(&v.extractor, "extractor", ccrawl.DefaultExtractor, "conversion engine: "+strings.Join(ccrawl.ExtractorNames(), "|"))
+	f.StringVar(&v.sourceKind, "source-kind", "", "shard manifest to read: warc|wet (default: whatever the extractor needs)")
 }
 
 func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
@@ -126,13 +149,28 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		return err
 	}
 
-	// Resolve the WARC manifest for this crawl (cached after first fetch).
-	fmt.Fprintf(os.Stderr, "markdown: fetching WARC manifest for %s …\n", crawlID)
-	paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, crawlID, "warc")
+	ex, err := ccrawl.LookupExtractor(v.extractor)
 	if err != nil {
-		return fmt.Errorf("fetch WARC manifest: %w", err)
+		return usageErr(err.Error())
 	}
-	fmt.Fprintf(os.Stderr, "markdown: manifest has %d WARC files\n", len(paths))
+	// The extractor decides which manifest makes sense, so --source-kind only
+	// has to be given when you want to be explicit, and disagreeing with the
+	// extractor is an error rather than a silent reinterpretation.
+	kind := v.sourceKind
+	if kind == "" {
+		kind = ex.SourceKind
+	}
+	if kind != ex.SourceKind {
+		return usageErr(fmt.Sprintf("extractor %s reads %s shards, so it cannot be used with --source-kind %s", ex.Name, ex.SourceKind, kind))
+	}
+
+	// Resolve the shard manifest for this crawl (cached after first fetch).
+	fmt.Fprintf(os.Stderr, "markdown: fetching %s manifest for %s …\n", strings.ToUpper(kind), crawlID)
+	paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, crawlID, kind)
+	if err != nil {
+		return fmt.Errorf("fetch %s manifest: %w", kind, err)
+	}
+	fmt.Fprintf(os.Stderr, "markdown: manifest has %d %s files, extracting with %s\n", len(paths), strings.ToUpper(kind), ex.ID(crawlID))
 
 	indices, err := parseShardRange(v.shards, len(paths))
 	if err != nil {
@@ -145,7 +183,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 	hf := ccrawl.NewHFClient("")
 	if v.push {
 		if !hf.Valid() {
-			return fmt.Errorf("HF_TOKEN not set — set it or pass --push=false")
+			return fmt.Errorf("HF_TOKEN not set, set it or pass --push=false")
 		}
 		if err := hf.CreateDatasetRepo(ctx, v.repo, false); err != nil {
 			return fmt.Errorf("create HF repo: %w", err)
@@ -193,6 +231,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 
 		Lang:              v.lang,
 		MinLangConfidence: v.minConf,
+		Extractor:         ex,
 	})
 
 	rep.Textf(

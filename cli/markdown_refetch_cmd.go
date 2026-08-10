@@ -46,6 +46,7 @@ type markdownRefetchCmd struct {
 	fetchOnly    bool   // store raw HTML, skip the convert phase
 	lang         string
 	minConf      float64
+	extractor    string
 }
 
 func newMarkdownRefetchCmd() kit.Command {
@@ -79,7 +80,14 @@ Output schema (open-markdown-refetch-v1):
   html_length       HTML body bytes (set only when content is HTML)
   markdown_length   converted Markdown bytes
   markdown          converted Markdown text
+  language          ISO 639-3 code detected in the Markdown, "" if too short
+  language_confidence 0 to 1, how sure the identifier is
+  extractor         engine that produced the text, as name@version
   error             fetch error string (empty on success)
+
+--extractor picks the conversion engine: h2m (default), readability, or raw.
+The wet engine is not available here, since a live fetch returns HTML and there
+is no Common Crawl text to pass through.
 
 HF path layout (same as open-markdown):
   data/crawl=CC-MAIN-YYYY-WW/NNNNNN.parquet
@@ -89,6 +97,7 @@ Examples:
   ccrawl markdown refetch --shards 0-9 --fetch-workers 400 --repo open-index/open-markdown-refetch-v1
   ccrawl markdown refetch --shards all --parallel 2 --commit-batch 5
   ccrawl markdown refetch --shards 0-99 --push=false --out ~/data/refetch
+  ccrawl markdown refetch --shards 0 --extractor readability --push=false
   HF_TOKEN=hf_... ccrawl markdown refetch --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,
@@ -114,11 +123,28 @@ func (v *markdownRefetchCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&v.noWARCCache, "no-warc-cache", false, "do not cache downloaded WARC shards to disk")
 	f.StringVar(&v.lang, "lang", "", "keep only documents detected as this ISO 639-3 language (e.g. vie)")
 	f.Float64Var(&v.minConf, "min-lang-confidence", ccrawl.DefaultMinLangConfidence, "confidence a document must clear for --lang")
+	f.StringVar(&v.extractor, "extractor", ccrawl.DefaultExtractor, "conversion engine: h2m|readability|raw")
 	f.BoolVar(&v.fetchOnly, "fetch-only", false, "store raw HTML and skip the convert phase, so fetch runs at full speed (convert offline later over the html column)")
 }
 
 func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	app := appFromCtx(ctx)
+
+	// Flag combinations that cannot work are settled before anything is
+	// downloaded, so a typo costs a message and not a manifest.
+	ex, err := ccrawl.LookupExtractor(v.extractor)
+	if err != nil {
+		return usageErr(err.Error())
+	}
+	if ex.SourceKind != "warc" {
+		return usageErr(fmt.Sprintf("extractor %s cannot be used with refetch: it reads %s shards, and refetch converts pages it fetched live", ex.Name, ex.SourceKind))
+	}
+	// Detection runs on the extracted Markdown, and --fetch-only never extracts
+	// any, so the two together would drop every row and report a filter working
+	// perfectly. Refuse instead.
+	if v.lang != "" && v.fetchOnly {
+		return usageErr("lang cannot be used with fetch-only: the language is detected in the converted Markdown, which fetch-only does not produce")
+	}
 
 	crawlID, err := app.Crawl(ctx)
 	if err != nil {
@@ -236,13 +262,6 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 	if v.fetchOnly {
 		fmt.Fprintf(os.Stderr, "refetch: fetch-only mode, storing raw HTML and skipping convert\n")
 	}
-	// Detection runs on the extracted Markdown, and --fetch-only never extracts
-	// any, so the two together would drop every row and report a filter working
-	// perfectly. Refuse instead.
-	if v.lang != "" && v.fetchOnly {
-		return usageErr("lang cannot be used with fetch-only: the language is detected in the converted Markdown, which fetch-only does not produce")
-	}
-
 	// The journal lands beside the ledger, so a resumed run's events sit next to
 	// the record of what it resumed from.
 	rep, stopRun, err := app.StartRun("markdown refetch", filepath.Join(outDir, "run.jsonl"))
@@ -274,6 +293,7 @@ func (v *markdownRefetchCmd) run(ctx context.Context, _ []string) error {
 
 		Lang:              v.lang,
 		MinLangConfidence: v.minConf,
+		Extractor:         ex,
 	})
 
 	n := int64(run.Committed)

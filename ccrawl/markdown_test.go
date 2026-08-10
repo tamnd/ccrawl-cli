@@ -60,7 +60,7 @@ func TestHTMLToMarkdown(t *testing.T) {
 <footer>copyright boilerplate</footer>
 </body></html>`)
 
-	md := htmlToMarkdown(body, "https://example.com/page")
+	md := htmlToMarkdownH2M(body, "https://example.com/page")
 	if md == "" {
 		t.Fatal("htmlToMarkdown returned empty for a valid article")
 	}
@@ -76,10 +76,10 @@ func TestHTMLToMarkdown(t *testing.T) {
 }
 
 func TestHTMLToMarkdownEdgeCases(t *testing.T) {
-	if got := htmlToMarkdown(nil, "https://example.com/"); got != "" {
+	if got := htmlToMarkdownH2M(nil, "https://example.com/"); got != "" {
 		t.Errorf("nil body: expected empty, got %q", got)
 	}
-	if got := htmlToMarkdown([]byte{}, "https://example.com/"); got != "" {
+	if got := htmlToMarkdownH2M([]byte{}, "https://example.com/"); got != "" {
 		t.Errorf("empty body: expected empty, got %q", got)
 	}
 }
@@ -91,7 +91,7 @@ func TestHTMLToMarkdownLatin1(t *testing.T) {
 		"<p>A paragraph about a caf\xe9 with enough words to read as an article body by readability and survive extraction into the markdown column cleanly.</p>" +
 		"<p>Second paragraph to make the article substantial enough for the extractor heuristics to treat it as real content worth keeping.</p>" +
 		"</article></body></html>")
-	md := htmlToMarkdown(body, "https://example.com/cafe")
+	md := htmlToMarkdownH2M(body, "https://example.com/cafe")
 	if !strings.Contains(md, "Café") {
 		t.Errorf("latin-1 0xE9 byte not transcoded to UTF-8 é in:\n%s", md)
 	}

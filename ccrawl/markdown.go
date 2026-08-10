@@ -14,22 +14,24 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
-	"github.com/tamnd/h2m"
 )
 
 // MarkdownRow is the parquet schema for one converted HTML document. It matches
 // the open-index/open-markdown dataset layout so the output can be appended to
 // existing crawls without a schema migration.
 //
-// language and language_confidence make this open-markdown-v3. They are appended
-// at the end and every earlier column keeps its name and type, so a v2 reader
-// projecting the columns it knows about reads a v3 file without changes: parquet
-// is read by name, and a reader that never asks for the two new columns never
-// touches them.
+// language, language_confidence, and extractor make this open-markdown-v3. They
+// are appended at the end and every earlier column keeps its name and type, so a
+// v2 reader projecting the columns it knows about reads a v3 file without
+// changes: parquet is read by name, and a reader that never asks for the new
+// columns never touches them.
+//
+// extractor is name@version, not just the name. Extraction changes between
+// releases, sometimes visibly, and a dataset that only recorded the name could
+// not answer why two shards built months apart disagree about the same page.
 type MarkdownRow struct {
 	DocID          string  `parquet:"doc_id"`
 	URL            string  `parquet:"url"`
@@ -41,6 +43,7 @@ type MarkdownRow struct {
 	Markdown       string  `parquet:"markdown"`
 	Language       string  `parquet:"language"`
 	LangConfidence float64 `parquet:"language_confidence"`
+	Extractor      string  `parquet:"extractor"`
 }
 
 // MarkdownDocID returns a stable 16-byte hex document ID derived from the URL.
@@ -122,6 +125,9 @@ type MarkdownPackConfig struct {
 	// MinLangConfidence is the floor Lang applies. 0 selects
 	// DefaultMinLangConfidence.
 	MinLangConfidence float64
+	// Extractor is the engine that turns a captured page into Markdown. nil
+	// selects the default, which keeps every existing caller on h2m.
+	Extractor *Extractor
 	// Progress is called after each row is written. It may be nil.
 	Progress func(MarkdownStats)
 }
@@ -180,48 +186,21 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 	if minConf <= 0 {
 		minConf = DefaultMinLangConfidence
 	}
+	ex := cfg.Extractor
+	if ex == nil {
+		ex = Extractors[DefaultExtractor]
+	}
+	exID := ex.ID(cfg.CrawlID)
 
 	records := make(chan htmlRecord, workers*4)
 	rows := make(chan candidateRow, workers*4)
 	langCounts := map[string]int64{}
 
-	// Reader: iterate the WARC multi-member gzip stream, push HTML records.
+	// Reader: iterate the source stream and push one record per page.
 	var readErr error
 	go func() {
 		defer close(records)
-		queued := 0
-		errStop := errors.New("record limit reached")
-		readErr = IterateWARC(body, func(rec WARCRecord) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if rec.Header.Type != "response" || rec.Header.HTTPStatus != 200 {
-				return nil
-			}
-			if !isHTMLMIME(rec.Header.HTTPMIME) {
-				return nil
-			}
-			body := HTTPBody(rec.Block)
-			if len(body) == 0 {
-				return nil
-			}
-			records <- htmlRecord{
-				url:      rec.Header.TargetURI,
-				date:     rec.Header.Date.Format("2006-01-02"),
-				recordID: rec.Header.RecordID,
-				html:     body,
-			}
-			queued++
-			if cfg.MaxRecords > 0 && queued >= cfg.MaxRecords {
-				return errStop
-			}
-			return nil
-		})
-		if readErr == errStop {
-			readErr = nil // a deliberate early stop is not a read failure
-		}
+		readErr = streamSourceRecords(ctx, body, cfg, ex, records)
 	}()
 
 	tConvert := time.Now()
@@ -233,7 +212,7 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 		go func() {
 			defer wg.Done()
 			for r := range records {
-				md := convertGated(cfg.ConvertSem, r.html, r.url)
+				md := convertGated(cfg.ConvertSem, ex, r.html, r.url)
 				if md == "" {
 					continue
 				}
@@ -254,6 +233,7 @@ func packStream(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, sta
 						Markdown:       md,
 						Language:       code,
 						LangConfidence: conf,
+						Extractor:      exID,
 					},
 				}
 			}
@@ -321,41 +301,73 @@ func newMarkdownParquetWriter(path string) (*ParquetWriter[MarkdownRow], error) 
 	return &ParquetWriter[MarkdownRow]{f: f, w: w}, nil
 }
 
-// htmlToMarkdown converts one HTML body to Markdown via h2m: go-trafilatura
-// tuned for recall strips boilerplate and isolates the main content, then h2m
-// renders GitHub-flavored Markdown with links resolved against pageURL. h2m
-// transcodes non-UTF-8 bodies (GBK, Shift-JIS, Latin-1, and so on) from the
-// page's declared charset before parsing, so Common Crawl's mixed-encoding
-// pages convert correctly.
-//
-// Returns "" when the body yields no extractable article or conversion fails.
-func htmlToMarkdown(body []byte, pageURL string) string {
-	if len(body) == 0 {
-		return ""
+// streamSourceRecords reads the shard and pushes one record per page. A WARC
+// shard carries HTML in response records; a WET shard carries text Common Crawl
+// already extracted, in conversion records. Both come out as the same struct,
+// so everything downstream of here is identical for the two sources and only
+// the extractor knows the difference.
+func streamSourceRecords(ctx context.Context, body io.Reader, cfg MarkdownPackConfig, ex *Extractor, records chan<- htmlRecord) error {
+	queued := 0
+	errStop := errors.New("record limit reached")
+
+	push := func(rec htmlRecord) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case records <- rec:
+		}
+		queued++
+		if cfg.MaxRecords > 0 && queued >= cfg.MaxRecords {
+			return errStop
+		}
+		return nil
 	}
-	res := h2m.Convert(body, pageURL)
-	if !res.HasContent {
-		return ""
+
+	var err error
+	if ex.SourceKind == "wet" {
+		err = IterateWET(body, cfg.CrawlID, func(rec WETRecord) error {
+			return push(htmlRecord{
+				url:      rec.URL,
+				date:     rec.Date.Format("2006-01-02"),
+				recordID: rec.RecordID,
+				html:     []byte(rec.Text),
+			})
+		})
+	} else {
+		err = IterateWARC(body, func(rec WARCRecord) error {
+			if rec.Header.Type != "response" || rec.Header.HTTPStatus != 200 {
+				return nil
+			}
+			if !isHTMLMIME(rec.Header.HTTPMIME) {
+				return nil
+			}
+			html := HTTPBody(rec.Block)
+			if len(html) == 0 {
+				return nil
+			}
+			return push(htmlRecord{
+				url:      rec.Header.TargetURI,
+				date:     rec.Header.Date.Format("2006-01-02"),
+				recordID: rec.Header.RecordID,
+				html:     html,
+			})
+		})
 	}
-	// A handful of pages declare one charset but serve another, so the
-	// transcoded Markdown can still carry stray invalid byte sequences. Parquet
-	// strings and the Arrow readers on top of them require valid UTF-8, so drop
-	// any invalid bytes before the value reaches the writer.
-	if !utf8.ValidString(res.Markdown) {
-		return strings.ToValidUTF8(res.Markdown, "")
+	if errors.Is(err, errStop) {
+		return nil // a deliberate early stop is not a read failure
 	}
-	return res.Markdown
+	return err
 }
 
-// convertGated runs htmlToMarkdown while holding a slot in sem, so the total
+// convertGated runs the extractor while holding a slot in sem, so the total
 // number of concurrent conversions across all in-flight shards stays bounded.
-// A nil sem runs the conversion ungated.
-func convertGated(sem chan struct{}, body []byte, pageURL string) string {
+// A nil sem runs the conversion ungated, and a nil extractor runs the default.
+func convertGated(sem chan struct{}, ex *Extractor, body []byte, pageURL string) string {
 	if sem != nil {
 		sem <- struct{}{}
 		defer func() { <-sem }()
 	}
-	return htmlToMarkdown(body, pageURL)
+	return ex.Convert(body, pageURL)
 }
 
 // isHTMLMIME reports whether a MIME type string names an HTML document.

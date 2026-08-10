@@ -308,6 +308,38 @@ ccrawl markdown refetch --shards 0-9 --fetch-workers 400 --repo org/name
 Both take `--shards` (`N`, `N-M`, `N,M`, or `all`), resume from a ledger at `<out>/.committed`, and need `HF_TOKEN` unless `--push=false`.
 The [markdown reference](/reference/markdown/) has both schemas, the HuggingFace path layout, and the tuning flags.
 
+### Choosing an extractor
+
+`--extractor` picks the engine that turns a captured page into the text in the row.
+
+| Engine | Reads | Does |
+|---|---|---|
+| `h2m` (default) | WARC | go-trafilatura tuned for recall, rendered as GitHub-flavored Markdown |
+| `readability` | WARC | go-readability extraction plus mdconv, the engine `open-markdown-v2` shipped |
+| `raw` | WARC | the whole document as Markdown, no boilerplate removal at all |
+| `wet` | WET | the plain text Common Crawl already extracted, passed through unchanged |
+
+```sh
+ccrawl markdown export --shards 0 --extractor readability --push=false --out ./md
+ccrawl markdown export --shards 0 --extractor raw --push=false --out ./md
+ccrawl markdown export --shards 0 --source-kind wet --extractor wet --push=false --out ./md
+```
+
+Which engine you use is a corpus quality decision, so it is a flag and not a build time constant. The same shard through two engines is two different corpora, and the only way to find out which one suits a downstream task is to build both and compare. Every row records the engine that produced it in the `extractor` column, as `name@version`, because extraction changes between releases and a name alone cannot explain why two shards built months apart disagree about the same page.
+
+`raw` keeps the nav bars and the footer, which sounds useless and is not. Every extractor is a lossy judgement about what a page was for, and on the pages where that judgement goes wrong the output alone does not say so. Raw is the control you measure the others against.
+
+`--source-kind` picks the manifest a run reads: `warc` takes `warc.paths.gz` and extracts the HTML itself, `wet` takes `wet.paths.gz` and uses the text Common Crawl already extracted. It defaults to whatever the extractor needs, so it rarely has to be given. The two are not interchangeable, since a WET file holds no HTML and a WARC holds no pre-extracted text, and asking for a pairing that cannot work is a usage error rather than a silently reinterpreted run:
+
+```
+$ ccrawl markdown export --shards 0 --source-kind wet --extractor h2m
+ERROR  Extractor h2m reads warc shards, so it cannot be used with --source-kind wet.
+```
+
+`markdown refetch` takes `--extractor` too, but only the WARC engines: a live fetch returns HTML, and there is no Common Crawl text to pass through.
+
+WET is much cheaper than any of the extractors, since the text is already there and the files are a fraction of the size of the WARCs. It is also somebody else's extraction decision, boilerplate and all, and it is plain text rather than Markdown, so headings and links are gone.
+
 ### Language filtering
 
 Both subcommands label every row with a detected language and can keep only one of them.

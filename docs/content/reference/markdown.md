@@ -53,8 +53,9 @@ An out-of-range index is a usage error, not a silent skip.
 | `markdown` | string | the converted Markdown |
 | `language` | string | ISO 639-3 language detected in the Markdown, empty when there was too little text |
 | `language_confidence` | double | the identifier's confidence, 0 to 1 |
+| `extractor` | string | the engine that produced the text, as `name@version` |
 
-v3 appends the last two columns and changes nothing else, so a reader written against v2 loads a v3 file and gets every column it asks for.
+v3 appends the last three columns and changes nothing else, so a reader written against v2 loads a v3 file and gets every column it asks for.
 The default repo moved to `open-index/open-markdown-v3` to keep the two schemas in separate repos.
 
 ### open-markdown-refetch-v1, written by `markdown refetch`
@@ -87,6 +88,7 @@ Everything the export schema has, plus the live response and its timings.
 | `markdown` | string | the converted Markdown |
 | `language` | string | ISO 639-3 language detected in the Markdown |
 | `language_confidence` | double | the identifier's confidence, 0 to 1 |
+| `extractor` | string | the engine that produced the text, as `name@version` |
 | `error` | string | fetch error, empty on success |
 
 A failed fetch still produces a row.
@@ -145,6 +147,64 @@ They exit 0 on success and 1 on a fatal error, and you re-run the same command t
 
 `urls publish` and `domains publish` are the commands that exit 75, because those runs commit into a single growing dataset and have a stall clock.
 See [exit codes](/reference/exit-codes/) for the full contract.
+
+## Extractors
+
+`--extractor` chooses the engine that turns a captured page into the text in the `markdown` column.
+
+| Engine | Source | What it does |
+|---|---|---|
+| `h2m` (default) | WARC | go-trafilatura tuned for recall, rendered as GitHub-flavored Markdown |
+| `readability` | WARC | go-readability plus mdconv, the engine `open-markdown-v2` shipped |
+| `raw` | WARC | the whole document as Markdown, no boilerplate removal |
+| `wet` | WET | the plain text Common Crawl already extracted, passed through unchanged |
+
+```sh
+ccrawl markdown export --shards 0 --extractor readability --push=false --out ./md
+ccrawl markdown export --shards 0 --source-kind wet --extractor wet --push=false --out ./md
+```
+
+Which engine you use is a corpus quality decision, so it is a flag rather than a build time constant.
+The same shard through two engines is two different corpora, and the only way to find out which one suits a downstream task is to build both and compare them.
+
+Every row records the engine in the `extractor` column as `name@version`, and the dataset card names it too.
+The version is there because extraction changes between releases: a dataset that only says `h2m` cannot explain why two shards built months apart disagree about the same page.
+The WET engine has no version of ours to record, so it is stamped with the crawl instead, as `wet@CC-MAIN-2026-30`.
+
+`--source-kind` picks the manifest a run reads.
+`warc` takes `warc.paths.gz` and extracts the HTML itself, `wet` takes `wet.paths.gz` and uses the text Common Crawl already extracted.
+It defaults to whatever the extractor needs, so it rarely has to be given, and a pairing that cannot work is a usage error rather than a silently reinterpreted run:
+
+```
+$ ccrawl markdown export --shards 0 --source-kind wet --extractor h2m
+ERROR  Extractor h2m reads warc shards, so it cannot be used with --source-kind wet.
+```
+
+`markdown refetch` takes `--extractor` too, but only the WARC engines.
+A live fetch returns HTML, so there is no Common Crawl text for the WET engine to pass through, and asking for it exits 2.
+
+### What the engines actually cost
+
+Shard 0 of `CC-MAIN-2026-30`, the same 3.5 GB of HTML through each engine on the same machine:
+
+| Engine | Rows | Markdown | Parquet | Mean doc | Wall clock |
+|---|---|---|---|---|---|
+| `h2m` | 20861 | 91.9 MB | 46.8 MB | 3990 B | 1m49s |
+| `readability` | 20666 | 108.5 MB | 51.8 MB | 4865 B | 1m58s |
+| `raw` | 20806 | 446.2 MB | 328.2 MB | 20724 B | 2m55s |
+| `wet` | 21165 | 161.9 MB | 80.0 MB | 6604 B | 15s |
+
+`raw` produces roughly five times the text of `h2m` from the same pages, which is a fair measure of how much of a web page is not the page.
+It keeps the nav bars and the footers, which sounds useless and is not: every extractor is a lossy judgement about what a page was for, and the output alone never says where that judgement went wrong.
+Raw is the control you measure the others against.
+
+The three WARC engines agree on which pages are there and disagree on what is on them, which is the property that makes them comparable.
+20353 documents are in all three, 97.6 percent of what `h2m` produced, and of the documents `h2m` and `readability` share only 284 have byte identical text.
+The rest of the row count is pages one engine extracted nothing from and skipped rather than writing an empty row, and the engines do not give up on quite the same pages.
+
+`wet` is in a different cost class, since the text is already extracted and a WET file is a fraction of the size of the WARC it came from.
+It is also somebody else's extraction decision, boilerplate included, and it is plain text rather than Markdown, so headings, links, and lists are gone.
+Use it when you want volume cheaply and the structure does not matter.
 
 ## Language filtering
 
@@ -264,12 +324,14 @@ Shared by `markdown export` and `markdown refetch`:
 | `--ledger` | Resume ledger path (default `<out>/.committed`) |
 | `--lang` | Keep only documents detected as this ISO 639-3 language, for example `vie` |
 | `--min-lang-confidence` | Confidence a document has to clear for `--lang` (default 0.8) |
+| `--extractor` | Conversion engine: `h2m`, `readability`, `raw`, or `wet` (default `h2m`, and `wet` is export only) |
 
 `markdown export` only:
 
 | Flag | Meaning |
 |---|---|
 | `--skip-errors` | Continue past per-shard failures instead of aborting |
+| `--source-kind` | Manifest to read, `warc` or `wet` (default: whatever the extractor needs) |
 
 `markdown refetch` only:
 
