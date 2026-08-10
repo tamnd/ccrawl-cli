@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"container/heap"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -19,114 +18,8 @@ import (
 	"github.com/andybalholm/brotli"
 )
 
-// ── frontier ──────────────────────────────────────────────────────────────────
-
-// FrontierEntry is one URL in the crawl frontier.
-type FrontierEntry struct {
-	URL      string  // normalized URL
-	Host     string  // hostname for politeness grouping
-	Priority float32 // harmonic centrality (higher = crawl sooner)
-	NextAt   int64   // earliest Unix timestamp to fetch
-	Depth    uint8   // BFS depth from seed
-	Retries  uint8
-}
-
-// frontierHeap implements a max-heap on Priority.
-type frontierHeap []FrontierEntry
-
-func (h frontierHeap) Len() int           { return len(h) }
-func (h frontierHeap) Less(i, j int) bool { return h[i].Priority > h[j].Priority }
-func (h frontierHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *frontierHeap) Push(x any)        { *h = append(*h, x.(FrontierEntry)) }
-func (h *frontierHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[:n-1]
-	return x
-}
-
-// Frontier is an in-memory URL frontier with a priority heap and per-host
-// politeness (minimum delay between requests to the same host).
-type Frontier struct {
-	mu     sync.Mutex
-	heap   frontierHeap
-	seen   map[string]struct{} // URL SHA-1 dedup
-	hostAt map[string]int64    // last-fetch Unix timestamp per host
-	delay  time.Duration       // minimum inter-request delay per host
-}
-
-// NewFrontier creates a Frontier with the given per-host politeness delay.
-func NewFrontier(delay time.Duration) *Frontier {
-	f := &Frontier{
-		seen:   make(map[string]struct{}),
-		hostAt: make(map[string]int64),
-		delay:  delay,
-	}
-	heap.Init(&f.heap)
-	return f
-}
-
-// Add enqueues a URL if it has not been seen before. Returns true if added.
-func (f *Frontier) Add(e FrontierEntry) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	key := urlSHA1(e.URL)
-	if _, ok := f.seen[key]; ok {
-		return false
-	}
-	f.seen[key] = struct{}{}
-	heap.Push(&f.heap, e)
-	return true
-}
-
-// Len returns the number of queued URLs.
-func (f *Frontier) Len() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.heap.Len()
-}
-
-// Pop removes and returns the highest-priority URL that is eligible to crawl
-// now (host delay has elapsed). Returns false if no eligible URL exists.
-//
-// To avoid starvation when the top-priority host is in its politeness window,
-// Pop scans up to scanLimit candidates before giving up. Skipped (ineligible)
-// entries are temporarily held and re-pushed so the heap remains consistent.
-func (f *Frontier) Pop(now int64) (FrontierEntry, bool) {
-	const scanLimit = 16
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	delayNanos := int64(f.delay)
-	var skipped []FrontierEntry
-
-	for f.heap.Len() > 0 && len(skipped) < scanLimit {
-		e := heap.Pop(&f.heap).(FrontierEntry)
-		lastAt := f.hostAt[e.Host]
-		minAt := lastAt + delayNanos/int64(time.Second) // delay in seconds
-		if now >= minAt && now >= e.NextAt {
-			for _, s := range skipped {
-				heap.Push(&f.heap, s)
-			}
-			f.hostAt[e.Host] = now
-			return e, true
-		}
-		skipped = append(skipped, e)
-	}
-	// restore skipped entries
-	for _, s := range skipped {
-		heap.Push(&f.heap, s)
-	}
-	return FrontierEntry{}, false
-}
-
-// urlSHA1 returns the hex SHA-1 of a URL string (used for deduplication).
-func urlSHA1(rawURL string) string {
-	h := sha1.New()
-	_, _ = io.WriteString(h, rawURL)
-	return hex.EncodeToString(h.Sum(nil))
-}
+// The frontier itself lives in frontier.go, on disk. It used to be a heap and
+// a map right here, which is fine until the seed set is bigger than memory.
 
 // ContentSHA1 returns the hex SHA-1 of raw content bytes (matches CC's digest
 // field in CDX records).
