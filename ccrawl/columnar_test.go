@@ -58,6 +58,51 @@ func TestColumnarSQLSurtkeyDomain(t *testing.T) {
 	}
 }
 
+// Every negated filter has to spell out IS NULL. In SQL a comparison against a
+// null is unknown, so a bare <> quietly drops every unlabelled row, and those
+// rows are the whole reason the flag exists.
+func TestColumnarSQLNegationKeepsNulls(t *testing.T) {
+	q := ColumnarQuery{
+		Crawl:     "CC-MAIN-2026-25",
+		NotTLD:    "vn",
+		NotMIME:   "text/html",
+		NotLang:   "vie",
+		NotStatus: 200,
+	}
+	sql := q.SQL(SourceHTTPS)
+	for _, want := range []string{
+		"(url_host_tld IS NULL OR url_host_tld <> 'vn')",
+		"(content_mime_detected IS NULL OR content_mime_detected <> 'text/html')",
+		"(content_languages IS NULL OR content_languages NOT LIKE '%vie%')",
+		"(fetch_status IS NULL OR fetch_status <> 200)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL missing %q in:\n%s", want, sql)
+		}
+	}
+}
+
+func TestColumnarSQLSets(t *testing.T) {
+	q := ColumnarQuery{
+		Crawl:   "CC-MAIN-2026-25",
+		Hosts:   []string{"a.example.com", "o'brien.example"},
+		Domains: []string{"example.com"},
+	}
+	sql := q.SQL(SourceHTTPS)
+	for _, want := range []string{
+		"url_host_name IN ('a.example.com', 'o''brien.example')",
+		"url_host_registered_domain IN ('example.com')",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL missing %q in:\n%s", want, sql)
+		}
+	}
+	// A set of ten thousand hosts is one statement, not ten thousand.
+	if n := strings.Count(sql, "SELECT"); n != 1 {
+		t.Errorf("want a single SELECT, got %d:\n%s", n, sql)
+	}
+}
+
 func TestColumnarSQLSurtkeyHost(t *testing.T) {
 	q := ColumnarQuery{Crawl: "CC-MAIN-2026-25", Host: "www.example.co.uk"}
 	sql := q.SQL(SourceHTTPS)

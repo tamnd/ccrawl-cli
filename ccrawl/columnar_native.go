@@ -88,19 +88,37 @@ func NativeExpressible(s NativeScan) bool {
 // columnar flags produce, which is why there is no expression tree here.
 type predicate struct {
 	col      string
-	equals   string   // exact match on a string column
-	prefixes []string // string column starts with any one of these
-	contains string   // string column contains this
-	status   int32    // fetch_status equality, when col is fetch_status
-	isStatus bool     // this predicate compares the int32 fetch_status column
+	equals   string          // exact match on a string column
+	prefixes []string        // string column starts with any one of these
+	contains string          // string column contains this
+	oneOf    map[string]bool // string column is one of this set
+	status   int32           // fetch_status equality, when col is fetch_status
+	isStatus bool            // this predicate compares the int32 fetch_status column
+
+	// negate inverts the test, and changes what a null means. Unnegated, a
+	// null matches nothing, the same as SQL equality. Negated, a null matches,
+	// because "not Vietnamese" has to include the rows Common Crawl never
+	// labelled at all. Those rows are the entire point of the flag.
+	negate bool
+
+	// setLo and setHi are the smallest and largest members of oneOf, kept so a
+	// page can be pruned against the whole set in one comparison instead of one
+	// per member. With a ten thousand host list that difference matters.
+	setLo, setHi string
 }
 
-// match evaluates the predicate against one value. A null never matches, which
-// is what SQL equality does too.
+// match evaluates the predicate against one value.
 func (p predicate) match(v parquet.Value) bool {
 	if v.IsNull() {
-		return false
+		// A null is unknown, not a value. Unnegated it fails; negated it
+		// passes, which is the IS NULL half of the SQL this mirrors.
+		return p.negate
 	}
+	return p.matches(v) != p.negate
+}
+
+// matches is the test itself, before negation and without the null handling.
+func (p predicate) matches(v parquet.Value) bool {
 	if p.isStatus {
 		return v.Int32() == p.status
 	}
@@ -117,15 +135,25 @@ func (p predicate) match(v parquet.Value) bool {
 		return false
 	case p.contains != "":
 		return strings.Contains(s, p.contains)
+	case p.oneOf != nil:
+		return p.oneOf[s]
 	}
 	return true
 }
 
 // canPrune reports whether page bounds can rule this predicate out. Only
-// equality and prefixes are ordered against min and max; a substring match says
-// nothing about where the value sorts.
+// equality, prefixes and set membership are ordered against min and max; a
+// substring match says nothing about where the value sorts.
+//
+// A negated predicate never prunes. Page statistics do not describe the nulls
+// in a page, so a page whose min and max are both "vie" can still hold rows
+// with no language at all, and those rows match --not-lang vie. Pruning it
+// would drop exactly the rows the flag exists to find.
 func (p predicate) canPrune() bool {
-	return p.equals != "" || len(p.prefixes) > 0 || p.isStatus
+	if p.negate {
+		return false
+	}
+	return p.equals != "" || len(p.prefixes) > 0 || p.isStatus || p.oneOf != nil
 }
 
 // excludes reports whether a page whose values all fall in [min, max] can be
@@ -138,6 +166,13 @@ func (p predicate) excludes(minV, maxV parquet.Value) bool {
 	lo, hi := byteString(minV.ByteArray()), byteString(maxV.ByteArray())
 	if p.equals != "" {
 		return p.equals < lo || p.equals > hi
+	}
+	if p.oneOf != nil {
+		// Only the span of the set is compared, not every member. That is
+		// conservative, it keeps pages that hold none of the hosts but sort
+		// between two that it does, and it costs one comparison rather than
+		// one per host.
+		return p.setHi < lo || p.setLo > hi
 	}
 	for _, pre := range p.prefixes {
 		// Every string with this prefix sorts inside [prefix, prefix+0xff...].
@@ -199,7 +234,41 @@ func predicatesFor(q ColumnarQuery) []predicate {
 	if q.Status != 0 {
 		ps = append(ps, predicate{col: "fetch_status", status: int32(q.Status), isStatus: true})
 	}
+	if len(q.Hosts) > 0 {
+		ps = append(ps, setPredicate("url_host_name", q.Hosts))
+	}
+	if len(q.Domains) > 0 {
+		ps = append(ps, setPredicate("url_host_registered_domain", q.Domains))
+	}
+	if q.NotTLD != "" {
+		ps = append(ps, predicate{col: "url_host_tld", equals: q.NotTLD, negate: true})
+	}
+	if q.NotMIME != "" {
+		ps = append(ps, predicate{col: "content_mime_detected", equals: q.NotMIME, negate: true})
+	}
+	if q.NotLang != "" {
+		ps = append(ps, predicate{col: "content_languages", contains: q.NotLang, negate: true})
+	}
+	if q.NotStatus != 0 {
+		ps = append(ps, predicate{col: "fetch_status", status: int32(q.NotStatus), isStatus: true, negate: true})
+	}
 	return ps
+}
+
+// setPredicate builds a membership test over vals, recording the span of the
+// set so a page can be pruned without walking every member.
+func setPredicate(col string, vals []string) predicate {
+	p := predicate{col: col, oneOf: make(map[string]bool, len(vals))}
+	for i, v := range vals {
+		p.oneOf[v] = true
+		if i == 0 || v < p.setLo {
+			p.setLo = v
+		}
+		if i == 0 || v > p.setHi {
+			p.setHi = v
+		}
+	}
+	return p
 }
 
 // nativeResult is what one file's scan contributes.

@@ -18,7 +18,7 @@ The default is `auto`. It takes the native engine for every query the native eng
 
 ## What the native engine can answer
 
-`urls`, `locations`, `count`, `langs`, `mimes` and `schema`, with any combination of the filter flags: `--domain`, `--host`, `--tld`, `--mime`, `--lang`, `--status`, `--path-prefix` and `--subset`.
+`urls`, `locations`, `count`, `langs`, `mimes` and `schema`, with any combination of the filter flags: `--domain`, `--host`, `--tld`, `--mime`, `--lang`, `--status`, `--path-prefix` and `--subset`, plus the negated forms `--not-tld`, `--not-mime`, `--not-lang`, `--not-status` and the set forms `--hosts-file` and `--domains-file`.
 
 `columnar query` and `columnar sql` take arbitrary SQL, so they need duckdb and always will. A hand written engine that accepts arbitrary SQL is a database, and this is a command line tool. Asking for `--engine native` on one of those is an error rather than a silent fallback, so a script cannot end up quietly running somewhere else.
 
@@ -31,6 +31,14 @@ It opens each part over ranged HTTP and reads only the footer. From the footer i
 What survives is read a column at a time, cheapest column first, and each column narrows the set of rows still alive. A row group where the first filter kills everything never has the expensive columns touched at all. Only then are the output columns read, and only for the rows that matched.
 
 The upshot on a real crawl: opening a part and deciding it holds nothing costs about 200 KiB out of an 8.7 MiB file.
+
+## What negation costs
+
+A negated filter prunes nothing. Page statistics record a page's minimum and maximum and say nothing at all about how many nulls are in it, so a page where the language is `vie` from top to bottom can still hold rows with no language, and those rows are exactly what `--not-lang vie` is looking for. Skipping the page on its bounds would drop them. The predicate is therefore applied on the read instead, which means a query with only negated filters reads every page of every part.
+
+Pair a negation with something positive when you can. `--tld vn --not-lang vie` prunes on the TLD first and only then applies the negation to what survives, which is a different amount of work from `--not-lang vie` on its own.
+
+A set filter does prune, on the smallest and largest member of the whole set rather than one comparison per member, so a ten thousand host list costs the same page decision as a single host. It is conservative: a page holding none of the hosts but sorting between two that it does will still be read.
 
 ## Speed
 
