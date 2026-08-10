@@ -84,11 +84,21 @@ func (l *Ledger) Close() error {
 // MarkdownExportConfig configures a parallel multi-shard markdown export.
 type MarkdownExportConfig struct {
 	CrawlID   string
-	Indices   []int    // shard indices to process, in order
+	Indices   []int    // part indices to process, in order
 	WARCPaths []string // full manifest, indexed by shard index
 	OutDir    string
 	Repo      string
 	Push      bool
+
+	// LocationParts, when set, replaces WARCPaths as the source. Each part is a
+	// batch of index locations fetched with coalesced ranged GETs instead of a
+	// whole downloaded shard, and Indices indexes into it. Everything else about
+	// the run is unchanged: same parallelism, same ledger, same commit batching,
+	// so a recovery pass resumes and publishes exactly like a full export.
+	LocationParts [][]Location
+	// FetchGap and FetchMaxSpan tune the coalescing for LocationParts.
+	FetchGap     int64
+	FetchMaxSpan int64
 
 	// ShardParallel is the number of shards processed at once (P). More than a
 	// couple only helps when downloads are slow relative to conversion. 0 picks
@@ -278,10 +288,9 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 				outPath := filepath.Join(cfg.OutDir, fmt.Sprintf("%06d.parquet", idx))
 				t0 := time.Now()
 				inflight.Add(1)
-				stats, err := packShardFn(ctx, h, MarkdownPackConfig{
+				pc := MarkdownPackConfig{
 					CrawlID:    cfg.CrawlID,
 					ShardIdx:   idx,
-					WARCPath:   cfg.WARCPaths[idx],
 					OutPath:    outPath,
 					Workers:    c,
 					ConvertSem: sem,
@@ -290,7 +299,15 @@ func RunMarkdownExport(ctx context.Context, h *HTTPClient, hf *HFClient, cfg Mar
 					MinLangConfidence: cfg.MinLangConfidence,
 					Extractor:         cfg.Extractor,
 					DedupDigest:       cfg.DedupDigest,
-				})
+				}
+				if cfg.LocationParts != nil {
+					pc.Locations = cfg.LocationParts[idx]
+					pc.FetchGap = cfg.FetchGap
+					pc.FetchMaxSpan = cfg.FetchMaxSpan
+				} else {
+					pc.WARCPath = cfg.WARCPaths[idx]
+				}
+				stats, err := packShardFn(ctx, h, pc)
 				inflight.Add(-1)
 				// Per-shard wall-clock is the useful convert figure for a parallel
 				// run; the streamed download is folded into it.

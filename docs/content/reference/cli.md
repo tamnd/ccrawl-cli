@@ -382,6 +382,29 @@ The check runs before extraction, so a duplicate costs a hash lookup rather than
 
 Every row also carries a `simhash` fingerprint whether or not the flag is set. Near duplicates are reported by `ccrawl dedup` rather than dropped during the run, because deciding which of two near identical copies is the good one is not a decision a converter should make on its own. See [Deduplication](/reference/markdown/#deduplication).
 
+### Converting a location set
+
+`markdown export --locations` reads exactly the records a stream of index locations points at, instead of downloading whole shards.
+
+| Flag | Default | Does |
+|---|---|---|
+| `--locations` | (off) | Convert the records in this JSONL location stream, `-` for stdin |
+| `--part-size` | `50000` | Locations per Parquet part |
+| `--gap` | 1 MiB | Coalesce records closer together than this many bytes into one ranged read |
+| `--max-span` | 16 MiB | Cap on the size of one coalesced ranged read |
+
+```sh
+ccrawl columnar locations --crawl CC-MAIN-2026-30 --lang vie -o jsonl \
+  | ccrawl markdown export --locations - --lang vie --dedup-digest --push=false --out ./md
+ccrawl markdown export --locations missed.jsonl --part-size 10000 --push=false --out ./md
+```
+
+This is the recovery pass: a columnar query picks out the pages you are missing, and the export turns those pages and nothing else into Parquet, with the same extractor, language filter, dedup, and schema a full export uses. Reading whole shards to reach a few thousand scattered pages would move something like a thousand times the bytes those pages are worth, so the records are fetched with ranged GETs and the neighbours coalesced.
+
+A part is to a location run what a shard is to a full export: the unit that gets one Parquet file, one ledger entry, and one digest dedup set. The stream is cut in order, so an interrupted run resumes where the ledger says it stopped. Locations that will not fetch are skipped rather than failing the part, because a recovery pass runs against an index that can disagree with the archive.
+
+`--locations` bypasses `--shards`, `--source-kind`, and the manifest fetch entirely, and it cannot be combined with the `wet` extractor, since WET files have no record offsets to point at. See [Converting a location set instead of whole shards](/reference/markdown/#converting-a-location-set-instead-of-whole-shards).
+
 ---
 
 ## rank

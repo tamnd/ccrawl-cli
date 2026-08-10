@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,6 +44,11 @@ type markdownExportCmd struct {
 	sourceKind string
 
 	dedupDigest bool
+
+	locations string // file of location JSONL, or - for stdin
+	partSize  int    // locations per parquet part
+	gap       int64
+	maxSpan   int64
 }
 
 func newMarkdownExportCmd() kit.Command {
@@ -97,6 +103,17 @@ the clusters, because collapsing them is a judgement about what the corpus is fo
 and belongs in a query rather than in a pipeline that already threw the evidence
 away.
 
+--locations converts exactly the records an index query picked out, instead of
+whole shards. Feed it the location JSONL that "ccrawl columnar locations" and
+"ccrawl search --locations" produce, and each record is read with a ranged GET
+with its neighbours coalesced into shared requests. That is the recovery pass
+shape: a query that selects a few thousand pages scattered over a few hundred
+WARC files moves what those pages are worth instead of the files they live in.
+The stream is cut into parts of --part-size locations, and a part is to this what
+a shard is to a full export: one parquet file, one ledger entry, one dedup scope.
+Everything downstream is the same pipeline, so --extractor, --lang, and
+--dedup-digest mean exactly what they mean for a shard.
+
 --lang keeps only the documents identified as that language, which is a document
 level check on the text actually extracted, not the CLD2 label Common Crawl
 computed over the raw HTML. It is a coarse pre-filter: a trigram identifier that
@@ -121,6 +138,8 @@ Examples:
   ccrawl markdown export --shards 0-9 --lang vie --min-lang-confidence 0.8
   ccrawl markdown export --shards 0 --extractor readability --push=false
   ccrawl markdown export --shards 0 --source-kind wet --extractor wet --push=false
+  ccrawl columnar locations --lang vie -o jsonl | ccrawl markdown export --locations - --lang vie --dedup-digest --push=false
+  ccrawl markdown export --locations vie.jsonl --part-size 20000 --push=false --out ./md
   HF_TOKEN=hf_... ccrawl markdown export --shards 0 -c 2026-25`,
 		Flags: v.flags,
 		Run:   v.run,
@@ -145,6 +164,10 @@ func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.extractor, "extractor", ccrawl.DefaultExtractor, "conversion engine: "+strings.Join(ccrawl.ExtractorNames(), "|"))
 	f.StringVar(&v.sourceKind, "source-kind", "", "shard manifest to read: warc|wet (default: whatever the extractor needs)")
 	f.BoolVar(&v.dedupDigest, "dedup-digest", false, "skip a page whose bytes are identical to one already seen in the same shard")
+	f.StringVar(&v.locations, "locations", "", "convert exactly these index locations instead of whole shards (file of location JSONL, or - for stdin)")
+	f.IntVar(&v.partSize, "part-size", ccrawl.DefaultLocationPartSize, "locations per parquet part when reading --locations")
+	f.Int64Var(&v.gap, "gap", ccrawl.DefaultFetchGap, "coalesce locations at most this many bytes apart into one ranged GET")
+	f.Int64Var(&v.maxSpan, "max-span", ccrawl.DefaultFetchMaxSpan, "never read more than this in one ranged GET")
 }
 
 func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
@@ -178,17 +201,35 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		return usageErr(fmt.Sprintf("extractor %s reads %s shards, so it cannot be used with --source-kind %s", ex.Name, ex.SourceKind, kind))
 	}
 
-	// Resolve the shard manifest for this crawl (cached after first fetch).
-	fmt.Fprintf(os.Stderr, "markdown: fetching %s manifest for %s …\n", strings.ToUpper(kind), crawlID)
-	paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, crawlID, kind)
-	if err != nil {
-		return fmt.Errorf("fetch %s manifest: %w", kind, err)
-	}
-	fmt.Fprintf(os.Stderr, "markdown: manifest has %d %s files, extracting with %s\n", len(paths), strings.ToUpper(kind), ex.ID(crawlID))
+	var (
+		paths   []string
+		parts   [][]ccrawl.Location
+		indices []int
+	)
+	if v.locations != "" {
+		parts, err = v.readLocationParts(ex)
+		if err != nil {
+			return err
+		}
+		indices = make([]int, len(parts))
+		for i := range parts {
+			indices[i] = i
+		}
+		fmt.Fprintf(os.Stderr, "markdown: %d locations in %d parts, extracting with %s\n",
+			countLocations(parts), len(parts), ex.ID(crawlID))
+	} else {
+		// Resolve the shard manifest for this crawl (cached after first fetch).
+		fmt.Fprintf(os.Stderr, "markdown: fetching %s manifest for %s …\n", strings.ToUpper(kind), crawlID)
+		paths, err = ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, crawlID, kind)
+		if err != nil {
+			return fmt.Errorf("fetch %s manifest: %w", kind, err)
+		}
+		fmt.Fprintf(os.Stderr, "markdown: manifest has %d %s files, extracting with %s\n", len(paths), strings.ToUpper(kind), ex.ID(crawlID))
 
-	indices, err := parseShardRange(v.shards, len(paths))
-	if err != nil {
-		return err
+		indices, err = parseShardRange(v.shards, len(paths))
+		if err != nil {
+			return err
+		}
 	}
 	if v.limit > 0 && len(indices) > v.limit {
 		indices = indices[:v.limit]
@@ -232,6 +273,9 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 		CrawlID:        crawlID,
 		Indices:        indices,
 		WARCPaths:      paths,
+		LocationParts:  parts,
+		FetchGap:       v.gap,
+		FetchMaxSpan:   v.maxSpan,
 		OutDir:         outDir,
 		Repo:           v.repo,
 		Push:           v.push,
@@ -314,6 +358,57 @@ func parseShardRange(spec string, total int) ([]int, error) {
 		return nil, fmt.Errorf("shard spec %q matched no shards", spec)
 	}
 	return out, nil
+}
+
+// readLocationParts loads the location stream and cuts it into the units of work
+// the run orchestrates.
+//
+// A part is to a recovery pass what a shard is to a full export: the unit that
+// gets one parquet file, one ledger entry, and one digest dedup set. Cutting the
+// stream into parts rather than converting it whole is what keeps a resumed run
+// from redoing everything and what keeps a billion location pass from trying to
+// hold one parquet file open for a week.
+//
+// Order is preserved, so the same input always cuts into the same parts and a
+// ledger from an interrupted run still means what it said.
+func (v *markdownExportCmd) readLocationParts(ex *ccrawl.Extractor) ([][]ccrawl.Location, error) {
+	if ex.SourceKind == "wet" {
+		return nil, usageErr(fmt.Sprintf("extractor %s reads WET shards, and --locations points into WARC files, so the two cannot be combined", ex.Name))
+	}
+	if v.partSize < 1 {
+		return nil, usageErr(fmt.Sprintf("part-size must be at least 1, got %d", v.partSize))
+	}
+
+	r := io.Reader(os.Stdin)
+	if v.locations != "-" {
+		f, err := os.Open(v.locations)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = f.Close() }()
+		r = f
+	}
+	locs, err := readLocations(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(locs) == 0 {
+		return nil, noResults("no location records to convert")
+	}
+
+	var parts [][]ccrawl.Location
+	for i := 0; i < len(locs); i += v.partSize {
+		parts = append(parts, locs[i:min(i+v.partSize, len(locs))])
+	}
+	return parts, nil
+}
+
+func countLocations(parts [][]ccrawl.Location) int {
+	var n int
+	for _, p := range parts {
+		n += len(p)
+	}
+	return n
 }
 
 // dedupSummary reports what --dedup-digest threw away. A drop count is the only
