@@ -138,7 +138,7 @@ Examples:
 				return err
 			}
 			h := in.App.HTTP
-			rc := ccrawl.NewRobotsCache(24*time.Hour, "ccrawl")
+			rc := ccrawl.NewRobotsCache(24*time.Hour, ccrawl.DefaultCrawlConfig.UserAgent)
 			entry := FetchRobotsForHost(ctx, h, rc, u.Hostname(), u.Scheme)
 			if !entry.IsAllowed(u.Path) {
 				return fmt.Errorf("robots.txt disallows %s", rawURL)
@@ -164,12 +164,7 @@ Examples:
 
 // FetchRobotsForHost retrieves (with caching) the robots.txt for a host.
 func FetchRobotsForHost(ctx context.Context, h *ccrawl.HTTPClient, rc *ccrawl.RobotsCache, host, scheme string) *ccrawl.RobotsEntry {
-	if e := rc.Get(host); e != nil {
-		return e
-	}
-	e := ccrawl.FetchRobots(ctx, h, host, scheme)
-	rc.Put(host, e)
-	return e
+	return rc.Fetch(ctx, h, host, scheme)
 }
 
 // ── crawl status ──────────────────────────────────────────────────────────────

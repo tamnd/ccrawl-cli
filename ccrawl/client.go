@@ -137,19 +137,28 @@ func (h *HTTPClient) DataURL(path string) string { return FileURL(path, h.source
 
 // Get fetches url with retries.
 func (h *HTTPClient) Get(ctx context.Context, url string) (*http.Response, error) {
-	return h.doWith(ctx, h.c, url, "")
+	return h.doWith(ctx, h.c, url, "", false)
+}
+
+// getStatus fetches url and hands back whatever the server finally said, where
+// Get would report a retryable status as an error. Callers that have to tell a
+// 403 from a dead host need the difference: to robots.txt a 403 is "no rules
+// here" and a failed connection is "assume everything is off limits", and one
+// error value cannot say which happened.
+func (h *HTTPClient) getStatus(ctx context.Context, url string) (*http.Response, error) {
+	return h.doWith(ctx, h.c, url, "", true)
 }
 
 // GetRange fetches the [offset, offset+length) byte span of url.
 func (h *HTTPClient) GetRange(ctx context.Context, url string, offset, length int64) (*http.Response, error) {
 	rangeHdr := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
-	return h.doWith(ctx, h.c, url, rangeHdr)
+	return h.doWith(ctx, h.c, url, rangeHdr, false)
 }
 
 // GetDownload fetches url with no client timeout (relies on ctx cancellation),
 // for large archive bodies.
 func (h *HTTPClient) GetDownload(ctx context.Context, url string) (*http.Response, error) {
-	return h.doWith(ctx, h.download, url, "")
+	return h.doWith(ctx, h.download, url, "", false)
 }
 
 // ContentLength returns the total size of url. It sends a one-byte range request
@@ -189,7 +198,10 @@ func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error)
 	return io.ReadAll(resp.Body)
 }
 
-func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, rangeHdr string) (*http.Response, error) {
+// doWith runs the request with the retry, throttle and backoff policy. When
+// keepStatus is set, a retryable status that survives the last attempt is
+// returned as a response instead of an error.
+func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, rangeHdr string, keepStatus bool) (*http.Response, error) {
 	var last error
 	var retryAfter time.Duration // server-advised wait carried from the prior attempt
 	var serverWait bool          // whether the prior attempt sent a Retry-After
@@ -204,12 +216,9 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			return nil, err
 		}
 		// s3://bucket/key is not something net/http can dial. The bucket is
-		// public, so the REST endpoint for it is a plain anonymous GET and every
+		// public, so the REST endpoint for it is a plain anonymous GET, and every
 		// other line in this loop, the throttle, the retries, the backoff, applies
 		// to it unchanged.
-		// s3://bucket/key is not something net/http can dial. It becomes a GET
-		// against the bucket's REST endpoint, and every other line in this loop,
-		// the throttle, the retries, the backoff, applies to it unchanged.
 		fetch, isS3 := s3Endpoint(url, s3BucketRegion)
 		if !isS3 {
 			fetch = url
@@ -250,6 +259,9 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			}
 		}
 		if retryableStatus(resp.StatusCode) {
+			if keepStatus && attempt == h.retries {
+				return resp, nil
+			}
 			// A 503/429 commonly carries Retry-After; honor it on the next loop.
 			retryAfter, serverWait = parseRetryAfter(resp.Header.Get("Retry-After"))
 			_ = resp.Body.Close()

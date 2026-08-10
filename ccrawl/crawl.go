@@ -1,7 +1,6 @@
 package ccrawl
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -20,6 +18,8 @@ import (
 
 // The frontier itself lives in frontier.go, on disk. It used to be a heap and
 // a map right here, which is fine until the seed set is bigger than memory.
+// robots.txt lives in robots.go for the same reason: RFC 9309 is more than the
+// dozen lines of prefix matching that used to sit in this file.
 
 // ContentSHA1 returns the hex SHA-1 of raw content bytes (matches CC's digest
 // field in CDX records).
@@ -27,128 +27,6 @@ func ContentSHA1(content []byte) string {
 	h := sha1.New()
 	_, _ = h.Write(content)
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// ── robots.txt cache ──────────────────────────────────────────────────────────
-
-// RobotsRule is one allow/disallow rule from robots.txt.
-type RobotsRule struct {
-	Allow   bool
-	Pattern string
-}
-
-// RobotsEntry is a cached robots.txt for one host.
-type RobotsEntry struct {
-	Rules      []RobotsRule
-	CrawlDelay time.Duration
-	ExpiresAt  int64 // Unix timestamp
-}
-
-// IsAllowed reports whether the given path is allowed. The most specific
-// (longest) matching rule wins, following the standard robots.txt precedence.
-func (e *RobotsEntry) IsAllowed(path string) bool {
-	best := -1
-	bestAllow := true
-	for _, r := range e.Rules {
-		if strings.HasPrefix(path, r.Pattern) && len(r.Pattern) > best {
-			best = len(r.Pattern)
-			bestAllow = r.Allow
-		}
-	}
-	return bestAllow // default allow when no rule matches (best == -1 → true)
-}
-
-// RobotsCache caches parsed robots.txt per host with a TTL.
-type RobotsCache struct {
-	mu      sync.RWMutex
-	entries map[string]*RobotsEntry
-	ttl     time.Duration
-	ua      string // user-agent to match in robots.txt
-}
-
-// NewRobotsCache creates a cache with the given TTL and user-agent string.
-func NewRobotsCache(ttl time.Duration, userAgent string) *RobotsCache {
-	return &RobotsCache{
-		entries: make(map[string]*RobotsEntry),
-		ttl:     ttl,
-		ua:      userAgent,
-	}
-}
-
-// Get returns the cached robots entry for host, or nil if not cached or expired.
-func (rc *RobotsCache) Get(host string) *RobotsEntry {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	e, ok := rc.entries[host]
-	if !ok || time.Now().Unix() >= e.ExpiresAt {
-		return nil
-	}
-	return e
-}
-
-// Put stores a robots entry for host.
-func (rc *RobotsCache) Put(host string, e *RobotsEntry) {
-	e.ExpiresAt = time.Now().Add(rc.ttl).Unix()
-	rc.mu.Lock()
-	rc.entries[host] = e
-	rc.mu.Unlock()
-}
-
-// FetchRobots fetches and parses robots.txt for the given host. On timeout or
-// 5xx, returns a permissive entry (allow all). On 404, returns allow all
-// permanently. The caller should Put the result into the cache.
-func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme string) *RobotsEntry {
-	robotsURL := scheme + "://" + host + "/robots.txt"
-	resp, err := h.Get(ctx, robotsURL)
-	if err != nil || resp.StatusCode == 404 {
-		return &RobotsEntry{} // allow all
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
-		return &RobotsEntry{} // allow all on 4xx/5xx
-	}
-	return parseRobots(resp.Body)
-}
-
-// parseRobots parses a robots.txt body (simplified: only User-agent:*/all,
-// Disallow, Allow, and Crawl-delay).
-func parseRobots(r io.Reader) *RobotsEntry {
-	entry := &RobotsEntry{}
-	var active bool // true when current User-agent block applies to us
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-		key, val, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(strings.ToLower(key))
-		val = strings.TrimSpace(val)
-		switch key {
-		case "user-agent":
-			active = val == "*" || strings.EqualFold(val, "ccrawl")
-		case "disallow":
-			if active && val != "" {
-				entry.Rules = append(entry.Rules, RobotsRule{Allow: false, Pattern: val})
-			}
-		case "allow":
-			if active && val != "" {
-				entry.Rules = append(entry.Rules, RobotsRule{Allow: true, Pattern: val})
-			}
-		case "crawl-delay":
-			if active {
-				var d float64
-				_, _ = fmt.Sscan(val, &d)
-				if d > 0 {
-					entry.CrawlDelay = time.Duration(d * float64(time.Second))
-				}
-			}
-		}
-	}
-	return entry
 }
 
 // ── crawl result ──────────────────────────────────────────────────────────────
