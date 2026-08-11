@@ -74,6 +74,23 @@ Estimate the size of a result instead of listing it with `--estimate`.
 Shaping: `--fields`, `--template`, `-o`, `-n`.
 Alias: `cdx`.
 
+### Memory over a wide query
+
+`--at`, `--latest-only` and `--dedup` each have to remember something about every URL the query touches, and a wildcard over a large domain across every crawl touches hundreds of millions of them.
+The three of them share one budget, `--max-buffer`, which is how many records they hold in memory before the run starts writing to a temporary file in `TMPDIR` instead.
+The default is 5,000,000 records, which is a few hundred megabytes, and the temporary files are removed when the command exits however it exits.
+
+| Flag | Description |
+| --- | --- |
+| `--max-buffer` | Records `--at`, `--latest-only` and `--dedup` hold in memory before spilling to disk (default 5000000) |
+
+A CDX response is sorted by urlkey and every capture of a URL sits in one urlkey group, so `--at` and `--latest-only` stay exact past the budget: they reduce each group as it goes by and merge the per crawl runs afterwards.
+`--dedup` is the exception, because payload digests arrive in no order at all.
+Past the budget it forgets the digests it has not seen for the longest and says so on stderr, which costs you a duplicate that gets through rather than a unique record that gets dropped.
+
+One thing does change past the budget. `--at` normally sorts its result newest first; when the result itself will not fit in the buffer it comes out in index order instead, and the command says so on stderr.
+That sort gets the same budget again, so `--at` can hold twice `--max-buffer` records at the moment it hands the result over.
+
 ---
 
 ## get
