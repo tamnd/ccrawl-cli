@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -50,6 +51,7 @@ type searchIn struct {
 	Locations      bool     `kit:"flag" help:"emit filename/offset/length records"`
 	LatestOnly     bool     `kit:"flag,name=latest-only" help:"keep only the newest capture per URL"`
 	Dedup          bool     `kit:"flag" help:"collapse captures with identical content digest"`
+	MaxBuffer      int      `kit:"flag,name=max-buffer" help:"records --at, --latest-only and --dedup hold in memory before spilling to disk (default 5000000)"`
 }
 
 // linesPerPage is the rough number of CDX records in one index page, used only
@@ -138,79 +140,139 @@ Examples:
 			return urlKeep(r.URL, in.URLContains, in.URLNotContains)
 		}
 
-		// --at picks, per URL, the single capture nearest the target date. That
-		// needs every candidate in hand, so it buffers the nearest seen per URL
-		// across all crawls and emits at the end rather than streaming.
+		emitRec := func(r ccrawl.CDXRecord) error {
+			if in.Locations {
+				return emit(r.Location())
+			}
+			return emit(r)
+		}
+		maxBuf := in.MaxBuffer
+		if maxBuf <= 0 {
+			maxBuf = ccrawl.DefaultCDXMaxBuffer
+		}
+
+		// --at picks, per URL, the single capture nearest the target date. The
+		// index hands back each crawl sorted by urlkey, so the winner inside a
+		// crawl is decided as the crawl is read and the crawls are merged at the
+		// end, which costs a urlkey group per crawl rather than a map the size
+		// of the result.
 		if in.At != "" {
 			target := looseTS(in.At)
-			nearest := map[string]ccrawl.CDXRecord{}
-			collect := func(r ccrawl.CDXRecord) error {
-				if !keep(r) {
-					return nil
-				}
-				cur, ok := nearest[r.URL]
-				if !ok || absDiff(r.Timestamp, target) < absDiff(cur.Timestamp, target) {
-					nearest[r.URL] = r
-				}
-				return nil
-			}
+			picker := ccrawl.NewCDXPicker(func(cand, cur ccrawl.CDXRecord) bool {
+				return absDiff(cand.Timestamp, target) < absDiff(cur.Timestamp, target)
+			}, maxBuf)
+			defer func() { _ = picker.Close() }()
 			for _, id := range crawls {
-				if err := ccrawl.CDXStream(ctx, app.HTTP, id, ccrawl.CDXQuery{
-					URL: q.URL, Match: q.Match, From: q.From, To: q.To,
-					Status: q.Status, MIME: q.MIME, Lang: q.Lang, Filter: q.Filter,
-				}, collect); err != nil {
+				if err := ccrawl.CDXStream(ctx, app.HTTP, id, q, func(r ccrawl.CDXRecord) error {
+					if !keep(r) {
+						return nil
+					}
+					return picker.Add(r)
+				}); err != nil {
+					return err
+				}
+				if err := picker.EndStream(); err != nil {
 					return err
 				}
 			}
-			recs := make([]ccrawl.CDXRecord, 0, len(nearest))
-			for _, r := range nearest {
+			if picker.Spilled() {
+				fmt.Fprintf(os.Stderr, "search: --at passed --max-buffer %d records and is using temporary files, which is why this is slow\n", maxBuf)
+			}
+
+			// Winners have always come out newest first, and that ordering needs
+			// the whole set in hand. Up to the buffer it still does. Past it the
+			// result goes out in index order, which is the only ordering left
+			// that does not mean holding everything.
+			var recs []ccrawl.CDXRecord
+			streaming := false
+			if err := picker.Each(func(r ccrawl.CDXRecord) error {
+				if streaming {
+					return emitRec(r)
+				}
 				recs = append(recs, r)
+				if len(recs) < maxBuf {
+					return nil
+				}
+				fmt.Fprintf(os.Stderr, "search: --at result passed --max-buffer %d records, emitting in index order rather than newest first\n", maxBuf)
+				streaming = true
+				for _, buffered := range recs {
+					if err := emitRec(buffered); err != nil {
+						return err
+					}
+				}
+				recs = nil
+				return nil
+			}); err != nil {
+				return err
+			}
+			if streaming {
+				return nil
 			}
 			sort.Slice(recs, func(i, j int) bool { return recs[i].Timestamp > recs[j].Timestamp })
 			if app.Limit > 0 && len(recs) > app.Limit {
 				recs = recs[:app.Limit]
 			}
 			for _, r := range recs {
-				if in.Locations {
-					if err := emit(r.Location()); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := emit(r); err != nil {
+				if err := emitRec(r); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
 
-		seenURL := map[string]bool{}
-		seenDigest := map[string]bool{}
+		// --latest-only keeps the first capture of a URL, and this output
+		// streams, so the check cannot wait for the end. Each crawl's emitted
+		// URLs are written down in urlkey order and the next crawl is checked
+		// against them with a cursor that only moves forward.
+		var urlLog *ccrawl.CDXURLLog
+		if in.LatestOnly {
+			urlLog = ccrawl.NewCDXURLLog(maxBuf)
+			defer func() { _ = urlLog.Close() }()
+		}
+		var digests *ccrawl.CDXDigestSet
+		warnedDedup := false
+		if in.Dedup {
+			digests = ccrawl.NewCDXDigestSet(maxBuf)
+		}
 		send := func(r ccrawl.CDXRecord) error {
 			if !keep(r) {
 				return nil
 			}
-			if in.LatestOnly {
-				if seenURL[r.URL] {
+			if urlLog != nil {
+				seen, err := urlLog.Seen(r)
+				if err != nil {
+					return err
+				}
+				if seen {
 					return nil
 				}
-				seenURL[r.URL] = true
+				if err := urlLog.Emitted(r); err != nil {
+					return err
+				}
 			}
-			if in.Dedup {
-				if r.Digest != "" && seenDigest[r.Digest] {
+			if digests != nil {
+				if r.Digest != "" && digests.Add(r.Digest) {
 					return nil
 				}
-				seenDigest[r.Digest] = true
+				if digests.Evicted() && !warnedDedup {
+					warnedDedup = true
+					fmt.Fprintf(os.Stderr, "search: --dedup passed --max-buffer %d digests and is forgetting the oldest, so some duplicates will get through\n", maxBuf)
+				}
 			}
-			if in.Locations {
-				return emit(r.Location())
-			}
-			return emit(r)
+			return emitRec(r)
 		}
-		for _, id := range crawls {
+		for i, id := range crawls {
 			if err := ccrawl.CDXStream(ctx, app.HTTP, id, q, send); err != nil {
 				return err // a real error, or kit's stop sentinel once --limit is hit
 			}
+			if urlLog != nil && i < len(crawls)-1 {
+				if err := urlLog.EndCrawl(); err != nil {
+					return err
+				}
+			}
+		}
+		if urlLog != nil && urlLog.Spilled() {
+			fmt.Fprintf(os.Stderr, "search: --latest-only passed --max-buffer %d URLs and used temporary files\n", maxBuf)
 		}
 		return nil
 	})
