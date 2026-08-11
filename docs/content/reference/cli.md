@@ -601,6 +601,46 @@ ccrawl domains diff --added-out new-domains.txt
 
 Maintenance for the published Common Crawl datasets.
 
+| Subcommand | Does |
+|---|---|
+| `publish verify` | Check that the published shards are readable, complete, and the schema they claim |
+| `publish delete-obsolete` | Delete the superseded first-generation dataset repos |
+
+### publish verify
+
+Publishing only ever asks whether a shard's path exists, so an upload that was cut off part way through leaves an object the resume path skips forever, and nothing notices until somebody reads the dataset and gets an error out of a Parquet library.
+`publish verify` reads each shard's footer over ranged requests and asks what publishing never asks: does the file parse, is it the schema the dataset promises, do the row groups add up to the row count the footer claims, and does every column chunk sit inside the bytes the hub is holding.
+The totals are then reconciled against the `stats.csv` ledger the dataset card is built from, and a disagreement is reported even when every shard passes, because it means the numbers the dataset advertises are not the numbers it holds.
+
+```sh
+ccrawl publish verify -c CC-MAIN-2026-25
+ccrawl publish verify -c CC-MAIN-2026-25 --sample 64
+ccrawl publish verify -c CC-MAIN-2026-25 --repair
+ccrawl publish verify --graph cc-main-2026-mar-apr-may --json
+```
+
+Verifying the 300 shard `CC-MAIN-2026-25` crawl reads 269 MB against a dataset holding 150.5 GB, which is 0.175 percent of it, so a full check costs about as much as a listing.
+
+| Flag | Meaning |
+|---|---|
+| `--repo` | HuggingFace dataset repo (default: the dataset the unit belongs to) |
+| `--graph` | Verify a web-graph release of the domains dataset instead of URL crawls |
+| `--sample` | Rows to decode from each shard's last row group (0 reads the footer alone) |
+| `--workers` | Shards checked at once (0 picks a default from CPU count) |
+| `--repair` | Rebuild and re-upload the shards that fail |
+| `--no-push` | With `--repair`, rebuild locally but skip the upload |
+| `--json` | Print the report as JSON |
+
+Each shard comes back `ok`, or `missing`, `unreadable`, `truncated`, `schema`, `empty`, `corrupt`, or `no-access`.
+The last one is not a verdict on the data: the shards are read with plain ranged GETs because the published datasets are public, so a repo that will not serve them reports `no-access` rather than being called corrupt.
+The exit status is non-zero when a shard fails and `--repair` was not passed.
+
+`--sample` decodes rows out of each shard as well as reading its footer, which is the only way to catch a page whose bytes are wrong rather than missing.
+It reads a page of every column instead of a footer, so it costs a great deal more than the default check and is worth running on a crawl you have a specific reason to distrust.
+
+`--repair` works on the URL dataset, where a shard is the projection of exactly one source part and can be rebuilt on its own from the part that made it.
+A domain shard is a cut of one sequential rank stream, so rebuilding one means reading the source up to it: `publish verify --graph` reports the bad shards and leaves the rebuild to `ccrawl domains publish`.
+
 ### publish delete-obsolete
 
 Delete the obsolete dataset repos that the `ccrawl-urls` and `ccrawl-domains` datasets replaced.

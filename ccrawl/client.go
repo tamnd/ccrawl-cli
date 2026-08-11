@@ -185,6 +185,18 @@ func (h *HTTPClient) ContentLength(ctx context.Context, url string) (int64, erro
 	return 0, fmt.Errorf("cannot determine size of %s (status %d)", url, resp.StatusCode)
 }
 
+// httpStatusError is a response the caller cannot use. It carries the status
+// because some callers have to tell "the bytes are wrong" apart from "I am not
+// allowed to read them", and both arrive as a failed fetch.
+type httpStatusError struct {
+	URL    string
+	Status int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d from %s", e.Status, e.URL)
+}
+
 // FetchBytes fetches url and returns the whole body.
 func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error) {
 	resp, err := h.Get(ctx, url)
@@ -193,7 +205,7 @@ func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return nil, &httpStatusError{URL: url, Status: resp.StatusCode}
 	}
 	return io.ReadAll(resp.Body)
 }
@@ -265,7 +277,7 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			// A 503/429 commonly carries Retry-After; honor it on the next loop.
 			retryAfter, serverWait = parseRetryAfter(resp.Header.Get("Retry-After"))
 			_ = resp.Body.Close()
-			last = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+			last = &httpStatusError{URL: url, Status: resp.StatusCode}
 			continue
 		}
 		return resp, nil
