@@ -123,7 +123,7 @@ func (r *httpReaderAt) fetch(bi int64) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 && resp.StatusCode != 206 {
-		return nil, fmt.Errorf("range GET %s: status %d", r.url, resp.StatusCode)
+		return nil, &httpStatusError{URL: r.url, Status: resp.StatusCode}
 	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(resp.Body, buf); err != nil {

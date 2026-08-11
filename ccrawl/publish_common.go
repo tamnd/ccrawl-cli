@@ -52,8 +52,13 @@ func newStallClock(max time.Duration, cancel context.CancelFunc) *stallClock {
 	return s
 }
 
-// mark records forward progress.
+// mark records forward progress. A nil clock is a committer running without a
+// restart supervisor, such as the one publish verify uses to rewrite a handful
+// of shards, and it has nothing to keep alive.
 func (s *stallClock) mark() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	s.last = time.Now()
 	s.mu.Unlock()
@@ -61,6 +66,9 @@ func (s *stallClock) mark() {
 
 // stalled reports whether the watcher fired.
 func (s *stallClock) stalled() bool {
+	if s == nil {
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.fired
