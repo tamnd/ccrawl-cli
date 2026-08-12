@@ -38,6 +38,7 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `api` | Start the v2 REST API server |
 | `db` | Build and query a local DuckDB database |
 | `convert` | Convert WARC/WAT/WET archives to Parquet or JSONL |
+| `library` | Inspect, verify, and collect the dataset library |
 | `dedup` | Report exact and near duplicate documents in a Markdown Parquet dataset |
 | `stats` | Show the shape of a crawl: file counts per archive kind |
 | `serve` | Serve the operations over HTTP as NDJSON |
@@ -881,6 +882,75 @@ ccrawl convert <file|dir> [flags]
 `--to parquet|jsonl` (default `parquet`).
 `-O/--out` sets the output file or directory.
 `--markdown` converts HTML bodies on the way.
+
+---
+
+## library
+
+```sh
+ccrawl library list
+ccrawl library du
+ccrawl library verify
+ccrawl library gc --older-than 90d
+ccrawl library scan
+```
+
+The dataset library is the tree `--library` downloads into and processes from, `~/notes/ccrawl` by default and moved with `--library-dir` or `CCRAWL_LIBRARY`.
+It is separate from the data dir so scratch state and the files you keep never mix, and `library` is how you find out what is in it.
+
+`library.json` at the root of the tree records every artifact: its path, crawl, kind, format, size, sha256, when it was written, and which version of ccrawl wrote it.
+Every command that materialises into the library updates it, and the checksum for a download is computed as the bytes stream past rather than by reading the file back.
+Concurrent runs take a lock on `library.lock` for the read-change-write, so two ccrawl processes filling one library do not lose each other's records.
+
+| Subcommand | Does |
+|---|---|
+| `library list` | List the artifacts the manifest records |
+| `library du` | Report library size, per crawl |
+| `library verify` | Rehash every artifact and report what does not match |
+| `library gc` | Delete artifacts older than a cutoff |
+| `library scan` | Record what is on disk into the manifest |
+
+### library list
+
+| Flag | Default | Does |
+|---|---|---|
+| `--kind` | all | Only this kind: `warc`, `wet`, `wat`, and so on |
+| `--format` | all | Only this format: `raw`, `parquet`, `jsonl` |
+
+`-c` narrows to one crawl and `-n` caps the rows.
+
+### library du
+
+`--by crawl|kind|format` picks the grouping, `crawl` by default.
+A `total` row follows the groups when there is more than one, as a row rather than a footer so it survives `-o json` and a pipe.
+
+### library verify
+
+Reads every artifact and compares it against the manifest.
+Four kinds of trouble are reported: `missing` for a file that is gone, `resized` for one whose size changed, `corrupt` for one whose bytes changed, and `untracked` for a file on disk the manifest has never heard of.
+The first three exit 1, so `library verify` can gate a publish run; an untracked file is reported but is not a failure, since `library scan` is the fix.
+
+| Flag | Default | Does |
+|---|---|---|
+| `--quick` | `false` | Check existence and size only, no rehash |
+| `--kind` | all | Only this kind |
+
+### library gc
+
+Deletes artifacts and drops them from the manifest.
+It needs something to select on: `--older-than`, `-c`, or `--kind`.
+`--older-than` takes `30d`, `8w`, or any Go duration such as `12h`.
+
+It is a dry run unless you pass `--yes`, and the dry run prints exactly the list the real run deletes.
+Directories the collection emptied are removed with it.
+
+### library scan
+
+Walks the tree, hashes what it finds, and writes the manifest.
+This is how a library built by a ccrawl that predated the manifest, or one you copied files into, comes under management.
+It reads every byte the first time and is a no-op after that: an artifact already recorded at the same size is left alone unless you pass `--rehash`.
+
+Only files that fit the library layout are recorded, `<crawl>/<kind>/<file>` for a raw archive and `<crawl>/<format>/<kind>/<file>` for processed output, so a README you left in the tree is not mistaken for a corrupt artifact.
 
 ---
 

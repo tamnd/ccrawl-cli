@@ -122,6 +122,18 @@ ccrawl index build
 	--dir --input --urls
 ccrawl index search
 	--dir
+ccrawl library
+	
+ccrawl library du
+	--by
+ccrawl library gc
+	--kind --older-than
+ccrawl library list
+	--format --kind
+ccrawl library scan
+	--rehash
+ccrawl library verify
+	--kind --quick
 ccrawl markdown
 	
 ccrawl markdown export

@@ -129,6 +129,15 @@ func sortStrings(s []string) {
 	}
 }
 
+// plural renders a count with its noun, so a message reads "1 artifact" and
+// "3 artifacts" without the caller doing it at every call site.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // humanBytes renders a byte count in a compact human form.
 func humanBytes(n int64) string {
 	const unit = 1024

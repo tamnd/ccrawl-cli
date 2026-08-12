@@ -33,6 +33,7 @@ func registerEscapeHatches(app *kit.App) {
 	app.AddCommand(newDBCmd())
 	app.AddCommand(newConvertCmd())
 	app.AddCommand(newDedupCmd())
+	app.AddCommand(newLibraryCmd())
 	app.AddCommand(newConfigCmd())
 	app.AddCommand(newCacheCmd())
 	app.AddCommand(newVersionCmd())

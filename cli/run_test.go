@@ -84,8 +84,12 @@ func invoke(t *testing.T, stdin string, argv []string) (int, string, string) {
 	t.Setenv("CCRAWL_DATA_DIR", dir)
 	t.Setenv("CCRAWL_CACHE_DIR", dir+"/cache")
 	// The library root is read at flag-registration time from the environment,
-	// so it has to be set before NewApp rather than passed as a flag.
-	t.Setenv("CCRAWL_LIBRARY", dir+"/library")
+	// so it has to be set before NewApp rather than passed as a flag. A test that
+	// needs two runs to share one library sets it first, the way the config dir
+	// works below, since every invoke otherwise gets a temp dir of its own.
+	if os.Getenv("CCRAWL_LIBRARY") == "" {
+		t.Setenv("CCRAWL_LIBRARY", dir+"/library")
+	}
 	// An empty config dir, so a developer's own ~/.config/ccrawl/config.toml
 	// cannot reach a test. It would not be a subtle failure either: a profile is
 	// allowed to move the endpoints, which would send a test past the fake

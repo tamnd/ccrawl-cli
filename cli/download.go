@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/tamnd/any-cli/kit"
@@ -114,6 +115,14 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 	sp := ccrawl.StartStreamProgress(rep, "files", len(paths), 0)
 	defer sp.Stop()
 
+	// Files that landed inside the library are collected as they finish and
+	// recorded in one manifest write at the end, rather than one write per file:
+	// the lock is cheap but a ten thousand file download would take it ten
+	// thousand times for a result only the last one needs.
+	var mu sync.Mutex
+	var written []writtenFile
+	root := libraryRootFor(app, outDir)
+
 	var done int64
 	var bytes int64
 	progress := func(r ccrawl.DownloadResult) {
@@ -123,6 +132,11 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 		if r.Err != nil {
 			rep.Textf("[%d/%d] FAIL %s: %v\n", n, len(paths), r.Path, r.Err)
 			return
+		}
+		if root != "" {
+			mu.Lock()
+			written = append(written, writtenFile{Path: r.LocalPath, SHA256: r.SHA256, Reuse: r.Skipped})
+			mu.Unlock()
 		}
 		state := "ok"
 		if r.Skipped {
@@ -136,6 +150,9 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 	dlErr := ccrawl.DownloadFiles(ctx, app.HTTP, app.Cfg.Source, paths, outDir, app.Workers, flat, progress)
 	sp.Stop()
 	rep.Textf("downloaded %s across %d files\n", humanBytes(atomic.LoadInt64(&bytes)), len(paths))
+	// Recorded even when the run failed part way, because the files that did
+	// arrive are real and the next run resumes against them.
+	recordLibraryFiles(root, written)
 	if dlErr != nil {
 		return errs.Wrap(errs.KindNetwork, dlErr, "download failed")
 	}
