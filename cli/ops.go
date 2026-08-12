@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -101,6 +102,13 @@ Examples:
 			lost.report()
 			if err == nil && emitted == 0 && lost.total() > 0 {
 				err = fmt.Errorf("nothing came back and part of the query could not be read, so this is not an empty result")
+				// The index server refuses connections for days at a time. When
+				// that is the whole story the run is worth repeating later, and
+				// exit 8 is how a supervisor is told so. Exit 1 would be the code
+				// for a command that is wrong, which this one is not.
+				if lost.everyLossWasTransport() {
+					err = &errs.Error{Kind: errs.KindNetwork, Err: err}
+				}
 			}
 		}()
 		q := ccrawl.CDXQuery{
