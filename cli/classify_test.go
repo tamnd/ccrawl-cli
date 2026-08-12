@@ -7,8 +7,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
+	"net"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/tamnd/any-cli/kit"
@@ -31,6 +34,18 @@ func TestClassifyGivesTransportFailuresTheirCode(t *testing.T) {
 		{"a usage error keeps its own kind", usageErr("name a kind"), 2},
 		{"an empty result keeps its own kind", noResults("nothing matched"), 3},
 		{"a transport failure already classified is left alone", errs.Wrap(errs.KindNeedAuth, ccrawl.ErrTransport, "no token"), 4},
+		// The retry loop only sees a request that never got an answer, so a body
+		// that stops halfway arrives with nothing attached to it. It is the same
+		// failure and it gets the same code: the rank table is 262 million rows
+		// and losing the connection 77 seconds in is worth trying again.
+		{"the connection went away mid stream", fmt.Errorf("stream rank table: %w", opErr(syscall.EHOSTUNREACH)), 8},
+		{"the read timed out mid stream", fmt.Errorf("stream vertices: %w", opErr(errTimeout{})), 8},
+		{"a reset while reading", fmt.Errorf("stream edges: %w", syscall.ECONNRESET), 8},
+		{"a broken pipe while writing", fmt.Errorf("push shard: %w", syscall.EPIPE), 8},
+		// os.PathError has Timeout and Temporary methods, so it satisfies the
+		// net.Error interface. A missing local file is not a network failure and
+		// asking for the interface rather than the socket errors would say it is.
+		{"a file that is not there", fmt.Errorf("open shard: %w", &fs.PathError{Op: "open", Path: "/absent", Err: syscall.ENOENT}), 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -40,6 +55,23 @@ func TestClassifyGivesTransportFailuresTheirCode(t *testing.T) {
 		})
 	}
 }
+
+// opErr builds the error the net package hands back when a read on an open
+// connection fails, which is the shape the real failure had: a *net.OpError
+// wrapping the reason, reading "read tcp [addr]->[addr]: read: no route to
+// host".
+func opErr(cause error) error {
+	return &net.OpError{Op: "read", Net: "tcp", Err: cause}
+}
+
+// errTimeout is a cause that reports itself as a timeout, since a deadline
+// passing mid-body is the other way a long stream ends and it arrives as a
+// different concrete type each time.
+type errTimeout struct{}
+
+func (errTimeout) Error() string   { return "i/o timeout" }
+func (errTimeout) Timeout() bool   { return true }
+func (errTimeout) Temporary() bool { return true }
 
 // TestClassifyKeepsTheMessage checks that giving an error a kind does not
 // rewrite what the user reads. The message is the only thing that says which

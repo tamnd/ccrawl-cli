@@ -85,6 +85,16 @@ case $? in
 esac
 ```
 
+A connection that goes away partway through a response is exit 8 as well, not only one that never opened. That case belongs to the long commands: the rank table is 262 million rows and the edge files are 7.7 GB, so they hold a connection open for minutes and are the runs most worth restarting.
+
+```bash
+ccrawl rank host example.com; echo $?
+# read tcp [2001:ee0:...]:54947->[2600:9000:...]:443: read: no route to host
+# 8
+```
+
+The same rule covers a host that is simply not there, so `content quality http://127.0.0.1:9/gone` exits 8 rather than 1. A URL that does not parse is still exit 1: nothing was ever dialled, the command itself is wrong, and running it again in an hour will not help.
+
 A status the server sent is not exit 8. A 503 that survived every retry means Common Crawl answered and said no, so it exits 1 and leaves the judgement to you.
 `download` is the one command that returns 8 more broadly: anything that stops a download is reported as a transport failure, including `--source s3` without credentials, since either way the files are not on disk.
 
