@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,19 +25,51 @@ func registerIndex(app *kit.App) {
 
 // ── index build ───────────────────────────────────────────────────────────────
 
+// The fetch concurrency is the global -j, read off the App: kit only inherits
+// --limit into an op struct, so a Workers field here would declare a flag that
+// collides with the global and is never set.
 type indexBuildIn struct {
-	App     *App   `kit:"inject"`
-	Dir     string `kit:"flag" help:"directory to write the index into"`
-	Input   string `kit:"flag" help:"JSONL file of ForwardDoc records to index (or WET file URL)"`
-	URLs    string `kit:"flag,name=urls" help:"comma-separated WET file URLs to index"`
-	Workers int    `kit:"flag" help:"parallel fetch workers (default 8)"`
+	App   *App   `kit:"inject"`
+	Dir   string `kit:"flag" help:"directory to write the index into"`
+	Input string `kit:"flag" help:"JSONL file of documents to index, or - for stdin"`
+	URLs  string `kit:"flag,name=urls" help:"comma-separated page URLs to fetch and index"`
 }
 
 // IndexBuildResult reports the outcome of building an index.
 type IndexBuildResult struct {
-	IndexDir  string `json:"index_dir" table:"index_dir"`
-	DocsAdded int    `json:"docs_added" table:"docs_added"`
-	Terms     int    `json:"terms" table:"terms"`
+	IndexDir    string `json:"index_dir" table:"index_dir"`
+	DocsAdded   int    `json:"docs_added" table:"docs_added"`
+	DocsSkipped int    `json:"docs_skipped" table:"docs_skipped"`
+	Terms       int    `json:"terms" table:"terms"`
+}
+
+// indexDoc is one line of an --input file: a JSON object with a URL and some
+// text. The two language fields are both here because a file written by hand
+// tends to say "language" while `ccrawl parse wet -o jsonl` writes the Go field
+// name, and encoding/json only folds case, it does not fold underscores.
+type indexDoc struct {
+	URL             string `json:"url"`
+	Title           string `json:"title"`
+	Text            string `json:"text"`
+	Language        string `json:"language"`
+	ContentLanguage string `json:"ContentLanguage"`
+}
+
+func (d indexDoc) lang() string {
+	if d.Language != "" {
+		return d.Language
+	}
+	return d.ContentLanguage
+}
+
+// snippet is the first 500 runes of a document, which is what the forward index
+// keeps for display.
+func snippet(s string) string {
+	rs := []rune(s)
+	if len(rs) > 500 {
+		return string(rs[:500])
+	}
+	return s
 }
 
 func registerIndexBuild(app *kit.App) {
@@ -45,15 +78,29 @@ func registerIndexBuild(app *kit.App) {
 		Parent:  "index",
 		Single:  true,
 		Summary: "Build an inverted index from extracted content",
-		Long: `Build a BM25 inverted index from a set of URLs or a JSONL file of documents.
+		Long: `Build a BM25 inverted index from a JSONL file of documents or a set of URLs.
 
-For each URL, the command fetches the page, extracts text, tokenizes it, and
-adds it to the inverted index. The index is written to --dir.
+--input reads one JSON object per line, each with a url and the text to index,
+and optionally a title and a language. That is the shape
+"ccrawl parse file.warc.wet.gz -o jsonl" writes, so a WET file can be indexed
+without an intermediate step. Use - to read the JSONL from stdin.
+
+--urls fetches each page live, extracts the readable text, and indexes that.
+
+The whole index is held in memory until it is written, so the corpus is bounded
+by RAM. Measured on English WET records from CC-MAIN-2026-30, a build costs
+about 26 KB per document, which puts a 16 GB machine at roughly 600,000
+documents, or 45 of the 100,000 WET files in a crawl. This is a reference
+implementation of BM25, not a production search engine.
 
 Examples:
-  ccrawl index build --dir /tmp/idx --urls https://example.com/,https://golang.org/
-  ccrawl index build --dir /tmp/idx --input docs.jsonl`,
+  ccrawl index build --dir /tmp/idx --input docs.jsonl
+  ccrawl parse file.warc.wet.gz --lang eng -o jsonl | ccrawl index build --dir /tmp/idx --input -
+  ccrawl index build --dir /tmp/idx --urls https://example.com/,https://golang.org/`,
 	}, func(ctx context.Context, in indexBuildIn, emit func(IndexBuildResult) error) error {
+		if in.Input == "" && in.URLs == "" {
+			return usageErr("nothing to index: pass --input (a JSONL file, or - for stdin) or --urls")
+		}
 		if in.Dir == "" {
 			in.Dir = filepath.Join(dataDir(in.App), "index")
 		}
@@ -67,9 +114,16 @@ Examples:
 		}
 		defer func() { _ = fw.Close() }()
 
-		workers := in.Workers
-		if workers <= 0 {
-			workers = 8
+		workers := 8
+		if in.App != nil && in.App.Workers > 0 {
+			workers = in.App.Workers
+		}
+
+		var docsAdded, docsSkipped int
+		add := func(doc ccrawl.ForwardDoc, tokens []string) {
+			b.Add(doc.DocID, tokens)
+			_ = fw.Write(doc)
+			docsAdded++
 		}
 
 		type fetchResult struct {
@@ -89,13 +143,6 @@ Examples:
 			}
 			docID := ccrawl.DocumentID(canonURL)
 			tokens := ccrawl.Tokenize(tr.Title + " " + tr.Body)
-			snippet := tr.Body
-			if len(snippet) > 500 {
-				rs := []rune(snippet)
-				if len(rs) > 500 {
-					snippet = string(rs[:500])
-				}
-			}
 			return fetchResult{
 				tokens: tokens,
 				doc: ccrawl.ForwardDoc{
@@ -106,12 +153,18 @@ Examples:
 					Title:     tr.Title,
 					Language:  tr.Language,
 					WordCount: tr.WordCount,
-					Snippet:   snippet,
+					Snippet:   snippet(tr.Body),
 				},
 			}, nil
 		}
 
-		var docsAdded int
+		if in.Input != "" {
+			skipped, err := indexJSONL(in.Input, add)
+			if err != nil {
+				return err
+			}
+			docsSkipped += skipped
+		}
 
 		if in.URLs != "" {
 			var nonEmpty []string
@@ -126,9 +179,7 @@ Examples:
 			var drainWg sync.WaitGroup
 			drainWg.Go(func() {
 				for r := range resCh {
-					b.Add(r.doc.DocID, r.tokens)
-					_ = fw.Write(r.doc)
-					docsAdded++
+					add(r.doc, r.tokens)
 				}
 			})
 
@@ -159,11 +210,54 @@ Examples:
 			return fmt.Errorf("flush index: %w", err)
 		}
 		return emit(IndexBuildResult{
-			IndexDir:  in.Dir,
-			DocsAdded: docsAdded,
-			Terms:     b.TermCount,
+			IndexDir:    in.Dir,
+			DocsAdded:   docsAdded,
+			DocsSkipped: docsSkipped,
+			Terms:       b.TermCount,
 		})
 	})
+}
+
+// indexJSONL reads a JSONL document file (or stdin for "-") and hands every
+// usable document to add. A line that is not JSON, or has no URL, or tokenizes
+// to nothing, is counted and skipped rather than failing the build: a WET file
+// run through a language filter has plenty of both.
+func indexJSONL(path string, add func(ccrawl.ForwardDoc, []string)) (int, error) {
+	r := io.Reader(os.Stdin)
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return 0, fmt.Errorf("read %s: %w", path, err)
+		}
+		defer func() { _ = f.Close() }()
+		r = f
+	}
+
+	var skipped int
+	err := readLines(r, func(line string) error {
+		var d indexDoc
+		if err := json.Unmarshal([]byte(line), &d); err != nil || d.URL == "" {
+			skipped++
+			return nil
+		}
+		tokens := ccrawl.Tokenize(d.Title + " " + d.Text)
+		if len(tokens) == 0 {
+			skipped++
+			return nil
+		}
+		add(ccrawl.ForwardDoc{
+			DocID:     ccrawl.DocumentID(d.URL),
+			URL:       d.URL,
+			CanonURL:  d.URL,
+			Host:      hostFromURL(d.URL),
+			Title:     d.Title,
+			Language:  d.lang(),
+			WordCount: len(tokens),
+			Snippet:   snippet(d.Text),
+		}, tokens)
+		return nil
+	})
+	return skipped, err
 }
 
 // ── index search ──────────────────────────────────────────────────────────────
@@ -172,6 +266,7 @@ type indexSearchIn struct {
 	App   *App   `kit:"inject"`
 	Query string `kit:"arg" name:"query" help:"search query"`
 	Dir   string `kit:"flag" help:"index directory to search"`
+	Limit int    `kit:"flag,inherit" name:"limit"`
 }
 
 // SearchHit is one result from index search.
@@ -191,6 +286,11 @@ func registerIndexSearch(app *kit.App) {
 		Long: `Query the local inverted index built by 'ccrawl index build'. Results are
 ranked by BM25 score (best match first).
 
+A document matches if it holds any query term, so a two-word query returns the
+documents that hold either word, with the ones that hold both scoring higher.
+The default is the top 100 documents, -n changes it. A query that matches
+nothing exits 3.
+
 Examples:
   ccrawl index search "golang web server"
   ccrawl index search "machine learning" --dir /tmp/idx -n 20 -o json`,
@@ -208,8 +308,15 @@ Examples:
 		// load forward index for snippet/title lookup
 		forward := loadForwardIndex(filepath.Join(in.Dir, "forward.jsonl"))
 
+		n := in.Limit
+		if n <= 0 {
+			n = 100
+		}
 		tokens := ccrawl.Tokenize(in.Query)
-		hits := idx.Search(tokens, 100)
+		hits := idx.Search(tokens, n)
+		if len(hits) == 0 {
+			return noResults(fmt.Sprintf("nothing in %s matches %q", in.Dir, in.Query))
+		}
 		for _, h := range hits {
 			sh := SearchHit{DocID: h.DocID, Score: h.Score}
 			if fd, ok := forward[h.DocID]; ok {

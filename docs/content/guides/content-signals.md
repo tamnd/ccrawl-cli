@@ -54,13 +54,13 @@ Output fields:
 | `boilerplate_ratio` | Estimated fraction of the page that is boilerplate |
 | `readability_score` | Flesch-Kincaid readability estimate |
 
-Use these signals to filter low-quality pages before indexing:
+Use these signals to filter low-quality pages before indexing.
+`index build --input -` reads JSONL documents from stdin, one object per line with a `url` and the `text` to index:
 
 ```bash
-ccrawl crawl fetch seeds.jsonl -o jsonl \
-  | ccrawl content quality - -o jsonl \
-  | jq 'select(.word_count > 200 and .lang == "en")' \
-  | ccrawl index build --dir idx/ -
+ccrawl parse file.warc.wet.gz --lang eng -o jsonl \
+  | jq -c 'select((.Text | length) > 1000)' \
+  | ccrawl index build --dir idx/ --input -
 ```
 
 ## Extracting outlinks
