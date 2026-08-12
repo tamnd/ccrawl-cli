@@ -27,6 +27,12 @@ const (
 	DefaultRetries = 5
 	DefaultDelay   = 200 * time.Millisecond
 
+	// DefaultGlobalRate is the minimum gap between Common Crawl requests across
+	// every ccrawl process on the host. It matches DefaultDelay so one process on
+	// its own behaves exactly as it did before the shared limiter existed, and
+	// three processes now split the budget one used to take on its own.
+	DefaultGlobalRate = DefaultDelay
+
 	// DefaultBackoff is the base wait before the first retry; later retries grow
 	// it exponentially. DefaultBackoffMax caps a single wait so a long stall or a
 	// large Retry-After never blocks a run indefinitely.
@@ -45,13 +51,17 @@ const (
 // Config controls library behaviour. The zero value is not usable; call
 // DefaultConfig and adjust.
 type Config struct {
-	DataDir    string
-	CacheDir   string
-	DBPath     string
-	Source     Source
-	Workers    int
-	Timeout    time.Duration
-	Delay      time.Duration
+	DataDir  string
+	CacheDir string
+	DBPath   string
+	Source   Source
+	Workers  int
+	Timeout  time.Duration
+	Delay    time.Duration
+	// GlobalRate is the minimum gap between Common Crawl requests summed over
+	// every ccrawl process sharing DataDir. Zero turns the shared limiter off and
+	// leaves each process on Delay alone.
+	GlobalRate time.Duration
 	Retries    int
 	Backoff    time.Duration
 	BackoffMax time.Duration
@@ -70,6 +80,7 @@ func DefaultConfig() Config {
 		Workers:    defaultWorkers(),
 		Timeout:    DefaultTimeout,
 		Delay:      DefaultDelay,
+		GlobalRate: DefaultGlobalRate,
 		Retries:    DefaultRetries,
 		Backoff:    DefaultBackoff,
 		BackoffMax: DefaultBackoffMax,

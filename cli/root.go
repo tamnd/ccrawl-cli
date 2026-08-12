@@ -98,6 +98,8 @@ func (b *builder) globals(f *kit.FlagSet) {
 	f.StringVar(&b.dom.progress, "progress", "", "progress reporting for long runs: text|json|none (default: text on a terminal, json otherwise)")
 	f.StringVar(&b.dom.journal, "journal", "", "append run events as JSON Lines to this file (default: run.jsonl beside the ledger)")
 	f.StringVar(&b.dom.metricsAddr, "metrics-addr", "", "serve Prometheus metrics for the run on this address, e.g. :9090")
+	f.DurationVar(&b.dom.globalRate, "global-rate", envDuration("CCRAWL_GLOBAL_RATE", b.def.GlobalRate),
+		"minimum gap between Common Crawl requests across every ccrawl process on this host (0 disables)")
 }
 
 // client is the factory kit calls once per run to build the shared engine from

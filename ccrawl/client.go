@@ -26,6 +26,9 @@ type HTTPClient struct {
 	userAgent  string
 	source     Source // which base bulk data paths are fetched from
 	creds      awsCreds
+	// global is the host-wide budget for Common Crawl requests, shared with every
+	// other ccrawl process on the machine. Nil when it is switched off.
+	global *globalLimiter
 
 	mu   sync.Mutex
 	next time.Time // earliest time the next request may start
@@ -60,8 +63,13 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 		userAgent:  ua,
 		source:     src,
 		creds:      resolveAWSCreds(),
+		global:     newGlobalLimiter(cfg.DataDir, cfg.GlobalRate),
 	}
 }
+
+// GlobalRate describes the host-wide request budget this client draws on, for
+// the startup line that tells an operator what rate is actually in force.
+func (h *HTTPClient) GlobalRate() string { return h.global.Describe() }
 
 // pooledTransport returns a transport that keeps enough idle connections for a
 // worker pool. Go's default is two per host, which is fine for a browser and
@@ -84,9 +92,15 @@ func pooledTransport() *http.Transport {
 // turns a thirty second query into two minutes. duckdb, which is the default
 // engine for the same queries, applies no delay at all, so throttling the
 // built-in engine only makes the dependency-free path the slow one.
+//
+// This drops the host-wide limiter as well, for the same reason and with the
+// same consequence: a columnar scan does not draw on the shared budget, so
+// --global-rate bounds everything except columnar scans. That is the behaviour
+// that already shipped, and pushing thousands of footer reads through a five per
+// second budget would turn a thirty second query into an hour.
 func (h *HTTPClient) WithoutDelay() *HTTPClient {
 	// Field by field rather than a struct copy, because the mutex must not be
-	// carried over.
+	// carried over, and because global is deliberately left nil.
 	return &HTTPClient{
 		c:          h.c,
 		download:   h.download,
@@ -99,8 +113,26 @@ func (h *HTTPClient) WithoutDelay() *HTTPClient {
 	}
 }
 
-// throttle blocks until the configured minimum inter-request delay has elapsed.
-func (h *HTTPClient) throttle(ctx context.Context) error {
+// throttle blocks until this client may issue a request for url.
+//
+// Requests to Common Crawl go through the host-wide limiter first, so that N
+// ccrawl processes running at once still add up to one polite client. A request
+// to anything else, which means a live crawl fetching arbitrary sites, pays only
+// the per process delay, because it is not spending Common Crawl's bandwidth.
+func (h *HTTPClient) throttle(ctx context.Context, url string) error {
+	if h.global != nil && isCommonCrawlURL(url) {
+		granted, err := h.global.wait(ctx)
+		if err != nil {
+			return err
+		}
+		// The shared limiter already spaced this request against every other
+		// process, this one included, so applying the local delay on top would
+		// double the gap. The local delay stays as the fallback for a host where
+		// the lock file is unusable.
+		if granted {
+			return nil
+		}
+	}
 	if h.delay <= 0 {
 		return nil
 	}
@@ -224,7 +256,7 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			}
 			retryAfter, serverWait = 0, false
 		}
-		if err := h.throttle(ctx); err != nil {
+		if err := h.throttle(ctx, url); err != nil {
 			return nil, err
 		}
 		// s3://bucket/key is not something net/http can dial. The bucket is

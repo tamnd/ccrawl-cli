@@ -954,7 +954,8 @@ These apply to every command.
 | `--limit` | `-n` | Maximum records (0 = unlimited) | `0` |
 | `--workers` | `-j` | Concurrency for downloads and scans | `8` |
 | `--source` | | Bulk data source: `https` or `s3` | `https` |
-| `--rate` | | Minimum delay between requests | `0s` |
+| `--rate` | | Minimum delay between requests, for this process alone | `0s` |
+| `--global-rate` | | Minimum gap between Common Crawl requests across every ccrawl process on this host (0 disables) | `200ms` |
 | `--timeout` | | Per-request timeout | `0s` |
 | `--no-cache` | | Bypass the on-disk cache | false |
 | `--fields` | | Comma-separated columns to show | |
@@ -974,6 +975,20 @@ These apply to every command.
 | `--metrics-addr` | | Serve Prometheus metrics for the run on this address, e.g. `:9090` | off |
 
 See [run journal](/reference/run-journal/) for the event schema, the metric names, and the queries worth keeping.
+
+### The shared request budget
+
+`--rate` spaces the requests one ccrawl process makes. That is not the number Common Crawl sees. Running the URL publish, the domain publish, and a Markdown export at once means three processes each pacing themselves politely and three times the traffic arriving at a nonprofit that serves this for free.
+
+`--global-rate` is the gap between requests summed over every ccrawl process on the host. The processes coordinate through a small lock file at `<data-dir>/ratelimit.lock`: taking a slot means locking the file, reading the time the next slot comes free, pushing it forward by one interval, and sleeping until the slot you were handed. The lock is held for sixteen bytes of read and write, so processes queue on the timestamps rather than on the lock.
+
+It covers `index.commoncrawl.org`, `data.commoncrawl.org`, `commoncrawl.org`, and the `commoncrawl` S3 bucket. Requests a recrawl makes to arbitrary sites are not Common Crawl's bandwidth, so they pay `--rate` and nothing else. Columnar scans are also exempt, for the reason `--rate` does not apply to them either: a scan is thousands of few-kilobyte footer reads, and pushing those through a five per second budget turns a thirty second query into an hour.
+
+The default is `200ms`, five requests per second, which is what a single process used to take on its own. So one process behaves exactly as it did before, and three processes now split that budget instead of tripling it. Raise the gap to be gentler, or pass `--global-rate 0` to switch the shared limiter off and go back to a per process delay. `CCRAWL_GLOBAL_RATE` sets it from the environment.
+
+Processes sharing a budget must share a data dir, since that is where the lock file lives. When the file cannot be created or locked, which is what a read-only or exotic filesystem looks like, ccrawl prints one warning and falls back to the per process delay rather than failing the run. Pass `-v` to have any run print the rate it is actually working under.
+
+Measured on one host, three concurrent pipelines walking twenty crawls each and fetching real path manifests: `--global-rate 2s` served 60 requests at 0.499 per second combined against a configured 0.500, and the same 60 requests with `--global-rate 0` went out at 2.316 per second.
 
 ## Exit codes
 
