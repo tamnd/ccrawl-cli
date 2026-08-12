@@ -46,6 +46,8 @@ type searchIn struct {
 	Filter         []string `kit:"flag" help:"raw CDX filter field:regex (repeatable)"`
 	URLContains    string   `kit:"flag,name=url-contains" help:"keep only captures whose URL contains this substring"`
 	URLNotContains string   `kit:"flag,name=url-not-contains" help:"skip captures whose URL contains this substring"`
+	NoPushFilters  bool     `kit:"flag,name=no-push-filters" help:"keep the URL substring filters here instead of sending them to the index server"`
+	Explain        bool     `kit:"flag" help:"print what the index server is asked for and what is filtered here"`
 	Sort           string   `kit:"flag" help:"crawl visit order: newest|oldest"`
 	Pages          bool     `kit:"flag" help:"print the result page count and exit"`
 	Estimate       bool     `kit:"flag" help:"print an approximate record count per crawl and exit"`
@@ -83,7 +85,8 @@ Examples:
   ccrawl search example.com -c 2023                every crawl from 2023
   ccrawl search '*.example.com' --at 2022-06       the capture nearest a date, per URL
   ccrawl search '*.example.com' --estimate         approximate record count per crawl
-  ccrawl search example.com/* --url-contains /blog/ filter URLs after the query`,
+  ccrawl search example.com/* --url-contains /blog/ only URLs with /blog/ in them
+  ccrawl search example.com/* --url-contains /blog/ --explain  where the work happens`,
 		Args: []kit.Arg{{Name: "url-or-pattern", Help: "page URL or wildcard pattern"}},
 	}, func(ctx context.Context, in searchIn, emit func(any) error) (err error) {
 		app := in.App
@@ -115,8 +118,11 @@ Examples:
 			URL: in.Pattern, Match: in.Match,
 			From: in.From, To: in.To,
 			Status: in.Status, MIME: in.MIME, Lang: in.Lang,
-			Filter:      in.Filter,
-			OnPageError: lost.handler(),
+			Filter:         in.Filter,
+			URLContains:    in.URLContains,
+			URLNotContains: in.URLNotContains,
+			NoPushFilters:  in.NoPushFilters,
+			OnPageError:    lost.handler(),
 		}
 		crawls, err := app.AllCrawls(ctx)
 		if err != nil {
@@ -131,6 +137,16 @@ Examples:
 			}
 		default:
 			return usageErr(fmt.Sprintf("invalid --sort %q (want newest or oldest)", in.Sort))
+		}
+
+		if in.Explain {
+			fmt.Fprint(os.Stderr, explainSearch(crawls, q, localFilters(in)))
+			defer func() {
+				// Both forms: the round one to read, the exact one to compare
+				// against the same query run with --no-push-filters.
+				n := app.HTTP.CDXBytesRead()
+				fmt.Fprintf(os.Stderr, "search: read %s from the index (%d bytes)\n", humanBytes(n), n)
+			}()
 		}
 
 		// The page count is one request per crawl, and it is the same trade as a
@@ -324,6 +340,99 @@ Examples:
 		}
 		return nil
 	})
+}
+
+// explainSearch says where each part of a query runs. The URL substring filters
+// are regexes the index server can apply, so they go on the wire and the pages
+// come back already thinned. The rest, which is anything that has to compare one
+// record against another, can only happen here.
+//
+// The request it prints is the real one, minus the page parameter: curl it and
+// the rows that come back are the rows the command reads.
+func explainSearch(crawls []string, q ccrawl.CDXQuery, local []string) string {
+	var b strings.Builder
+	shown := crawls
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	fmt.Fprintf(&b, "search: %s: %s", plural(len(crawls), "crawl"), strings.Join(shown, ", "))
+	if len(shown) < len(crawls) {
+		fmt.Fprintf(&b, " and %d more", len(crawls)-len(shown))
+	}
+	b.WriteString("\n")
+	if len(crawls) > 0 {
+		fmt.Fprintf(&b, "search: the index server answers %s\n", ccrawl.CDXRequestURL(crawls[0], q))
+	}
+	pushed := pushedFilters(q)
+	if len(pushed) == 0 {
+		b.WriteString("search: pushed to the server: nothing beyond the URL pattern\n")
+	} else {
+		fmt.Fprintf(&b, "search: pushed to the server: %s\n", strings.Join(pushed, ", "))
+	}
+	if len(local) == 0 {
+		b.WriteString("search: applied here: nothing, the server does all of it\n")
+	} else {
+		fmt.Fprintf(&b, "search: applied here: %s\n", strings.Join(local, ", "))
+	}
+	return b.String()
+}
+
+// pushedFilters names the flags that became server side filters, in the words
+// the user typed them, rather than in the regex they turned into.
+func pushedFilters(q ccrawl.CDXQuery) []string {
+	var out []string
+	if q.Status != "" {
+		out = append(out, "--status "+q.Status)
+	}
+	if q.MIME != "" {
+		out = append(out, "--mime "+q.MIME)
+	}
+	if q.Lang != "" {
+		out = append(out, "--lang "+q.Lang)
+	}
+	if !q.NoPushFilters {
+		if q.URLContains != "" {
+			out = append(out, "--url-contains "+q.URLContains)
+		}
+		if q.URLNotContains != "" {
+			out = append(out, "--url-not-contains "+q.URLNotContains)
+		}
+	}
+	for _, f := range q.Filter {
+		out = append(out, "--filter "+f)
+	}
+	return out
+}
+
+// localFilters names the work that stays on this machine. The URL substrings
+// are listed even when they were pushed, because they are checked again on the
+// way past, which is free and means a server that filters differently from us
+// cannot widen the result.
+func localFilters(in searchIn) []string {
+	var out []string
+	if in.URLContains != "" {
+		out = append(out, "--url-contains "+in.URLContains+localAgain(in.NoPushFilters))
+	}
+	if in.URLNotContains != "" {
+		out = append(out, "--url-not-contains "+in.URLNotContains+localAgain(in.NoPushFilters))
+	}
+	if in.At != "" {
+		out = append(out, "--at "+in.At)
+	}
+	if in.LatestOnly {
+		out = append(out, "--latest-only")
+	}
+	if in.Dedup {
+		out = append(out, "--dedup")
+	}
+	return out
+}
+
+func localAgain(noPush bool) string {
+	if noPush {
+		return ""
+	}
+	return " (again, on what the server sent)"
 }
 
 // urlKeep reports whether a URL passes the --url-contains / --url-not-contains

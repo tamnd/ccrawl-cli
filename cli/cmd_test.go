@@ -332,6 +332,25 @@ func TestExportWritesAReadableWARC(t *testing.T) {
 	}
 }
 
+// export sends --url-fgrep to the index server too, and the WARC it writes has
+// to hold exactly the captures the substring names. A pushed filter that the
+// server reads differently would show up here as an empty archive or an extra
+// record.
+func TestExportPushesTheURLFilter(t *testing.T) {
+	dir := t.TempDir()
+	run(t, "export", "example.com", "--match", "domain", "--url-fgrep", "/about",
+		"--out-dir", dir, "--prefix", "test").wantCode(t, 0)
+	files, err := filepath.Glob(filepath.Join(dir, "test*.warc.gz"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("export left nothing in %s", dir)
+	}
+	_, out, _ := invoke(t, "", []string{"ccrawl", "parse", files[0], "-o", "url"})
+	got := strings.Fields(out)
+	if len(got) != 1 || got[0] != "https://example.com/about" {
+		t.Fatalf("the export holds %v, want only the /about capture", got)
+	}
+}
+
 func TestExportWithNoMatchesExitsThree(t *testing.T) {
 	run(t, "export", "nothing-here.invalid/*", "--out-dir", t.TempDir()).wantCode(t, 3)
 }

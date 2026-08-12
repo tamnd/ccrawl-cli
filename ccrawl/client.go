@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +34,10 @@ type HTTPClient struct {
 
 	mu   sync.Mutex
 	next time.Time // earliest time the next request may start
+
+	// cdxBytes is what the URL index has cost this run, so --explain can say
+	// what pushing a filter to the server saved.
+	cdxBytes atomic.Int64
 }
 
 // NewHTTPClient builds an HTTPClient from cfg.
@@ -157,6 +162,27 @@ func (h *HTTPClient) throttle(ctx context.Context, url string) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// CDXBytesRead reports the bytes this client has read from the URL index so
+// far, after transport decompression. Only the index is counted: WARC ranges,
+// columnar reads and file downloads are not, because the question it answers is
+// how much of the index a query had to move to find its rows.
+func (h *HTTPClient) CDXBytesRead() int64 { return h.cdxBytes.Load() }
+
+// countCDX wraps an index response body so what is read through it lands in the
+// run's index byte total.
+func (h *HTTPClient) countCDX(r io.Reader) io.Reader { return &cdxCounter{r: r, h: h} }
+
+type cdxCounter struct {
+	r io.Reader
+	h *HTTPClient
+}
+
+func (c *cdxCounter) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.h.cdxBytes.Add(int64(n))
+	return n, err
 }
 
 // Source reports which base this client fetches bulk data from.

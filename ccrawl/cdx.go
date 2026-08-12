@@ -24,7 +24,16 @@ type CDXQuery struct {
 	MIME   string // mime-detected filter
 	Lang   string // languages filter (ISO-639-3)
 	Filter []string
-	Limit  int
+	// URLContains and URLNotContains are substring filters on the capture URL.
+	// They go to the server as regex filters, so the pages come back with the
+	// unwanted rows already gone instead of arriving here to be dropped.
+	URLContains    string
+	URLNotContains string
+	// NoPushFilters keeps URLContains and URLNotContains off the wire. The
+	// caller still has to apply them, and the only reason to set it is a server
+	// whose filtering disagrees with ours.
+	NoPushFilters bool
+	Limit         int
 
 	// OnPageError is called when a page of the result could not be read, after
 	// the retries have been spent on it. Returning nil drops that page and the
@@ -35,6 +44,13 @@ type CDXQuery struct {
 	// Page is -1 when it was the page count itself that could not be read, and
 	// so the whole crawl is being dropped rather than one page of it.
 	OnPageError func(crawlID string, page int, err error) error
+}
+
+// CDXRequestURL renders the request one crawl's index server answers for this
+// query, without the page parameter. It is what --explain prints: paste it into
+// curl and the rows that come back are the rows the command reads.
+func CDXRequestURL(crawlID string, q CDXQuery) string {
+	return cdxAPIURL(crawlID) + "?" + q.cdxValues(-1).Encode()
 }
 
 // cdxValues builds the query string for one page of a CDX request.
@@ -76,9 +92,23 @@ func (q CDXQuery) serverFilters() []string {
 	if q.Lang != "" {
 		f = append(f, "languages:"+q.Lang)
 	}
+	if !q.NoPushFilters {
+		if q.URLContains != "" {
+			f = append(f, "url:"+containsRegex(q.URLContains))
+		}
+		if q.URLNotContains != "" {
+			f = append(f, "!url:"+containsRegex(q.URLNotContains))
+		}
+	}
 	f = append(f, q.Filter...)
 	return f
 }
+
+// containsRegex turns a substring into a filter regex that matches it anywhere
+// in the field. The leading and trailing .* are not decoration: the index server
+// anchors a filter regex at the start of the value, so "budget" on its own only
+// matches a URL that begins with the word, which no URL does.
+func containsRegex(sub string) string { return ".*" + regexEscape(sub) + ".*" }
 
 // CDXNumPages returns the number of result pages for a query.
 func CDXNumPages(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery) (int, error) {
@@ -88,6 +118,7 @@ func CDXNumPages(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery)
 	if err != nil {
 		return 0, err
 	}
+	h.cdxBytes.Add(int64(len(data)))
 	var m struct {
 		Pages int `json:"pages"`
 	}
@@ -223,7 +254,12 @@ func cdxFetch(ctx context.Context, h *HTTPClient, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		return nil, &httpStatusError{URL: url, Status: resp.StatusCode}
 	}
-	data, err := io.ReadAll(resp.Body)
+	// Counted here rather than around the record scanner, because this is the
+	// one place an index response is read and it is the place a page that
+	// arrived and was thrown away still gets counted. An attempt that came back
+	// short and is about to be retried moved those bytes too, and the question
+	// the total answers is how much of the index the query had to move.
+	data, err := io.ReadAll(h.countCDX(resp.Body))
 	if err != nil {
 		return nil, &cdxTruncated{URL: url, Read: len(data), Err: err}
 	}

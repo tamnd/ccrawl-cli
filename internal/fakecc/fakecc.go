@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -432,10 +433,17 @@ func matchURL(url, target, match string) bool {
 // = for an exact match and a leading ! to negate. Only the fields ccrawl builds
 // filters for are understood, and an unknown one keeps the row rather than
 // silently dropping every result.
+//
+// The regex is anchored at the start of the value, because the index server
+// matches it with Python's re.match and that is what re.match does. It matters:
+// a filter of "budget" matches no URL at all there, and a fixture that quietly
+// treated it as "contains" would bless a filter that finds nothing in
+// production.
 func matchFilters(c Capture, filters []string) bool {
 	for _, f := range filters {
 		neg := strings.HasPrefix(f, "!")
 		f = strings.TrimPrefix(f, "!")
+		exact := strings.HasPrefix(f, "=")
 		f = strings.TrimPrefix(f, "=")
 		field, want, ok := strings.Cut(f, ":")
 		if !ok {
@@ -454,10 +462,15 @@ func matchFilters(c Capture, filters []string) bool {
 		default:
 			continue
 		}
-		// The client escapes regex metacharacters in the values it builds, so
-		// unescaping them back is enough to compare as plain text.
-		want = strings.ReplaceAll(want, `\`, "")
-		if strings.Contains(have, want) == neg {
+		hit := have == want
+		if !exact {
+			re, err := regexp.Compile(`^(?:` + want + `)`)
+			if err != nil {
+				continue
+			}
+			hit = re.MatchString(have)
+		}
+		if hit == neg {
 			return false
 		}
 	}
