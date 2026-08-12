@@ -13,7 +13,7 @@ weight: 35
 | `2` | Usage error, a missing or invalid argument | Argument checks, and a command that needs `duckdb` on a host without it |
 | `3` | The query ran and matched nothing | `search`, `news search`, `columnar`, and the other read commands |
 | `4` | A credential is needed and is not set | The commands that push to HuggingFace, listed in [what each command needs](/reference/requirements/) |
-| `8` | Transport failure, the bytes did not arrive | `download`, when a file could not be read from the source |
+| `8` | Transport failure, the bytes did not arrive | Any command that could not reach Common Crawl at all |
 | `75` | Temporary failure, run it again | The publish pipelines |
 
 Those are the seven codes ccrawl returns. The shared taxonomy behind them reserves `5` for rate limiting, `6` for a missing entity, and `7` for an unsupported capability; no ccrawl command returns those today, and a script does not need to handle them.
@@ -60,7 +60,31 @@ The check happens up front on purpose, so a run that would push at the end does 
 
 ## Exit 8 means the bytes did not arrive
 
-`download` returns 8 when a file could not be read from the source: the network went away, the source refused, or `--source s3` was asked for without credentials. It is separate from exit 1 because it says the request was fine and the transport was not, which is the case worth retrying automatically.
+Exit 8 says the request never got an answer: the dial failed, the connection went away, the handshake did not complete, or the deadline passed with nothing on the wire.
+It is separate from exit 1 because the request was fine and the transport was not, which is the case worth retrying automatically.
+
+Common Crawl's index host goes away for hours at a time, and that is what it looks like from the shell:
+
+```bash
+ccrawl search 'example.com/*'; echo $?
+# Fetch collinfo: all 6 attempts failed for https://index.commoncrawl.org/collinfo.json: ... connect: connection refused
+# 8
+```
+
+Every command returns it, not only `download`, so a supervisor can back off on 8 and stop on anything else:
+
+```bash
+ccrawl search "$url" -o jsonl > captures.jsonl
+case $? in
+  0) ;;                                  # captures on disk
+  3) echo "nothing crawled for $url" ;;  # a real answer
+  8) sleep 3600; exec "$0" "$@" ;;       # Common Crawl is unreachable, come back later
+  *) exit 1 ;;                           # the command itself is wrong
+esac
+```
+
+A status the server sent is not exit 8. A 503 that survived every retry means Common Crawl answered and said no, so it exits 1 and leaves the judgement to you.
+`download` is the one command that returns 8 more broadly: anything that stops a download is reported as a transport failure, including `--source s3` without credentials, since either way the files are not on disk.
 
 ## Exit 75 means restart the run
 

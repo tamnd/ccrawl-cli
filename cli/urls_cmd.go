@@ -20,8 +20,8 @@ const defaultURLsRepo = "open-index/ccrawl-urls"
 // registerURLs attaches the `urls` command group.
 func registerURLs(app *kit.App) {
 	app.CommandGroup("urls", "Publish the Common Crawl URL index to HuggingFace")
-	app.AddCommandUnder("urls", newURLsPublishCmd())
-	app.AddCommandUnder("urls", newURLsRecountCmd())
+	addCmdUnder(app, "urls", newURLsPublishCmd())
+	addCmdUnder(app, "urls", newURLsRecountCmd())
 }
 
 type urlsPublishCmd struct {

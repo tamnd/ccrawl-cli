@@ -61,7 +61,7 @@ type searchIn struct {
 const linesPerPage = 3000
 
 func registerSearch(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "search",
 		Group:   "read",
 		Aliases: []string{"cdx"},
@@ -349,7 +349,7 @@ type crawlsListIn struct {
 }
 
 func registerCrawlsList(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "list",
 		Parent:  "crawls",
 		Summary: "List every available crawl",
@@ -374,7 +374,7 @@ type newsListIn struct {
 }
 
 func registerNewsList(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "list",
 		Parent:  "news",
 		Summary: "List CC-NEWS WARC files for a month",
@@ -457,18 +457,18 @@ func registerRank(app *kit.App) {
 			return emit(r)
 		}
 	}
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name: "domain", Parent: "rank", Single: true,
 		Summary: "Rank of a registered domain",
 		Args:    []kit.Arg{{Name: "domain"}},
 	}, lookup(true))
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name: "host", Parent: "rank", Single: true,
 		Summary: "Rank of a host",
 		Args:    []kit.Arg{{Name: "host"}},
 	}, lookup(false))
 
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name: "top", Parent: "rank",
 		Summary: "Top-ranked hosts or domains",
 	}, func(ctx context.Context, in rankTopIn, emit func(ccrawl.Rank) error) error {
@@ -492,7 +492,7 @@ func registerRank(app *kit.App) {
 		return nil
 	})
 
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name: "all", Parent: "rank",
 		Summary: "Stream every host from a rank table",
 		Long: `Stream all hosts from a Common Crawl web-graph rank table.
@@ -529,7 +529,7 @@ type statsIn struct {
 }
 
 func registerStats(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "stats",
 		Group:   "read",
 		Summary: "Show the shape of a crawl: file counts per archive kind",

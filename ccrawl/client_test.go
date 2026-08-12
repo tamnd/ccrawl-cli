@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -165,5 +166,43 @@ func TestRetryCancelledDuringBackoff(t *testing.T) {
 	defer cancel()
 	if _, err := h.Get(ctx, srv.URL); err == nil {
 		t.Fatal("expected context cancellation error")
+	}
+}
+
+// A fetch that never reached a server is marked as a transport failure, which
+// is what tells the caller the same request is worth running again later. The
+// closed port stands in for the real case: Common Crawl's index host refusing
+// connections for a day at a time.
+func TestTransportFailureIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // nothing is listening now, so the dial fails
+
+	h := NewHTTPClient(Config{Retries: 1, Backoff: time.Millisecond, BackoffMax: 5 * time.Millisecond})
+	_, err := h.Get(context.Background(), url)
+	if err == nil {
+		t.Fatal("expected an error dialling a closed port")
+	}
+	if !errors.Is(err, ErrTransport) {
+		t.Errorf("not marked as a transport failure: %v", err)
+	}
+}
+
+// A status the server sent is not a transport failure. The bytes arrived and
+// the answer was no, so retrying it forever is the wrong advice to give a
+// supervisor.
+func TestExhaustedStatusIsNotATransportFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	h := NewHTTPClient(Config{Retries: 1, Backoff: time.Millisecond, BackoffMax: 5 * time.Millisecond})
+	_, err := h.Get(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("expected an error after exhausting retries on 503")
+	}
+	if errors.Is(err, ErrTransport) {
+		t.Errorf("an exhausted 503 was marked as a transport failure: %v", err)
 	}
 }

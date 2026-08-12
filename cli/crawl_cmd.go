@@ -40,7 +40,7 @@ type SeedRecord struct {
 }
 
 func registerCrawlSeed(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "seed",
 		Parent:  "crawl",
 		Summary: "Generate crawl seed URLs from the web-graph host rank table",
@@ -130,7 +130,7 @@ func crawlWARCInfo() ccrawl.WARCInfo {
 }
 
 func registerCrawlFetch(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "fetch",
 		Parent:  "crawl",
 		Single:  true,
@@ -218,7 +218,7 @@ type crawlRunIn struct {
 }
 
 func registerCrawlRun(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "run",
 		Parent:  "crawl",
 		Summary: "Crawl a seed list, following links, writing WARC",
@@ -358,7 +358,7 @@ type CrawlStatus struct {
 }
 
 func registerCrawlStatus(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "status",
 		Parent:  "crawl",
 		Summary: "Show crawl budget allocation across recrawl tiers",

@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -229,6 +230,27 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d from %s", e.Status, e.URL)
 }
 
+// ErrTransport marks a fetch that never got an answer: the dial failed, the
+// connection went away, the handshake did not complete, or the deadline passed
+// with nothing on the wire. It rides along with errors.Is so a caller can tell
+// it apart from a server that answered with a status it did not like, which is
+// the difference between "run it again later" and "this request is wrong".
+//
+// A retryable status that survives every attempt is not this. The server was
+// there and said no, and saying otherwise would send a supervisor into a loop
+// against a source that is up and refusing.
+var ErrTransport = errors.New("transport failure, the bytes did not arrive")
+
+// transportErr reports whether an error from the retry loop came from the
+// transport rather than from a status the server sent back.
+func transportErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var status *httpStatusError
+	return !errors.As(err, &status)
+}
+
 // FetchBytes fetches url and returns the whole body.
 func (h *HTTPClient) FetchBytes(ctx context.Context, url string) ([]byte, error) {
 	resp, err := h.Get(ctx, url)
@@ -313,6 +335,9 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 			continue
 		}
 		return resp, nil
+	}
+	if transportErr(last) {
+		return nil, fmt.Errorf("all %d attempts failed for %s: %w: %w", h.retries+1, url, ErrTransport, last)
 	}
 	return nil, fmt.Errorf("all %d attempts failed for %s: %w", h.retries+1, url, last)
 }
