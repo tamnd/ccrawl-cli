@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/render"
@@ -55,6 +56,7 @@ type domainGlobals struct {
 	progress    string
 	journal     string
 	metricsAddr string
+	globalRate  time.Duration
 }
 
 // buildApp is the client factory kit calls once per run. It folds the resolved
@@ -67,6 +69,7 @@ func buildApp(kc kit.Config, dom *domainGlobals) *App {
 	cfg.DBPath = kc.DataDir + "/ccrawl.duckdb"
 	cfg.Workers = dom.workers
 	cfg.Delay = kc.Rate
+	cfg.GlobalRate = dom.globalRate
 	cfg.Retries = kc.Retries
 	cfg.Timeout = kc.Timeout
 	cfg.UserAgent = kc.UserAgent
@@ -74,9 +77,19 @@ func buildApp(kc kit.Config, dom *domainGlobals) *App {
 	if dom.source == "s3" {
 		cfg.Source = ccrawl.SourceS3
 	}
+	hc := ccrawl.NewHTTPClient(cfg)
+	// The effective rate is a property of the host, not of this run, so a person
+	// debugging why a pipeline is slow needs to be told what budget it is sharing.
+	// It goes behind -v rather than on every run, because printing a line about
+	// rate limiting before the output of ccrawl search would be noise. The one
+	// case that is not optional, the limiter failing and silently going per
+	// process, warns on its own from inside ccrawl.
+	if kc.Verbose > 0 {
+		fmt.Fprintf(os.Stderr, "ccrawl: %s\n", hc.GlobalRate())
+	}
 	return &App{
 		Cfg:         cfg,
-		HTTP:        ccrawl.NewHTTPClient(cfg),
+		HTTP:        hc,
 		Cache:       ccrawl.NewCache(cfg.CacheDir, !kc.NoCache),
 		Workers:     dom.workers,
 		yes:         dom.yes,

@@ -204,3 +204,20 @@ func envOr(key, def string) string {
 	}
 	return def
 }
+
+// envDuration returns the environment value for key parsed as a duration, or def
+// when it is unset or unparseable. A bad value falls back rather than failing the
+// run, because this is read while flags are being registered, before there is any
+// error path to return on.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccrawl: %s=%q is not a duration, using %s\n", key, v, def)
+		return def
+	}
+	return d
+}
