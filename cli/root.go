@@ -76,12 +76,15 @@ Exit codes:
   1   error
   2   usage error, a missing or invalid argument
   3   the query ran and matched nothing
+  4   a credential is needed and is not set
+  8   transport failure, the bytes did not arrive
   75  temporary failure, run it again (EX_TEMPFAIL)
 
 Exit 3 is not a failure, it means the query was fine and Common Crawl has
-nothing for it. Exit 75 comes from the publish pipelines when a run stalls or
-finishes short, and it is the signal for a supervisor to restart the run, which
-picks up where it left off.`,
+nothing for it. Exit 4 comes from the commands that push to HuggingFace when
+HF_TOKEN is unset, and every one of them takes --no-push instead. Exit 75 comes
+from the publish pipelines when a run stalls or finishes short, and it is the
+signal for a supervisor to restart the run, which picks up where it left off.`,
 		Site: "https://commoncrawl.org",
 		Repo: "https://github.com/tamnd/ccrawl-cli",
 	}, kit.WithDefaults(b.defaults))

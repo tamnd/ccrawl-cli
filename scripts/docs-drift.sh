@@ -17,6 +17,7 @@ cd "$(dirname "$0")/.."
 REF_DIR="docs/content/reference"
 CLI_DOC="$REF_DIR/cli.md"
 MD_DOC="$REF_DIR/markdown.md"
+REQ_DOC="$REF_DIR/requirements.md"
 
 # Cobra generates these; they are not ccrawl's surface and are not documented.
 SKIP_COMMANDS=" help completion "
@@ -168,6 +169,10 @@ check_flags_in "$CLI_DOC" ""
 # The markdown page covers both pipelines at once, so a flag only has to exist on
 # one of them.
 check_flags_in "$MD_DOC" "$(printf 'markdown export\nmarkdown refetch')"
+# The requirements page is organised by dependency rather than by command, so its
+# headings name no command to scope against. The fallback is every command it
+# talks about, and a flag passes if any one of them has it.
+check_flags_in "$REQ_DOC" "$(printf '\ncolumnar sql\ndb sql\ndownload\nhost get\nhost enrich\nindex build\nurls publish\ndomains publish\nmarkdown export\nmarkdown refetch\npublish verify\napi\nserve')"
 
 echo
 if [ "$fail" -ne 0 ]; then

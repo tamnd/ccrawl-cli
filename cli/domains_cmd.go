@@ -98,7 +98,7 @@ func (v *domainsPublishCmd) run(ctx context.Context, args []string) error {
 	push := !v.noPush && !app.dryRun
 	hf := ccrawl.NewHFClient("")
 	if push && !hf.Valid() {
-		return errs.New(errs.KindNeedAuth, "HF_TOKEN (or HUGGINGFACE_TOKEN) is not set; set it or pass --no-push")
+		return errs.New(errs.KindNeedAuth, "no HuggingFace token; set HF_TOKEN (or HUGGINGFACE_TOKEN), or pass --no-push")
 	}
 
 	stageDir := filepath.Join(app.Cfg.DataDir, "publish", "domains")
@@ -190,7 +190,7 @@ func (v *domainsRecountCmd) run(ctx context.Context, args []string) error {
 	push := !v.noPush && !app.dryRun
 	hf := ccrawl.NewHFClient("")
 	if push && !hf.Valid() {
-		return errs.New(errs.KindNeedAuth, "HF_TOKEN (or HUGGINGFACE_TOKEN) is not set; set it or pass --no-push")
+		return errs.New(errs.KindNeedAuth, "no HuggingFace token; set HF_TOKEN (or HUGGINGFACE_TOKEN), or pass --no-push")
 	}
 
 	stageDir := filepath.Join(app.Cfg.DataDir, "publish", "domains")
