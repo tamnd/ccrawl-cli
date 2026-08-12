@@ -57,7 +57,7 @@ ccrawl crawl status
 ccrawl crawls
 	
 ccrawl crawls info
-	
+	--kinds
 ccrawl crawls latest
 	
 ccrawl crawls list

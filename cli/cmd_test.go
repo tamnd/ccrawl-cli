@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -389,12 +390,58 @@ func TestUnknownCommandAndFlagExitOne(t *testing.T) {
 }
 
 // crawls info walks every manifest a crawl publishes, so it is the one command
-// that fails if a kind stops resolving.
+// that fails if a kind stops resolving. The positional crawl is checked here
+// too: it predates the move to an operation and scripts pass it.
 func TestCrawlsInfoCountsEveryKind(t *testing.T) {
 	r := run(t, "crawls", "info", "2026-30").wantCode(t, 0)
 	r.wantOut(t, "CC-MAIN-2026-30", "warc", "wet", "cc-index-table")
-	if strings.Contains(r.Out, "(unavailable)") {
+	if strings.Contains(r.Out, "-1") {
 		t.Fatalf("a manifest did not resolve:\n%s", r.Out)
+	}
+}
+
+// TestCrawlsInfoRendersInEveryFormat is #140. It used to write its own text with
+// fmt.Fprintf, so -o was accepted and ignored and a pipeline asking for JSONL
+// got a paragraph and exit 0.
+func TestCrawlsInfoRendersInEveryFormat(t *testing.T) {
+	jsonl := run(t, "crawls", "info", "2026-30", "-o", "jsonl").wantCode(t, 0)
+	for _, line := range jsonl.Lines() {
+		var row struct {
+			Crawl string `json:"crawl"`
+			Kind  string `json:"kind"`
+			Files int    `json:"files"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("-o jsonl did not write JSON: %v\n%s", err, line)
+		}
+		if row.Crawl != "CC-MAIN-2026-30" || row.Kind == "" {
+			t.Fatalf("row is missing fields: %s", line)
+		}
+	}
+
+	csv := run(t, "crawls", "info", "2026-30", "-o", "csv").wantCode(t, 0)
+	if !strings.HasPrefix(csv.Out, "crawl,kind,files") {
+		t.Fatalf("-o csv did not write a CSV header:\n%s", csv.Out)
+	}
+}
+
+// TestCrawlsInfoAndStatsCountTheSameKinds pins the two spellings together. They
+// used to carry a default kind list each, differing by one kind in each
+// direction, so the same question answered differently depending on which name
+// you typed.
+func TestCrawlsInfoAndStatsCountTheSameKinds(t *testing.T) {
+	kinds := func(args ...string) []string {
+		r := run(t, append(args, "-o", "csv")...).wantCode(t, 0)
+		var out []string
+		for _, line := range r.Lines()[1:] {
+			out = append(out, strings.Split(line, ",")[1])
+		}
+		return out
+	}
+	info := kinds("crawls", "info", "2026-30")
+	stats := kinds("stats", "-c", "2026-30")
+	if !slices.Equal(info, stats) {
+		t.Fatalf("crawls info counts %v, stats counts %v", info, stats)
 	}
 }
 

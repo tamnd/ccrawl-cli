@@ -533,33 +533,46 @@ type statRow struct {
 
 type statsIn struct {
 	App   *App     `kit:"inject"`
-	Kinds []string `kit:"flag" help:"archive kinds to count (default warc,wat,wet,robotstxt,non200responses)"`
+	Kinds []string `kit:"flag" help:"archive kinds to count (default warc,wat,wet,robotstxt,non200responses,cc-index-table)"`
+}
+
+// statKinds are the manifests counted when --kinds says nothing. One list for
+// both spellings of this command: stats and crawls info used to carry a default
+// each, differing by one kind in each direction, which meant the same question
+// got two answers depending on which name you happened to type.
+var statKinds = []string{"warc", "wat", "wet", "robotstxt", "non200responses", "cc-index-table"}
+
+// crawlsInfoIn is statsIn plus the positional crawl that spelling has always
+// accepted.
+type crawlsInfoIn struct {
+	App   *App     `kit:"inject"`
+	ID    string   `kit:"arg" help:"crawl reference, defaults to -c"`
+	Kinds []string `kit:"flag" help:"archive kinds to count (default warc,wat,wet,robotstxt,non200responses,cc-index-table)"`
 }
 
 func registerStats(app *kit.App) {
-	handle(app, kit.OpMeta{
-		Name:    "stats",
-		Group:   "read",
-		Summary: "Show the shape of a crawl: file counts per archive kind",
-		Long: `Summarise a crawl by counting the files in each published manifest (warc, wat,
-wet, robotstxt, non200responses). This reads the small *.paths.gz manifests, not
-the archives themselves, so it is quick and cheap.
+	long := `Summarise a crawl by counting the files in each published manifest (warc, wat,
+wet, robotstxt, non200responses, cc-index-table). This reads the small *.paths.gz
+manifests, not the archives themselves, so it is quick and cheap.
 
 Examples:
   ccrawl stats                 the latest crawl
   ccrawl stats -c 2024-51      a specific crawl
-  ccrawl stats --kinds warc,wet`,
-	}, func(ctx context.Context, in statsIn, emit func(statRow) error) error {
-		id, err := in.App.Crawl(ctx)
+  ccrawl stats --kinds warc,wet`
+
+	count := func(ctx context.Context, app *App, ref string, kinds []string, emit func(statRow) error) error {
+		id, err := app.Crawl(ctx)
+		if ref != "" {
+			id, err = ccrawl.ResolveCrawl(ctx, app.HTTP, app.Cache, ref)
+		}
 		if err != nil {
 			return err
 		}
-		kinds := in.Kinds
 		if len(kinds) == 0 {
-			kinds = []string{"warc", "wat", "wet", "robotstxt", "non200responses"}
+			kinds = statKinds
 		}
 		for _, kind := range kinds {
-			paths, err := ccrawl.FetchPaths(ctx, in.App.HTTP, in.App.Cache, id, kind)
+			paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, id, kind)
 			if err != nil {
 				if err := emit(statRow{Crawl: id, Kind: kind, Files: -1}); err != nil {
 					return err
@@ -571,5 +584,29 @@ Examples:
 			}
 		}
 		return nil
+	}
+
+	handle(app, kit.OpMeta{
+		Name:    "stats",
+		Group:   "read",
+		Summary: "Show the shape of a crawl: file counts per archive kind",
+		Long:    long,
+	}, func(ctx context.Context, in statsIn, emit func(statRow) error) error {
+		return count(ctx, in.App, "", in.Kinds, emit)
+	})
+
+	// crawls info is the same question asked from the crawls parent. It used to
+	// be an escape-hatch command printing its own text, which meant -o was
+	// accepted and ignored; registering it as an operation is what puts the
+	// renderer back in the path. The positional crawl it has always taken stays,
+	// so a command someone has in a script keeps working.
+	handle(app, kit.OpMeta{
+		Name:    "info",
+		Parent:  "crawls",
+		Summary: "Show details for a crawl: file counts per archive kind",
+		Long:    long,
+		Args:    []kit.Arg{{Name: "id", Help: "crawl reference, defaults to -c", Optional: true}},
+	}, func(ctx context.Context, in crawlsInfoIn, emit func(statRow) error) error {
+		return count(ctx, in.App, in.ID, in.Kinds, emit)
 	})
 }
