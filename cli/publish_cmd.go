@@ -94,7 +94,7 @@ func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 	push := !v.noPush && !app.dryRun
 	hf := ccrawl.NewHFClient("")
 	if v.repair && push && !hf.Valid() {
-		return errs.New(errs.KindNeedAuth, "HF_TOKEN (or HUGGINGFACE_TOKEN) is not set; set it or pass --no-push")
+		return errs.New(errs.KindNeedAuth, "no HuggingFace token; set HF_TOKEN (or HUGGINGFACE_TOKEN), or pass --no-push")
 	}
 	vo := ccrawl.VerifyOptions{
 		Workers: v.workers,
@@ -231,7 +231,7 @@ func (v *deleteObsoleteCmd) run(ctx context.Context, args []string) error {
 	}
 	hf := ccrawl.NewHFClient("")
 	if !hf.Valid() {
-		return fmt.Errorf("HF_TOKEN (or HUGGINGFACE_TOKEN) is not set")
+		return errs.New(errs.KindNeedAuth, "no HuggingFace token; set HF_TOKEN (or HUGGINGFACE_TOKEN) to delete")
 	}
 	for _, repo := range obsoleteRepos {
 		if err := hf.DeleteDatasetRepo(ctx, repo); err != nil {

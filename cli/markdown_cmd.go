@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -238,7 +239,7 @@ func (v *markdownExportCmd) run(ctx context.Context, _ []string) error {
 	hf := ccrawl.NewHFClient("")
 	if v.push {
 		if !hf.Valid() {
-			return fmt.Errorf("HF_TOKEN not set, set it or pass --push=false")
+			return errs.New(errs.KindNeedAuth, "no HuggingFace token; set HF_TOKEN (or HUGGINGFACE_TOKEN), or pass --push=false")
 		}
 		if err := hf.CreateDatasetRepo(ctx, v.repo, false); err != nil {
 			return fmt.Errorf("create HF repo: %w", err)

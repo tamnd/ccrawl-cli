@@ -1148,4 +1148,4 @@ Measured on one host, three concurrent pipelines walking twenty crawls each and 
 
 ## Exit codes
 
-`0` success, `1` error, `2` usage error, `3` the query matched nothing, `75` temporary failure so run it again. See [exit codes](/reference/exit-codes/) for what to branch on and how to supervise a publish run.
+`0` success, `1` error, `2` usage error, `3` the query matched nothing, `4` a credential is needed and is not set, `8` transport failure, `75` temporary failure so run it again. See [exit codes](/reference/exit-codes/) for what to branch on and how to supervise a publish run.
