@@ -28,22 +28,34 @@ func (c *Cache) pathFor(key string) string {
 
 // Get returns cached bytes for key if present and younger than ttl.
 func (c *Cache) Get(key string, ttl time.Duration) ([]byte, bool) {
-	if !c.enabled {
+	data, age, ok := c.GetStale(key)
+	if !ok {
 		return nil, false
+	}
+	if ttl > 0 && age > ttl {
+		return nil, false
+	}
+	return data, true
+}
+
+// GetStale returns cached bytes for key at any age, along with how old they
+// are. It exists for the case where the fresh copy could not be fetched and an
+// old answer beats no answer, which the caller then has to own by saying how
+// old it is. Anything that just wants a cheap answer wants Get.
+func (c *Cache) GetStale(key string) (data []byte, age time.Duration, ok bool) {
+	if !c.enabled {
+		return nil, 0, false
 	}
 	p := c.pathFor(key)
 	info, err := os.Stat(p)
 	if err != nil {
-		return nil, false
+		return nil, 0, false
 	}
-	if ttl > 0 && time.Since(info.ModTime()) > ttl {
-		return nil, false
-	}
-	data, err := os.ReadFile(p)
+	data, err = os.ReadFile(p)
 	if err != nil {
-		return nil, false
+		return nil, 0, false
 	}
-	return data, true
+	return data, time.Since(info.ModTime()), true
 }
 
 // Put stores data under key.

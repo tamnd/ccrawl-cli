@@ -63,11 +63,13 @@ The check happens up front on purpose, so a run that would push at the end does 
 Exit 8 says the request never got an answer: the dial failed, the connection went away, the handshake did not complete, or the deadline passed with nothing on the wire.
 It is separate from exit 1 because the request was fine and the transport was not, which is the case worth retrying automatically.
 
-Common Crawl's index host goes away for hours at a time, and that is what it looks like from the shell:
+Common Crawl's index host goes away for days at a time, and that is what it looks like from the shell:
 
 ```bash
 ccrawl search 'example.com/*'; echo $?
-# Fetch collinfo: all 6 attempts failed for https://index.commoncrawl.org/collinfo.json: ... connect: connection refused
+# search: CC-MAIN-2026-30: all 6 attempts failed for https://index.commoncrawl.org/... connect: connection refused, skipping the crawl
+# search: the result is incomplete, 1 crawl could not be read; run it again or pass --strict to fail instead
+# nothing came back and part of the query could not be read, so this is not an empty result
 # 8
 ```
 
@@ -85,6 +87,10 @@ esac
 
 A status the server sent is not exit 8. A 503 that survived every retry means Common Crawl answered and said no, so it exits 1 and leaves the judgement to you.
 `download` is the one command that returns 8 more broadly: anything that stops a download is reported as a transport failure, including `--source s3` without credentials, since either way the files are not on disk.
+
+A search sits on the line between the two. It reads many index pages and keeps going past the ones it cannot read, so the run ends with some mixture of pages that arrived and pages that did not.
+When nothing came back at all and every lost page was the bytes not arriving, that is an outage and it exits 8.
+When any part of the loss was a status the server sent, a 503 or a truncated page, it exits 1, because a supervisor that backs off and retries against a server which is up and refusing never stops.
 
 ## Exit 75 means restart the run
 

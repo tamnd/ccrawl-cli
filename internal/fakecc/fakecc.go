@@ -117,6 +117,13 @@ type Server struct {
 	// at -1, the same as TruncatePage.
 	DeadPage int
 
+	// HangupPage, when set to a page number, drops the connection on that page
+	// without answering at all. It is a different failure from DeadPage and the
+	// difference is the whole point: a 503 is the server saying no, and a hangup
+	// is the server not being there, which is worth trying again later. Off at
+	// -1.
+	HangupPage int
+
 	captures []Capture
 
 	mu        sync.Mutex
@@ -132,6 +139,7 @@ func Start(t *testing.T) *Server {
 	s := &Server{
 		TruncatePage: -1,
 		DeadPage:     -1,
+		HangupPage:   -1,
 		hits:         map[string]int{},
 		failed:       map[string]bool{},
 		truncated:    map[string]int{},
@@ -260,6 +268,18 @@ func (s *Server) serveCDX(w http.ResponseWriter, r *http.Request, crawlID string
 
 	if n, err := strconv.Atoi(q.Get("page")); err == nil && n == s.DeadPage && q.Get("showNumPages") != "true" {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n == s.HangupPage && q.Get("showNumPages") != "true" {
+		// Nothing is written before the hijack, so the client gets a closed
+		// connection with no status line, the way a host that is refusing
+		// connections looks from the other end.
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
 		return
 	}
 

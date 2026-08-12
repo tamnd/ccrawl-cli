@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,14 @@ var PathKinds = []string{"warc", "wat", "wet", "robotstxt", "non200responses", "
 
 // ListCrawls fetches and parses collinfo.json. Results are cached when a cache
 // is supplied (pass nil to skip).
+//
+// When the fetch fails and there is a cached copy, the cached copy wins at any
+// age and the run says on stderr how old it is. Common Crawl publishes about
+// six crawls a year, so a day-old list is almost always the list you would have
+// got, and the index server goes away for days at a time. Half the commands
+// here read from data.commoncrawl.org and only touch the index server to turn
+// the word "latest" into a crawl ID; failing those because a six hour timer
+// expired throws away an answer that is sitting on disk.
 func ListCrawls(ctx context.Context, h *HTTPClient, cache *Cache) ([]Crawl, error) {
 	if cache != nil {
 		if data, ok := cache.Get("collinfo", 6*time.Hour); ok {
@@ -28,16 +37,58 @@ func ListCrawls(ctx context.Context, h *HTTPClient, cache *Cache) ([]Crawl, erro
 	}
 	data, err := h.FetchBytes(ctx, Endpoints.CollInfo)
 	if err != nil {
+		if crawls, age, ok := staleCrawls(cache); ok {
+			fmt.Fprintf(os.Stderr, "crawls: the index server is unreachable, using the crawl list cached %s ago; pass -c to name a crawl instead of resolving it\n", roundAge(age))
+			return crawls, nil
+		}
 		return nil, fmt.Errorf("fetch collinfo: %w", err)
 	}
 	var crawls []Crawl
 	if err := json.Unmarshal(data, &crawls); err != nil {
+		if stale, age, ok := staleCrawls(cache); ok {
+			fmt.Fprintf(os.Stderr, "crawls: the index server sent a crawl list that does not parse, using the one cached %s ago\n", roundAge(age))
+			return stale, nil
+		}
 		return nil, fmt.Errorf("parse collinfo: %w", err)
 	}
 	if cache != nil {
 		cache.Put("collinfo", data)
 	}
 	return crawls, nil
+}
+
+// staleCrawls reads the cached crawl list at any age. An entry that does not
+// parse is no better than no entry: the caller is about to report a failure and
+// a half-decoded list would turn that into a wrong answer.
+func staleCrawls(cache *Cache) ([]Crawl, time.Duration, bool) {
+	if cache == nil {
+		return nil, 0, false
+	}
+	data, age, ok := cache.GetStale("collinfo")
+	if !ok {
+		return nil, 0, false
+	}
+	var crawls []Crawl
+	if json.Unmarshal(data, &crawls) != nil || len(crawls) == 0 {
+		return nil, 0, false
+	}
+	return crawls, age, true
+}
+
+// roundAge writes an age the way someone would say it out loud, since the point
+// of printing it is to let a reader judge whether the list is old enough to
+// matter.
+func roundAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "less than a minute"
+	case d < time.Hour:
+		return d.Round(time.Minute).String()
+	case d < 48*time.Hour:
+		return d.Round(time.Hour).String()
+	default:
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
+	}
 }
 
 var (
