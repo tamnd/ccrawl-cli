@@ -147,3 +147,5 @@ done
 ## Caveat
 
 An unrecognised flag comes back as `1` rather than `2`, because that error is raised by the flag parser before ccrawl sees the command. Everything ccrawl rejects itself, a missing required flag or an argument it cannot parse, exits `2`.
+
+An unknown `-o` value is one ccrawl rejects itself, so it exits `2`. The formatter would otherwise render it as JSON Lines and exit `0`, which is the one place a typo could produce the wrong bytes with nothing on screen to say so.

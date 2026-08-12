@@ -45,7 +45,11 @@ crawl = "CC-MAIN-2026-30"
 [old]
 crawl = "CC-MAIN-2025-33"
 `)
-	r := run(t, "--profile", "old", "search", "example.com/*", "-o", "crawl,url").wantCode(t, 0)
+	// -o jsonl, not -o crawl,url. That was here for years and looked like it
+	// worked: an unknown format fell through to JSON Lines, so the assertion
+	// below passed for a reason that had nothing to do with what was asked for.
+	// Refusing an unknown format is what turned it up.
+	r := run(t, "--profile", "old", "search", "example.com/*", "-o", "jsonl").wantCode(t, 0)
 	if strings.Contains(r.Out, `"crawl":"CC-MAIN-2026-30"`) {
 		t.Fatalf("the profile did not reach the query:\n%s", r.Out)
 	}
@@ -53,7 +57,7 @@ crawl = "CC-MAIN-2025-33"
 
 	// Without the profile the same file gives the [default] crawl, which is what
 	// makes the line above about the profile and not about the file.
-	run(t, "search", "example.com/*", "-o", "crawl,url").wantCode(t, 0).wantOut(t, `"crawl":"CC-MAIN-2026-30"`)
+	run(t, "search", "example.com/*", "-o", "jsonl").wantCode(t, 0).wantOut(t, `"crawl":"CC-MAIN-2026-30"`)
 }
 
 // A flag beats the profile that beats [default]. This is the whole precedence

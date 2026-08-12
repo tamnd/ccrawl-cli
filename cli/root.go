@@ -54,6 +54,13 @@ func NewApp() (*kit.App, error) {
 	if b.set.err != nil {
 		return nil, b.set.err
 	}
+	// Same reasoning as the config file: -o names the encoder, the renderer has
+	// no encoder to name for a value it does not know, and it writes JSON Lines
+	// instead of saying so. Settled here because kit.Config does not carry the
+	// format, so there is no later hook that sees it.
+	if err := checkOutput(os.Args); err != nil {
+		return nil, err
+	}
 
 	app := kit.New(kit.Identity{
 		Binary:  "ccrawl",

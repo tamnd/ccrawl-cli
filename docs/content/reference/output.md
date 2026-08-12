@@ -38,12 +38,28 @@ ccrawl search '*.gov/*' --status 200 -o parquet > gov.parquet
 ccrawl host top -n 100000 -o parquet > top_hosts.parquet
 ```
 
+A format name ccrawl does not know is a usage error, exit 2, and nothing is written:
+
+```bash
+ccrawl search example.com -o csvv > captures.csv; echo $?
+# ccrawl: -o csvv: unknown output format, use one of auto, table, markdown, list, json, jsonl, csv, tsv, url, raw, md, section, sections, template, parquet
+# 2
+```
+
+That matters more than it sounds. Before, a misspelled format was rendered as JSONL with exit 0, so the command above left a file of JSON lines called `captures.csv` and said nothing was wrong.
+
 ## Narrowing columns
 
 Keep only the fields you want:
 
 ```bash
 ccrawl search example.com --fields url,status,length
+```
+
+`--fields` is the flag for this, not `-o`. `-o` names the encoding and `--fields` picks the columns, and they compose:
+
+```bash
+ccrawl search example.com -o csv --fields url,status,length
 ```
 
 `--no-header` drops the header row in `table` and `csv` output, which is handy when a downstream tool expects bare rows.
