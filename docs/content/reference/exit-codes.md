@@ -34,6 +34,18 @@ fi
 
 Without the exit 3 check that script cannot distinguish "this URL is not in the index" from "the index is down", and both come back as an empty file.
 
+For the same reason, a search that could not read part of the index and came back with nothing exits `1`, not `3`.
+It has not found that Common Crawl holds no captures for the query; it failed to ask, and it says so:
+
+```
+search: CC-MAIN-2026-30: CDX page 252: HTTP 503, skipping the crawl
+search: the result is incomplete, 1 crawl could not be read; run it again or pass --strict to fail instead
+nothing came back and part of the query could not be read, so this is not an empty result
+```
+
+A run that lost a page but still returned records exits `0` with that warning on stderr.
+`--strict` turns any lost page into an error instead.
+
 ## Exit 4 means set a token
 
 Every command that writes to HuggingFace checks for `HF_TOKEN` (or `HUGGINGFACE_TOKEN`) before it does any work, and exits 4 when there is none:

@@ -48,6 +48,19 @@ ccrawl retries 403, 429, and 5xx responses with exponential backoff and jitter, 
 `--retries` sets how many attempts (default 5) and `--rate` adds delay between requests to stay polite.
 If errors persist for everything, the data service may be having an outage: check the [Common Crawl status page](https://status.commoncrawl.org) before digging further.
 
+## A search says the result is incomplete
+
+```
+search: CC-MAIN-2026-30: CDX page 252: HTTP 503, skipping the page
+search: the result is incomplete, 1 index page could not be read; run it again or pass --strict to fail instead
+```
+
+The index refused a page of a wide query after every retry, so those records are not in the output and everything else is.
+Running the query again usually gets it, because the failure is load rather than a page that does not exist.
+`--strict` turns the skip back into an error for a pipeline that cannot use a partial answer, and `--retries` raises how many attempts each page gets.
+
+A page whose body stops part way through is not this: it is read again automatically and only shows up here if every attempt came back short.
+
 ## Checking what ccrawl resolved
 
 When something behaves unexpectedly, `ccrawl config show` prints the crawl, source, data directory, and every resolved path, and `-v` adds per-request detail.

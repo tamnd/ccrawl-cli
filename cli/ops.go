@@ -52,6 +52,7 @@ type searchIn struct {
 	LatestOnly     bool     `kit:"flag,name=latest-only" help:"keep only the newest capture per URL"`
 	Dedup          bool     `kit:"flag" help:"collapse captures with identical content digest"`
 	MaxBuffer      int      `kit:"flag,name=max-buffer" help:"records --at, --latest-only and --dedup hold in memory before spilling to disk (default 5000000)"`
+	Strict         bool     `kit:"flag" help:"fail the run if an index page cannot be read, rather than skipping it"`
 }
 
 // linesPerPage is the rough number of CDX records in one index page, used only
@@ -83,13 +84,31 @@ Examples:
   ccrawl search '*.example.com' --estimate         approximate record count per crawl
   ccrawl search example.com/* --url-contains /blog/ filter URLs after the query`,
 		Args: []kit.Arg{{Name: "url-or-pattern", Help: "URL or wildcard pattern"}},
-	}, func(ctx context.Context, in searchIn, emit func(any) error) error {
+	}, func(ctx context.Context, in searchIn, emit func(any) error) (err error) {
 		app := in.App
+		lost := &pageLosses{cmd: "search", strict: in.Strict}
+		// A run that emitted nothing and lost part of the query has not found
+		// nothing, it has failed to look. Exit 3 says the index answered and had
+		// no captures, and a script that branches on it deserves better than an
+		// outage wearing that answer's clothes.
+		emitted := 0
+		inner := emit
+		emit = func(v any) error {
+			emitted++
+			return inner(v)
+		}
+		defer func() {
+			lost.report()
+			if err == nil && emitted == 0 && lost.total() > 0 {
+				err = fmt.Errorf("nothing came back and part of the query could not be read, so this is not an empty result")
+			}
+		}()
 		q := ccrawl.CDXQuery{
 			URL: in.Pattern, Match: in.Match,
 			From: in.From, To: in.To,
 			Status: in.Status, MIME: in.MIME, Lang: in.Lang,
-			Filter: in.Filter,
+			Filter:      in.Filter,
+			OnPageError: lost.handler(),
 		}
 		crawls, err := app.AllCrawls(ctx)
 		if err != nil {
@@ -106,12 +125,30 @@ Examples:
 			return usageErr(fmt.Sprintf("invalid --sort %q (want newest or oldest)", in.Sort))
 		}
 
+		// The page count is one request per crawl, and it is the same trade as a
+		// page of results: a crawl whose count did not come back is one crawl
+		// missing from the total, not a reason to have no total at all.
+		countPages := func(id string) (int, bool, error) {
+			n, err := ccrawl.CDXNumPages(ctx, app.HTTP, id, q)
+			if err == nil {
+				return n, true, nil
+			}
+			h := lost.handler()
+			if h == nil {
+				return 0, false, err
+			}
+			return 0, false, h(id, -1, err)
+		}
+
 		if in.Pages {
 			total := 0
 			for _, id := range crawls {
-				n, err := ccrawl.CDXNumPages(ctx, app.HTTP, id, q)
+				n, ok, err := countPages(id)
 				if err != nil {
 					return err
+				}
+				if !ok {
+					continue
 				}
 				total += n
 			}
@@ -121,9 +158,12 @@ Examples:
 		if in.Estimate {
 			grand := 0
 			for _, id := range crawls {
-				n, err := ccrawl.CDXNumPages(ctx, app.HTTP, id, q)
+				n, ok, err := countPages(id)
 				if err != nil {
 					return err
+				}
+				if !ok {
+					continue
 				}
 				grand += n * linesPerPage
 				if err := emit(estimateRow{Crawl: id, Pages: n, Records: n * linesPerPage}); err != nil {

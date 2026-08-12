@@ -87,7 +87,7 @@ ccrawl domains recount
 ccrawl download
 	--flat --out --sample --segment
 ccrawl export
-	--creator --filter --from --lang --match --mime --operator --out-dir --prefix --size --status --subprefix --to --url-fgrep --url-fgrepv
+	--creator --filter --from --lang --match --mime --operator --out-dir --prefix --size --status --strict --subprefix --to --url-fgrep --url-fgrepv
 ccrawl extract
 	
 ccrawl extract links
@@ -177,7 +177,7 @@ ccrawl sched assign
 ccrawl sched diff
 	--crawl-a --crawl-b
 ccrawl search
-	--at --closest --dedup --estimate --filter --from --lang --latest-only --locations --match --max-buffer --mime --pages --sort --status --to --url-contains --url-not-contains
+	--at --closest --dedup --estimate --filter --from --lang --latest-only --locations --match --max-buffer --mime --pages --sort --status --strict --to --url-contains --url-not-contains
 ccrawl serve
 	--addr --allow-writes
 ccrawl stats

@@ -92,6 +92,27 @@ Past the budget it forgets the digests it has not seen for the longest and says 
 One thing does change past the budget. `--at` normally sorts its result newest first; when the result itself will not fit in the buffer it comes out in index order instead, and the command says so on stderr.
 That sort gets the same budget again, so `--at` can hold twice `--max-buffer` records at the moment it hands the result over.
 
+### A page the index will not serve
+
+A wide query is thousands of index pages, and the index truncates or refuses one often enough that a long run used to end on it and throw away everything that had already arrived.
+
+A page whose body stops early is read again, up to `--retries` times, so a truncated response costs a second request rather than the records it was carrying.
+A page that fails every attempt is named on stderr with its crawl and page number, and the run carries on with the next page:
+
+```
+search: CC-MAIN-2026-30: CDX page 252: HTTP 503, skipping the page
+search: the result is incomplete, 1 index page could not be read; run it again or pass --strict to fail instead
+```
+
+The summary line is printed once at the end of the run, so a partial result never passes for a whole one.
+Pass `--strict` to get the old behaviour, where the first page that cannot be read ends the command.
+
+| Flag | Description |
+| --- | --- |
+| `--strict` | Fail the run if an index page cannot be read, rather than skipping it |
+
+`export` takes `--strict` and reports the same way, for the same reason.
+
 ---
 
 ## get

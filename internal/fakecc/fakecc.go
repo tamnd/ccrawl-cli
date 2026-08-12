@@ -104,18 +104,38 @@ type Server struct {
 	URL  string
 	WARC []byte // the whole WARC file, as the data host serves it
 
+	// TruncatePage, when set to a page number, cuts that page's body off in the
+	// middle of a record the first TruncateTimes times it is asked for. It is
+	// what the real index does under load, and the client cannot see it coming:
+	// the status line and the headers arrived fine. Start sets it to -1, which
+	// is off, so a test that wants it says so.
+	TruncatePage  int
+	TruncateTimes int
+
+	// DeadPage, when set to a page number, answers that page with a 503 every
+	// time, so a test can watch a run give up on one page and keep going. Off
+	// at -1, the same as TruncatePage.
+	DeadPage int
+
 	captures []Capture
 
-	mu     sync.Mutex
-	hits   map[string]int
-	failed map[string]bool
+	mu        sync.Mutex
+	hits      map[string]int
+	failed    map[string]bool
+	truncated map[string]int
 }
 
 // Start brings a fake Common Crawl up, points ccrawl at it, and tears both down
 // when the test ends.
 func Start(t *testing.T) *Server {
 	t.Helper()
-	s := &Server{hits: map[string]int{}, failed: map[string]bool{}}
+	s := &Server{
+		TruncatePage: -1,
+		DeadPage:     -1,
+		hits:         map[string]int{},
+		failed:       map[string]bool{},
+		truncated:    map[string]int{},
+	}
 	s.build()
 
 	srv := httptest.NewServer(s)
@@ -238,6 +258,11 @@ func (s *Server) serveCDX(w http.ResponseWriter, r *http.Request, crawlID string
 		}
 	}
 
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n == s.DeadPage && q.Get("showNumPages") != "true" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
 	recs := s.match(q)
 	if q.Get("showNumPages") == "true" {
 		writeJSON(w, map[string]int{"pages": (len(recs) + PageSize - 1) / PageSize})
@@ -255,9 +280,41 @@ func (s *Server) serveCDX(w http.ResponseWriter, r *http.Request, crawlID string
 	if start >= len(recs) {
 		return
 	}
+	if page == s.TruncatePage && s.cutShort(crawlID, page) {
+		// Content-Length promises a body this connection is not going to finish,
+		// which is what makes the client see a truncation rather than a short but
+		// well formed page. Written by hand for the same reason: a handler that
+		// returns normally hands back whatever it wrote as the whole answer.
+		line, _ := json.Marshal(recs[start])
+		w.Header().Set("Content-Length", strconv.Itoa(len(line)+1))
+		_, _ = w.Write(line[:len(line)/2])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}
+		return
+	}
 	for _, rec := range recs[start:min(start+PageSize, len(recs))] {
 		writeJSONLine(w, rec)
 	}
+}
+
+// cutShort reports whether this request for a page is one of the ones that gets
+// a half written body, and counts it.
+func (s *Server) cutShort(crawlID string, page int) bool {
+	key := fmt.Sprintf("%s/%d", crawlID, page)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.truncated[key] >= s.TruncateTimes {
+		return false
+	}
+	s.truncated[key]++
+	return true
 }
 
 // match applies the query to the fixture and returns the CDX rows for it.

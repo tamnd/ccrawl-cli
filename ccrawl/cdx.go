@@ -2,9 +2,13 @@ package ccrawl
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,6 +25,16 @@ type CDXQuery struct {
 	Lang   string // languages filter (ISO-639-3)
 	Filter []string
 	Limit  int
+
+	// OnPageError is called when a page of the result could not be read, after
+	// the retries have been spent on it. Returning nil drops that page and the
+	// stream carries on with the next one; returning an error ends the stream
+	// with it. A nil handler ends the stream, which is what a caller that has
+	// not thought about partial results should get.
+	//
+	// Page is -1 when it was the page count itself that could not be read, and
+	// so the whole crawl is being dropped rather than one page of it.
+	OnPageError func(crawlID string, page int, err error) error
 }
 
 // cdxValues builds the query string for one page of a CDX request.
@@ -70,7 +84,7 @@ func (q CDXQuery) serverFilters() []string {
 func CDXNumPages(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery) (int, error) {
 	v := q.cdxValues(-1)
 	v.Set("showNumPages", "true")
-	data, err := h.FetchBytes(ctx, cdxAPIURL(crawlID)+"?"+v.Encode())
+	data, err := cdxPageBody(ctx, h, cdxAPIURL(crawlID)+"?"+v.Encode())
 	if err != nil {
 		return 0, err
 	}
@@ -98,7 +112,13 @@ func CDXSearch(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery) (
 func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, fn func(CDXRecord) error) error {
 	pages, err := CDXNumPages(ctx, h, crawlID, q)
 	if err != nil {
-		return err
+		// Without a page count there is no crawl to read, so this drops all of it
+		// rather than one page. A run over six crawls should still return the five
+		// that answered.
+		if q.OnPageError == nil {
+			return err
+		}
+		return q.OnPageError(crawlID, -1, err)
 	}
 	if pages == 0 {
 		pages = 1
@@ -129,7 +149,14 @@ func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, f
 			return cbErr
 		}
 		if err != nil && err != errStop {
-			return fmt.Errorf("CDX page %d: %w", page, err)
+			pageErr := fmt.Errorf("CDX page %d: %w", page, err)
+			if q.OnPageError == nil {
+				return pageErr
+			}
+			if herr := q.OnPageError(crawlID, page, pageErr); herr != nil {
+				return herr
+			}
+			continue
 		}
 		if stop {
 			break
@@ -140,14 +167,76 @@ func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, f
 
 var errStop = fmt.Errorf("stop")
 
+// cdxTruncated is a page whose body stopped early. The request itself succeeded,
+// so the retry loop in the client never saw it: by the time the connection drops
+// the status line and the headers are long gone and the reader is halfway
+// through the records.
+type cdxTruncated struct {
+	URL  string
+	Read int
+	Err  error
+}
+
+func (e *cdxTruncated) Error() string {
+	return fmt.Sprintf("body stopped after %d bytes: %v", e.Read, e.Err)
+}
+
+func (e *cdxTruncated) Unwrap() error { return e.Err }
+
+// cdxPageBody reads one whole page into memory, retrying a body that stops
+// early. The page is read to the end before any of its records go out, because
+// a page that failed half way would otherwise emit its first half twice once
+// the retry succeeded.
+//
+// The index truncates responses often enough on a busy day that a wide query
+// which does not retry this returns a different number of records every time
+// it runs. Only the truncation is retried here: a request that failed outright
+// has already had every attempt the client gives it.
+func cdxPageBody(ctx context.Context, h *HTTPClient, url string) ([]byte, error) {
+	var last error
+	for attempt := 0; attempt <= h.retries; attempt++ {
+		if attempt > 0 {
+			if err := h.sleepBackoff(ctx, attempt, 0, false); err != nil {
+				return nil, err
+			}
+		}
+		data, err := cdxFetch(ctx, h, url)
+		if err == nil {
+			return data, nil
+		}
+		var trunc *cdxTruncated
+		if !errors.As(err, &trunc) {
+			return nil, err
+		}
+		last = err
+	}
+	return nil, fmt.Errorf("all %d attempts came back short: %w", h.retries+1, last)
+}
+
+// cdxFetch performs one attempt at a page.
+func cdxFetch(ctx context.Context, h *HTTPClient, url string) ([]byte, error) {
+	resp, err := h.Get(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		return nil, &httpStatusError{URL: url, Status: resp.StatusCode}
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &cdxTruncated{URL: url, Read: len(data), Err: err}
+	}
+	return data, nil
+}
+
 func cdxPage(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, page int, fn func(CDXRecord) error) error {
-	resp, err := h.Get(ctx, cdxAPIURL(crawlID)+"?"+q.cdxValues(page).Encode())
+	body, err := cdxPageBody(ctx, h, cdxAPIURL(crawlID)+"?"+q.cdxValues(page).Encode())
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(make([]byte, 1<<20), 8<<20)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
