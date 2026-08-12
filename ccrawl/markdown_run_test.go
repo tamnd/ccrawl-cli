@@ -2,9 +2,11 @@ package ccrawl
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -270,5 +272,68 @@ func TestUpdateRunRates(t *testing.T) {
 	// 90 remaining at 10/hour ≈ 9h.
 	if h := run.ETA.Hours(); h < 8.5 || h > 9.5 {
 		t.Fatalf("ETA = %.2fh, want ~9h", h)
+	}
+}
+
+// TestRunMarkdownExportCardNamesTheRunRepo drives a real export against the
+// fake hub and reads the card back out of the commit body. The generator is
+// tested on its own in extractor_test.go; what this covers is the wiring, that
+// the repo the run is pushing to is the repo the card tells readers to
+// download, for a run that is not publishing to our own dataset.
+func TestRunMarkdownExportCardNamesTheRunRepo(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.regular["README.md"] = true // keep the card inline so we can read it
+	dir := t.TempDir()
+
+	stubPack(t, func(ctx context.Context, h *HTTPClient, cfg MarkdownPackConfig) (MarkdownStats, error) {
+		if err := os.WriteFile(cfg.OutPath, []byte("parquet"), 0o644); err != nil {
+			return MarkdownStats{}, err
+		}
+		return MarkdownStats{ShardIdx: cfg.ShardIdx, Rows: 10, HTMLBytes: 100, MDBytes: 30, ParquetBytes: 7}, nil
+	})
+
+	const repo = "acme/web-markdown"
+	if _, err := RunMarkdownExport(context.Background(), nil, testClient(), MarkdownExportConfig{
+		CrawlID:        "CC-MAIN-2026-25",
+		Repo:           repo,
+		Indices:        []int{0, 1},
+		WARCPaths:      []string{"crawl-data/x/0.warc.gz", "crawl-data/x/1.warc.gz"},
+		OutDir:         dir,
+		Push:           true,
+		ShardParallel:  1,
+		ConvertWorkers: 1,
+		CommitBatch:    2,
+		Extractor:      Extractors["wet"],
+	}); err != nil {
+		t.Fatalf("RunMarkdownExport: %v", err)
+	}
+
+	var card string
+	for _, f := range hub.lines("file") {
+		if f["path"] != "README.md" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(f["content"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		card = string(raw)
+	}
+	if card == "" {
+		t.Fatalf("no README.md in the commit, lines = %v", hub.lines("file"))
+	}
+	if strings.Contains(card, "open-index/open-markdown") {
+		t.Errorf("card pushed to %s still names our dataset:\n%s", repo, card)
+	}
+	for _, want := range []string{
+		`load_dataset("` + repo + `"`,
+		`snapshot_download(
+    "` + repo + `"`,
+		`local_dir="./web-markdown/"`,
+		"https://huggingface.co/datasets/" + repo,
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("card is missing %q", want)
+		}
 	}
 }

@@ -447,6 +447,7 @@ func runCommitter(ctx context.Context, hf *HFClient, cfg MarkdownExportConfig, k
 			committedAfter := run.Committed + len(batch)
 			dstats := MarkdownDatasetStats{
 				CrawlID:         cfg.CrawlID,
+				Repo:            cfg.Repo,
 				CommittedShards: committedAfter,
 				TotalShards:     len(cfg.WARCPaths),
 				Rows:            run.Rows,

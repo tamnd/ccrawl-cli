@@ -286,3 +286,43 @@ func TestREADMENamesTheEngine(t *testing.T) {
 		t.Fatal("card does not mention the language filter")
 	}
 }
+
+// TestREADMENamesTheRepoItIsCommittedTo covers both done-whens of #88. The card
+// generator hardcoded open-index/open-markdown-v2 in eight places while export
+// published to v3, so the card committed into the v3 repo told every reader to
+// download v2, and a run publishing to somebody else's dataset advertised ours.
+func TestREADMENamesTheRepoItIsCommittedTo(t *testing.T) {
+	card := GenerateMarkdownREADME(MarkdownDatasetStats{
+		CrawlID: "CC-MAIN-2026-30", Repo: "acme/web-markdown",
+		CommittedShards: 1, TotalShards: 1, Rows: 100,
+	})
+	for _, want := range []string{
+		`load_dataset("acme/web-markdown", name="CC-MAIN-2026-30"`,
+		`    "acme/web-markdown",` + "\n" + `    data_files=`,
+		`    "acme/web-markdown",` + "\n" + `    repo_type="dataset",`,
+		`local_dir="./web-markdown/"`,
+		`hf://datasets/acme/web-markdown/data/crawl=CC-MAIN-2026-30/**/*.parquet`,
+		`[https://huggingface.co/datasets/acme/web-markdown](https://huggingface.co/datasets/acme/web-markdown)`,
+		`https://huggingface.co/datasets/acme/web-markdown/discussions`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("card does not contain:\n%s", want)
+		}
+	}
+	// Nothing on the page may still point at another dataset.
+	if strings.Contains(card, "open-index/open-markdown") {
+		t.Error("the card still names a repo the run is not publishing to")
+	}
+
+	// A card rendered with no repo set falls back to what export publishes to,
+	// so the two cannot say different things.
+	fallback := GenerateMarkdownREADME(MarkdownDatasetStats{
+		CrawlID: "CC-MAIN-2026-30", CommittedShards: 1, TotalShards: 1, Rows: 100,
+	})
+	if !strings.Contains(fallback, `load_dataset("`+DefaultMarkdownRepo+`"`) {
+		t.Errorf("the fallback card does not name %s", DefaultMarkdownRepo)
+	}
+	if !strings.Contains(fallback, `local_dir="./open-markdown-v3/"`) {
+		t.Error("the fallback card writes into a directory named for another dataset")
+	}
+}
