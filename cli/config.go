@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
@@ -38,14 +39,14 @@ func runConfigShow(ctx context.Context, _ []string) error {
 		{"crawl", cfg.CrawlID, set.source("crawl")},
 		{"source", string(cfg.Source), set.source("source")},
 		{"data_dir", cfg.DataDir, set.source("data_dir")},
-		{"cache_dir", cfg.CacheDir, set.source("cache_dir")},
+		{"cache_dir", cfg.CacheDir, dirSource(cfg.CacheDir, filepath.Join(cfg.DataDir, "cache"), set.source("cache_dir"))},
 		{"config_dir", ccrawl.ConfigDir(), configDirSource()},
 		{"config_file", settingsFileWord(set), "derived from config_dir"},
 		{"profile", profileWord(set), profileSource(set)},
 		{"raw_dir", cfg.RawDir(), "derived from data_dir"},
 		{"parquet_dir", cfg.ParquetDir(), "derived from data_dir"},
 		{"library_dir", app.LibraryDir, librarySource(set)},
-		{"db_path", cfg.DBPath, set.source("db_path")},
+		{"db_path", cfg.DBPath, dirSource(cfg.DBPath, filepath.Join(cfg.DataDir, "ccrawl.duckdb"), set.source("db_path"))},
 		{"workers", itoa(cfg.Workers), set.source("workers")},
 		{"rate", cfg.Delay.String(), set.source("rate")},
 		{"global_rate", cfg.GlobalRate.String(), set.source("global_rate")},
@@ -67,6 +68,18 @@ func runConfigShow(ctx context.Context, _ []string) error {
 		}
 	}
 	return app.Out.Flush()
+}
+
+// dirSource names where a path that can either be set or be derived came from.
+// The cache dir and the DuckDB file both follow the data dir when nobody named
+// them, so reporting "default" for a path that moved because --data-dir moved
+// tells the reader the opposite of what happened, and this column exists to end
+// that kind of question rather than start one.
+func dirSource(got, derived, named string) string {
+	if named == "default" && got == derived {
+		return "derived from data_dir"
+	}
+	return named
 }
 
 // settingsFileWord is the config file, or a note that there is none, which is
