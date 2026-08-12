@@ -129,9 +129,13 @@ func TestContentExtractAndLang(t *testing.T) {
 }
 
 // A bad URL still ends a single-URL run, which is the one case where there is
-// nothing else the command could be doing.
+// nothing else the command could be doing. A host that will not answer is a
+// transport failure like any other and exits 8, so a supervisor can back off
+// and try the same fetch later. A URL that does not parse is the command being
+// wrong and stays at 1.
 func TestContentQualityDeadURLAlone(t *testing.T) {
-	run(t, "content", "quality", deadURL(t), "-o", "jsonl").wantCode(t, 1)
+	run(t, "content", "quality", deadURL(t), "-o", "jsonl").wantCode(t, 8)
+	run(t, "content", "quality", "http://[::1", "-o", "jsonl").wantCode(t, 1)
 }
 
 // A JSON line that is not a URL is a bad input rather than a page that failed,
