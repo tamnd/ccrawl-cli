@@ -16,20 +16,28 @@ import (
 )
 
 // Record is metadata extracted by Common Crawl from a single page.
+//
+// The tags are the names the parquet schema uses, so the JSON a command writes
+// and the columns a dataset holds are one set of names rather than two. The
+// last three say where the page itself is, and they carry the columnar index
+// names, which are the names ccrawl fetch reads a location by, so nothing has
+// to be renamed between the two commands. Common Crawl writes the WARC file's
+// base name in a WAT record rather than its path under crawl-data, so the
+// prefix is still the caller's to supply.
 type Record struct {
-	RecordID    string
-	CrawlID     string
-	URL         string
-	Date        time.Time
-	HTTPStatus  int
-	ContentType string
-	Title       string
-	Links       []Link
-	LinksCount  int
-	Metas       []Meta
-	WARCFile    string
-	WARCOffset  int64
-	WARCLength  int64
+	RecordID    string    `json:"record_id"`
+	CrawlID     string    `json:"crawl_id"`
+	URL         string    `json:"url"`
+	Date        time.Time `json:"date"`
+	HTTPStatus  int       `json:"http_status"`
+	ContentType string    `json:"content_type"`
+	Title       string    `json:"title"`
+	Links       []Link    `json:"links"`
+	LinksCount  int       `json:"links_count"`
+	Metas       []Meta    `json:"metas"`
+	WARCFile    string    `json:"warc_filename"`
+	WARCOffset  int64     `json:"warc_record_offset"`
+	WARCLength  int64     `json:"warc_record_length"`
 }
 
 // Link is a hyperlink extracted from page HTML.

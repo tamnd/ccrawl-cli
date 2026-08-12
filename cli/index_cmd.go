@@ -44,22 +44,27 @@ type IndexBuildResult struct {
 }
 
 // indexDoc is one line of an --input file: a JSON object with a URL and some
-// text. The two language fields are both here because a file written by hand
-// tends to say "language" while `ccrawl parse wet -o jsonl` writes the Go field
-// name, and encoding/json only folds case, it does not fold underscores.
+// text. There are three spellings of the language because a file written by
+// hand tends to say "language", `ccrawl parse wet -o jsonl` says
+// "content_language" for the same reason the parquet column does, and a file
+// written by a ccrawl before v0.10.1 says "ContentLanguage". encoding/json
+// folds case but not underscores, so each spelling needs its own field.
 type indexDoc struct {
 	URL             string `json:"url"`
 	Title           string `json:"title"`
 	Text            string `json:"text"`
 	Language        string `json:"language"`
-	ContentLanguage string `json:"ContentLanguage"`
+	ContentLanguage string `json:"content_language"`
+	OldLanguage     string `json:"ContentLanguage"`
 }
 
 func (d indexDoc) lang() string {
-	if d.Language != "" {
-		return d.Language
+	for _, s := range []string{d.Language, d.ContentLanguage, d.OldLanguage} {
+		if s != "" {
+			return s
+		}
 	}
-	return d.ContentLanguage
+	return ""
 }
 
 // snippet is the first 500 runes of a document, which is what the forward index

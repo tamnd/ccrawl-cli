@@ -34,13 +34,22 @@ func watRow(r ccrawl.WATRecord) Row {
 func warcRow(r ccrawl.WARCRecord) Row {
 	h := r.Header
 	return Row{
-		Cols: []string{"type", "url", "status", "mime", "length", "date"},
-		Vals: []string{h.Type, h.TargetURI, strconv.Itoa(h.HTTPStatus), h.HTTPMIME, strconv.FormatInt(h.ContentLength, 10), h.Date.Format("2006-01-02T15:04:05Z")},
-		Value: map[string]any{
-			"type": h.Type, "url": h.TargetURI, "status": h.HTTPStatus,
-			"mime": h.HTTPMIME, "date": h.Date, "record_id": h.RecordID,
-			"payload_digest": h.PayloadDigest, "content_length": h.ContentLength,
-		},
+		Cols:  []string{"type", "url", "status", "mime", "length", "date"},
+		Vals:  []string{h.Type, h.TargetURI, strconv.Itoa(h.HTTPStatus), h.HTTPMIME, strconv.FormatInt(h.ContentLength, 10), h.Date.Format("2006-01-02T15:04:05Z")},
+		Value: warcJSON(r),
+	}
+}
+
+// warcJSON is a WARC record as a JSON object. A WARC header has more fields
+// than anyone wants in a line of JSONL, so unlike the WAT and WET records this
+// one is picked by hand, and it is picked in one place so that parse and
+// convert write the same object.
+func warcJSON(r ccrawl.WARCRecord) map[string]any {
+	h := r.Header
+	return map[string]any{
+		"type": h.Type, "url": h.TargetURI, "status": h.HTTPStatus,
+		"mime": h.HTTPMIME, "date": h.Date, "record_id": h.RecordID,
+		"payload_digest": h.PayloadDigest, "content_length": h.ContentLength,
 	}
 }
 
