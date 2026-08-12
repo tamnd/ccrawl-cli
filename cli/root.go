@@ -132,7 +132,7 @@ func (b *builder) globals(f *kit.FlagSet) {
 // client is the factory kit calls once per run to build the shared engine from
 // the resolved config and the ccrawl globals.
 func (b *builder) client(_ context.Context, c kit.Config) (any, error) {
-	app := buildApp(c, b.dom, b.def)
+	app := buildApp(c, b.dom, b.def, b.set)
 	app.Settings = b.set
 	return app, nil
 }

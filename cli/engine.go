@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/tamnd/any-cli/kit"
@@ -69,10 +70,10 @@ type domainGlobals struct {
 // base is the ccrawl defaults with the config file already folded in, so the
 // settings that have no flag of their own (the backoff pair, the DuckDB path)
 // survive into the run.
-func buildApp(kc kit.Config, dom *domainGlobals, base ccrawl.Config) *App {
+func buildApp(kc kit.Config, dom *domainGlobals, base ccrawl.Config, set *settings) *App {
 	cfg := base
 	cfg.DataDir = kc.DataDir
-	cfg.CacheDir = kc.CacheDir
+	cfg.CacheDir = cacheDirFor(kc, base, set)
 	// The DuckDB file follows the data dir unless the config file put it
 	// somewhere else, since a moved data dir with the database left behind in the
 	// old one is nobody's intent.
@@ -113,6 +114,28 @@ func buildApp(kc kit.Config, dom *domainGlobals, base ccrawl.Config) *App {
 		JournalPath: dom.journal,
 		MetricsAddr: dom.metricsAddr,
 	}
+}
+
+// cacheDirFor resolves where the cache lives once --data-dir has had its say.
+// The reference has always said the cache dir follows the data dir when it is
+// not named itself, and the config file honoured that, but --data-dir did not:
+// kit computes its default cache dir from its default data dir before any flag
+// is parsed, so moving the data dir with a flag left the cache behind in the old
+// tree. That is how a run pointed at an empty directory came back with cached
+// answers.
+//
+// Naming the cache dir is what stops it following, and set is what knows
+// whether it was named: the same lookup the config file path uses, so a cache
+// dir pinned by CCRAWL_CACHE_DIR or by a cache_dir line stays pinned whichever
+// way the data dir moved.
+func cacheDirFor(kc kit.Config, base ccrawl.Config, set *settings) string {
+	if _, _, named := set.value("cache_dir"); named {
+		return kc.CacheDir
+	}
+	if kc.DataDir == base.DataDir {
+		return kc.CacheDir
+	}
+	return filepath.Join(kc.DataDir, "cache")
 }
 
 // StartRun wires up everything a long running command reports through: the

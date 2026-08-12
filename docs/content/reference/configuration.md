@@ -18,15 +18,17 @@ ccrawl config show
 
 ```
 data_dir     ~/data/ccrawl                 default
-cache_dir    ~/data/ccrawl/cache           default
+cache_dir    ~/data/ccrawl/cache           derived from data_dir
 raw_dir      ~/data/ccrawl/raw             derived from data_dir
 parquet_dir  ~/data/ccrawl/parquet         derived from data_dir
-db_path      ~/data/ccrawl/ccrawl.duckdb   default
+db_path      ~/data/ccrawl/ccrawl.duckdb   derived from data_dir
 ```
 
 The third column is where the value came from, which is the answer to nearly every question about why a run did something unexpected.
 
 Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with `--data-dir`.
+Every path in that list moves with it, the cache and the DuckDB file included, so a run aimed at a fresh tree reads and writes only that tree.
+Naming one of them outright, with `cache_dir` or `db_path` in the config file or with the matching environment variable, pins it where you put it and `config show` says so in the source column.
 
 ## The config file
 

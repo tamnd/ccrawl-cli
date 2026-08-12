@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
@@ -191,6 +192,65 @@ func TestMovingTheDataDirMovesTheCache(t *testing.T) {
 	if cfg.CacheDir != other {
 		t.Errorf("CacheDir = %q, want %q", cfg.CacheDir, other)
 	}
+}
+
+// The config file was not the only way to move the data dir, and --data-dir did
+// not move the cache with it: kit works out its default cache dir from its
+// default data dir before a flag is parsed, so a run pointed at a fresh tree
+// went on reading the old tree's cache. The way that showed up was a command
+// aimed at an empty directory answering out of a cache it was not supposed to be
+// able to see.
+//
+// Like the one above it, this is below the command line: the harness exports
+// CCRAWL_CACHE_DIR for every run so tests cannot read each other's caches, and
+// a cache dir somebody named is exactly the case where nothing should move.
+//
+// base is what the defaults resolved to before any flag was parsed, and kc is
+// what kit hands the client factory, which is where the bug lived: kc.CacheDir
+// is worked out from kc's own default data dir and so does not know --data-dir
+// happened.
+func TestTheDataDirFlagMovesTheCache(t *testing.T) {
+	t.Setenv("CCRAWL_CACHE_DIR", "")
+	withConfig(t, "[default]\nworkers = 3\n")
+	set := loadSettings([]string{"ccrawl"})
+	base := ccrawl.Config{DataDir: "/data", CacheDir: "/data/cache"}
+
+	if got := cacheDirFor(kit.Config{DataDir: "/moved", CacheDir: base.CacheDir}, base, set); got != "/moved/cache" {
+		t.Errorf("cache dir = %q, want /moved/cache, the cache stayed behind in the old tree", got)
+	}
+	// No flag, nothing to follow.
+	if got := cacheDirFor(kit.Config{DataDir: base.DataDir, CacheDir: base.CacheDir}, base, set); got != "/data/cache" {
+		t.Errorf("cache dir = %q, want /data/cache", got)
+	}
+
+	// A cache dir the file names is one somebody put there on purpose, and the
+	// flag leaves it alone.
+	withConfig(t, "[default]\ncache_dir = \"/somewhere/else\"\n")
+	set = loadSettings([]string{"ccrawl"})
+	pinned := ccrawl.Config{DataDir: "/data", CacheDir: "/somewhere/else"}
+	if got := cacheDirFor(kit.Config{DataDir: "/moved", CacheDir: pinned.CacheDir}, pinned, set); got != "/somewhere/else" {
+		t.Errorf("cache dir = %q, want the named /somewhere/else, --data-dir moved a cache it was told about", got)
+	}
+
+	// The same when the environment is what named it.
+	t.Setenv("CCRAWL_CACHE_DIR", "/env/cache")
+	set = loadSettings([]string{"ccrawl"})
+	fromEnv := ccrawl.Config{DataDir: "/data", CacheDir: "/env/cache"}
+	if got := cacheDirFor(kit.Config{DataDir: "/moved", CacheDir: fromEnv.CacheDir}, fromEnv, set); got != "/env/cache" {
+		t.Errorf("cache dir = %q, want the named /env/cache", got)
+	}
+}
+
+// config show is where somebody looks when a path is not where they expected,
+// so a path that moved because the data dir moved has to say that rather than
+// "default", which reads as "nothing touched this".
+func TestConfigShowSaysWhichPathsFollowTheDataDir(t *testing.T) {
+	dir := t.TempDir()
+	r := runNoServer(t, "config", "show", "--data-dir", dir).wantCode(t, 0)
+	r.wantOut(t,
+		shown("data_dir", dir, "flag --data-dir"),
+		shown("db_path", filepath.Join(dir, "ccrawl.duckdb"), "derived from data_dir"),
+	)
 }
 
 // A value that is the right key and the wrong type falls back rather than
