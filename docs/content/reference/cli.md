@@ -701,7 +701,8 @@ Recrawl engine commands for seeding and fetching live URLs.
 ### crawl seed
 
 Streams the rank table and emits one seed URL per host.
-Use `--max-tier` to restrict to high-priority hosts (tier 1 = top 100 K by harmonic rank, tier 5 = all).
+Use `--max-tier` to restrict to high-priority hosts: tier 2 is roughly the top million by harmonic rank, tier 5 is everything.
+Tier 1 wants a change rate above 0.8 and a seed carries no measured change rate, so `--max-tier 1` is refused rather than answered with nothing.
 
 ```sh
 ccrawl crawl seed -n 100 -o table
@@ -713,7 +714,7 @@ ccrawl crawl seed --graph cc-main-2026-mar-apr-may --max-tier 3 -n 5000000
 |---|---|
 | `--graph` | Web-graph release ID (default: latest) |
 | `--max-seeds` | Maximum hosts to emit (default 10 000 000) |
-| `--max-tier` | Skip hosts with tier higher than this (1-5, default 5 = all) |
+| `--max-tier` | Skip hosts with tier higher than this (2-5, default 5 = all; 1 is unreachable from a seed) |
 
 ### crawl fetch
 
