@@ -193,8 +193,6 @@ func (c *exportCmd) exportQuery(ctx context.Context, app *App, exp *ccrawl.WARCE
 			}
 			return nil
 		})
-		// CDXStream wraps whatever the callback returned with the page it came
-		// from, so the sentinel has to be unwrapped rather than compared.
 		if err != nil && !errors.Is(err, errStopExport) {
 			return err
 		}
