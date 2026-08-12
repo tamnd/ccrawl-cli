@@ -12,7 +12,7 @@
 # Not every package is listed. cmd/ccrawl is a main with three lines in it, and
 # internal/fakecc is test fixture; a floor on either would measure nothing.
 github.com/tamnd/ccrawl-cli/ccrawl	65
-github.com/tamnd/ccrawl-cli/cli	50
+github.com/tamnd/ccrawl-cli/cli	52
 github.com/tamnd/ccrawl-cli/pkg/warc	74
 github.com/tamnd/ccrawl-cli/pkg/wat	84
 github.com/tamnd/ccrawl-cli/pkg/wet	99

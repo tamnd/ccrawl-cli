@@ -261,10 +261,10 @@ Unlike `extract`, these commands use the v2 crawler config (10 MB body limit, br
 
 | Subcommand | Does |
 |---|---|
-| `content extract <url>` | Clean text, title, description, canonical URL, language, word count |
-| `content outlinks <url>` | Structured outbound links with anchor text |
-| `content quality <url>` | Quality signals: word count, spam score, parked detection, short-content flag |
-| `content lang <url>` | The language the markdown pipelines would detect, with the confidence and the text it judged |
+| `content extract <url\|->` | Clean text, title, description, canonical URL, language, word count |
+| `content outlinks <url\|->` | Outbound links as `(source, url, host)` rows, without anchor text |
+| `content quality <url\|->` | Quality signals: word count, title length, main-content flag, spam score, parked detection |
+| `content lang <url\|->` | The language the markdown pipelines would detect, with the confidence and the text it judged |
 
 ```sh
 ccrawl content extract https://golang.org/
@@ -272,6 +272,15 @@ ccrawl content quality https://example.com/ -o json
 ccrawl content outlinks https://news.ycombinator.com/ -n 20
 ccrawl content lang https://vnexpress.net/ -o json
 ```
+
+All four take `-` in place of the URL and read a list from stdin, one URL per line or JSONL with a `url` field, which is what `search`, `columnar` and `crawl fetch` produce:
+
+```sh
+ccrawl content quality - -o jsonl < seeds.txt
+ccrawl search 'example.com/*' -n 100 -o jsonl | ccrawl content quality - -o jsonl
+```
+
+Over a stream a URL that cannot be fetched is named on stderr and the rest of the list carries on. A run that scored nothing because every URL failed exits 1, and empty stdin exits 3. [Content signals](/guides/content-signals/) has the field tables and the pipelines.
 
 ### content lang
 
