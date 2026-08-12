@@ -47,6 +47,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go tool cover -func=coverage.out | tail -1
 
+      # The floors are checked on one platform only. Coverage is the same code on
+      # both, and running it twice would only add a way for the two to disagree.
+      - name: coverage floors
+        if: matrix.os == 'ubuntu-latest'
+        run: COVERAGE_OUT=coverage.out ./scripts/coverage.sh
+
   # golangci-lint bundles staticcheck, govet, ineffassign, errcheck, unused and
   # more, so it is the main quality gate.
   lint:

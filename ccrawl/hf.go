@@ -96,7 +96,7 @@ func (c *HFClient) CreateDatasetRepo(ctx context.Context, repoID string, private
 	body, _ := json.Marshal(map[string]interface{}{
 		"type": "dataset", "name": parts[1], "organization": parts[0], "private": private,
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", "https://huggingface.co/api/repos/create", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST", hfEndpoint+"/api/repos/create", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
@@ -127,11 +127,11 @@ type pathInfoEntry struct {
 // everything the resume should have skipped.
 func (c *HFClient) pathsInfoBatch(ctx context.Context, repoID string, paths []string) ([]pathInfoEntry, error) {
 	body, _ := json.Marshal(map[string]any{"paths": paths})
-	url := fmt.Sprintf("https://huggingface.co/api/datasets/%s/paths-info/main", repoID)
+	url := fmt.Sprintf("%s/api/datasets/%s/paths-info/main", hfEndpoint, repoID)
 	var lastErr error
 	for attempt := range 5 {
 		if attempt > 0 {
-			backoff := time.Duration(attempt*attempt) * 5 * time.Second
+			backoff := time.Duration(attempt*attempt) * hfRetryBase
 			var rl *RateLimitError
 			if errors.As(lastErr, &rl) && rl.RetryAfter > backoff {
 				backoff = rl.RetryAfter

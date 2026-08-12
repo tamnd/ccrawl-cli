@@ -45,9 +45,9 @@ func (f *fakeCDX) start(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	old := cdxBase
-	cdxBase = srv.URL + "/"
-	t.Cleanup(func() { cdxBase = old })
+	old := Endpoints.CDX
+	Endpoints.CDX = srv.URL + "/"
+	t.Cleanup(func() { Endpoints.CDX = old })
 }
 
 // cdxLines builds n record lines whose URLs carry the page and index, so a test

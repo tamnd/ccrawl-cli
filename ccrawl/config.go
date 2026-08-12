@@ -21,6 +21,19 @@ const (
 	UserAgent = "ccrawl/1.0 (+https://github.com/tamnd/ccrawl-cli)"
 )
 
+// Hosts is the set of endpoints a run talks to.
+type Hosts struct {
+	CollInfo string // the crawl list
+	Data     string // the data plane: path manifests, WARC files, the columnar index
+	CDX      string // the CDX index server, one collection per crawl
+}
+
+// Endpoints is where every request goes. It holds the real Common Crawl hosts
+// and is a variable rather than a set of constants so a test can stand the whole
+// program up against a local server, which is what internal/fakecc does.
+// Nothing in a real run reassigns it.
+var Endpoints = Hosts{CollInfo: CollInfoURL, Data: DataBaseURL, CDX: CDXBaseURL}
+
 // Defaults for the client and downloader.
 const (
 	DefaultTimeout = 120 * time.Second

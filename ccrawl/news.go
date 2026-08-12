@@ -38,7 +38,7 @@ func ListNewsFiles(ctx context.Context, h *HTTPClient, year, month int) ([]NewsF
 }
 
 func listAllNewsFiles(ctx context.Context, h *HTTPClient) ([]NewsFile, error) {
-	data, err := h.FetchBytes(ctx, DataBaseURL+"crawl-data/CC-NEWS/index.html")
+	data, err := h.FetchBytes(ctx, Endpoints.Data+"crawl-data/CC-NEWS/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("fetch CC-NEWS index: %w", err)
 	}
@@ -61,7 +61,7 @@ func listAllNewsFiles(ctx context.Context, h *HTTPClient) ([]NewsFile, error) {
 }
 
 func fetchNewsPaths(ctx context.Context, h *HTTPClient, monthPath string) ([]NewsFile, error) {
-	url := fmt.Sprintf("%scrawl-data/CC-NEWS/%s/warc.paths.gz", DataBaseURL, monthPath)
+	url := fmt.Sprintf("%scrawl-data/CC-NEWS/%s/warc.paths.gz", Endpoints.Data, monthPath)
 	resp, err := h.Get(ctx, url)
 	if err != nil {
 		return nil, err
