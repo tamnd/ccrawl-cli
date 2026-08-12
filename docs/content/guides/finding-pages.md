@@ -84,6 +84,24 @@ ccrawl search example.com --template '{{.URL}} {{.Status}}'
 
 `--limit` (or `-n`) caps the number of results; `0` means unlimited.
 
+## Long queries and the pages that go missing
+
+A query over a domain and every crawl is thousands of index pages and takes as long as it takes.
+Two things go wrong at that length, and both used to end the run.
+
+A page can arrive truncated: the request succeeded, the status was 200, and the connection died half way through the records.
+ccrawl reads that page again rather than keeping what arrived, which is what makes two runs of the same query return the same number of records.
+
+A page can also fail every attempt. That one is named on stderr with its crawl and page number, the run carries on, and a summary line at the end says the result is incomplete:
+
+```
+search: CC-MAIN-2026-30: CDX page 252: HTTP 503, skipping the page
+search: the result is incomplete, 1 index page could not be read; run it again or pass --strict to fail instead
+```
+
+An hour of pages that did arrive is worth more than an error message, which is why that is the default.
+When a partial answer is worse than none, `--strict` fails the run on the first page it cannot read.
+
 ## From a match to the bytes
 
 The point of finding a capture is usually to read it.

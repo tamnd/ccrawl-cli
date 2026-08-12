@@ -30,6 +30,7 @@ type exportCmd struct {
 	mime   string
 	lang   string
 	filter []string
+	strict bool
 
 	// sp reports the run. An export can write millions of records, so it counts
 	// them with Add rather than an event each, and only the ticks land in the
@@ -81,6 +82,7 @@ func (c *exportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&c.mime, "mime", "", "detected MIME filter")
 	f.StringVar(&c.lang, "lang", "", "language filter (ISO-639-3)")
 	f.StringSliceVar(&c.filter, "filter", nil, "raw CDX filter field:regex (repeatable)")
+	f.BoolVar(&c.strict, "strict", false, "fail the run if an index page cannot be read, rather than skipping it")
 }
 
 func (c *exportCmd) info() ccrawl.WARCInfo {
@@ -174,11 +176,14 @@ func (c *exportCmd) exportQuery(ctx context.Context, app *App, exp *ccrawl.WARCE
 	if err != nil {
 		return err
 	}
+	lost := &pageLosses{cmd: "export", strict: c.strict}
+	defer lost.report()
 	q := ccrawl.CDXQuery{
 		URL: pattern, Match: c.match,
 		From: c.from, To: c.to,
 		Status: c.status, MIME: c.mime, Lang: c.lang,
-		Filter: c.filter,
+		Filter:      c.filter,
+		OnPageError: lost.handler(),
 	}
 	for _, id := range crawls {
 		stop := false
