@@ -31,8 +31,8 @@ func registerIndex(app *kit.App) {
 type indexBuildIn struct {
 	App   *App   `kit:"inject"`
 	Dir   string `kit:"flag" help:"directory to write the index into"`
-	Input string `kit:"flag" help:"JSONL file of documents to index, or - for stdin"`
-	URLs  string `kit:"flag,name=urls" help:"comma-separated page URLs to fetch and index"`
+	Input string `kit:"flag" help:"file of JSONL documents to index, or - for stdin"`
+	URLs  string `kit:"flag,name=urls" help:"page URLs to fetch and index, comma separated"`
 }
 
 // IndexBuildResult reports the outcome of building an index.

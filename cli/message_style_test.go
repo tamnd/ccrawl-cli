@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -108,6 +109,113 @@ func TestErrorMessagesSurviveTheRenderer(t *testing.T) {
 	t.Logf("checked %d error messages", checked)
 }
 
+// flagCtors are the flag registrations whose last string argument is the line
+// of help the user reads. pflag puts the usage string last in every one of
+// them, whatever else the signature takes.
+var flagCtors = map[string]bool{
+	"StringVar": true, "StringVarP": true, "BoolVar": true, "BoolVarP": true,
+	"IntVar": true, "IntVarP": true, "Int64Var": true, "Int64VarP": true,
+	"Float64Var": true, "Float64VarP": true, "DurationVar": true, "DurationVarP": true,
+	"StringSliceVar": true, "StringSliceVarP": true, "IntSliceVar": true, "IntSliceVarP": true,
+	"UintVar": true, "UintVarP": true,
+}
+
+// TestFlagHelpSurvivesTheRenderer is the same rule as above for the other place
+// the renderer title-cases a first word: the help line beside a flag. It runs
+// over both ways ccrawl declares one, the pflag call and the kit struct tag.
+//
+// This one is worse than an error message, because a help line is where the
+// user looks up what to type. "Auto|Duckdb|Native|Print" is a list of four
+// values none of which the flag accepts.
+//
+// It only reaches the flags declared here. Two of the framework globals are
+// damaged the same way and have to be fixed in any-cli: --fields prints
+// "Comma-Separated columns to show" and --timeout prints "Per-Request
+// timeout".
+func TestFlagHelpSurvivesTheRenderer(t *testing.T) {
+	fset := token.NewFileSet()
+	var checked int
+
+	check := func(help string, pos token.Position, what string) {
+		first, _, _ := strings.Cut(help, " ")
+		if first == "" || strings.Contains(first, "%") {
+			return
+		}
+		checked++
+		if got := titleFirstWord(help); got != capFirst(help) {
+			t.Errorf("%s: %s %q renders as %q", pos, what, help, got)
+		}
+		// A line that opens with a column name loses nothing to title-casing,
+		// because an underscore is not a word boundary, but it still gets its
+		// first letter capitalized, and a column name with a capital on it is
+		// not the column name. The columnar filters all used to open this way.
+		if strings.Contains(first, "_") {
+			t.Errorf("%s: %s %q opens with the identifier %q, which prints as %q", pos, what, help, first, capFirst(first))
+		}
+	}
+
+	for _, dir := range []string{".", "../ccrawl"} {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range files {
+			if strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.CallExpr:
+					sel, ok := node.Fun.(*ast.SelectorExpr)
+					if !ok || !flagCtors[sel.Sel.Name] {
+						return true
+					}
+					if help, pos, ok := lastStringLit(node, fset); ok {
+						check(help, pos, sel.Sel.Name)
+					}
+				case *ast.Field:
+					if node.Tag == nil {
+						return true
+					}
+					tag, err := strconv.Unquote(node.Tag.Value)
+					if err != nil {
+						return true
+					}
+					if help := reflect.StructTag(tag).Get("help"); help != "" {
+						check(help, fset.Position(node.Tag.Pos()), "help tag")
+					}
+				}
+				return true
+			})
+		}
+	}
+	if checked < 200 {
+		t.Fatalf("only %d help lines checked, the walk is not finding them", checked)
+	}
+	t.Logf("checked %d flag help lines", checked)
+}
+
+// lastStringLit returns the last plain string literal argument of a call, which
+// for a flag registration is the usage line.
+func lastStringLit(call *ast.CallExpr, fset *token.FileSet) (string, token.Position, bool) {
+	for i := len(call.Args) - 1; i >= 0; i-- {
+		lit, ok := call.Args[i].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			continue
+		}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return "", token.Position{}, false
+		}
+		return s, fset.Position(lit.Pos()), true
+	}
+	return "", token.Position{}, false
+}
+
 // firstStringLit returns the first plain string literal argument of a call.
 func firstStringLit(call *ast.CallExpr, fset *token.FileSet) (string, token.Position, bool) {
 	for _, arg := range call.Args {
@@ -134,15 +242,17 @@ func capFirst(s string) string {
 	return strings.ToUpper(string(r[0])) + string(r[1:])
 }
 
-// TestTitleFirstWordMatchesTheRenderer pins the two cases the rule exists for,
-// so a reader of the test above can see what it is protecting against without
-// going to read fang.
+// TestTitleFirstWordMatchesTheRenderer pins the cases the rule exists for, so a
+// reader of the tests above can see what it is protecting against without going
+// to read fang.
 func TestTitleFirstWordMatchesTheRenderer(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"--table is required", "--Table is required"},
 		{"--crawl-a and --crawl-b are required", "--Crawl-A and --crawl-b are required"},
 		{"CDX page 3 failed", "Cdx page 3 failed"},
 		{"point --table at a rank table", "Point --table at a rank table"},
+		{"auto|duckdb|native|print", "Auto|Duckdb|Native|Print"},
+		{"query engine: auto|duckdb|native|print", "Query engine: auto|duckdb|native|print"},
 	}
 	for _, c := range cases {
 		if got := titleFirstWord(c.in); got != c.want {

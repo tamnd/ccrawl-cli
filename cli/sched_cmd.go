@@ -18,7 +18,7 @@ func registerSched(app *kit.App) {
 
 type schedAssignIn struct {
 	App        *App    `kit:"inject"`
-	Graph      string  `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph      string  `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	ChangeRate float64 `kit:"flag,name=change-rate" help:"assume this change rate for all hosts (0–1, default 0.5)"`
 }
 

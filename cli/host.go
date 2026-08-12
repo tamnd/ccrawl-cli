@@ -24,7 +24,7 @@ func registerHost(app *kit.App) {
 
 type hostTopIn struct {
 	App   *App   `kit:"inject"`
-	Graph string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	TLD   string `kit:"flag,name=tld" help:"restrict to hosts under a TLD"`
 	Limit int    `kit:"flag,inherit" name:"limit"`
 }
@@ -71,7 +71,7 @@ Examples:
 type hostGetIn struct {
 	App   *App   `kit:"inject"`
 	Host  string `kit:"arg" help:"hostname (e.g. example.com or www.example.com)"`
-	Graph string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	CDX   bool   `kit:"flag,name=cdx" help:"enrich with CDX statistics (requires DuckDB)"`
 }
 
@@ -129,7 +129,7 @@ Examples:
 
 type hostVerticesIn struct {
 	App   *App   `kit:"inject"`
-	Graph string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 }
 
 func registerHostVertices(app *kit.App) {
@@ -164,7 +164,7 @@ type DegreeRecord struct {
 
 type hostDegreesIn struct {
 	App   *App   `kit:"inject"`
-	Graph string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 }
 
 func registerHostDegrees(app *kit.App) {
@@ -283,7 +283,7 @@ Examples:
 }
 
 func (e *hostEnrichCmd) flags(f *kit.FlagSet) {
-	f.StringVar(&e.graph, "graph", "", "web-graph release ID (default: latest)")
+	f.StringVar(&e.graph, "graph", "", "release ID of the web graph (default: latest)")
 	f.BoolVar(&e.degrees, "degrees", false, "compute in/out-degree from edge files (~35 GB)")
 	f.BoolVar(&e.cdx, "cdx", false, "aggregate CDX statistics via DuckDB (~184 GB)")
 }

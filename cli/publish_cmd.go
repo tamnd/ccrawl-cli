@@ -77,7 +77,7 @@ Pick the crawls with the global -c flag, or pass --graph for a web-graph release
 }
 
 func (v *publishVerifyCmd) flags(f *kit.FlagSet) {
-	f.StringVar(&v.repo, "repo", "", "HuggingFace dataset repo (org/name), defaults to the dataset the unit belongs to")
+	f.StringVar(&v.repo, "repo", "", "dataset repo on HuggingFace (org/name), defaults to the dataset the unit belongs to")
 	f.StringVar(&v.graph, "graph", "", "verify a web-graph release of the domains dataset instead of URL crawls")
 	f.IntVar(&v.sample, "sample", 0, "rows to decode from each shard's last row group (0 reads the footer alone)")
 	f.IntVar(&v.workers, "workers", 0, "shards checked at once (0 picks a default from CPU count)")
