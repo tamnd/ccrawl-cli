@@ -22,22 +22,29 @@ type HostRecord struct {
 	PageRankPos int64   `json:"pagerank_pos" table:"pagerank_pos"`
 	PageRankVal float64 `json:"pagerank_val" table:"pagerank_val"`
 
-	// Graph topology (from edge files)
-	InDegree  int64 `json:"in_degree" table:"in_degree"`
-	OutDegree int64 `json:"out_degree" table:"out_degree"`
+	// Graph topology (from edge files) and CDX statistics (from the columnar
+	// Parquet index). These are pointers because most of the commands that emit
+	// a HostRecord do not measure them, and a zero int64 cannot say so: a host
+	// with no inbound links and a host nobody counted the links of would both
+	// read in_degree 0. Nil is left out of the JSON and leaves the cell blank in
+	// a table, so a genuine zero still means zero.
+	InDegree  *int64 `json:"in_degree,omitempty" table:"in_degree"`
+	OutDegree *int64 `json:"out_degree,omitempty" table:"out_degree"`
 
-	// CDX statistics (from columnar Parquet index)
-	URLCount   int64  `json:"url_count" table:"url_count"`
-	Status2xx  int64  `json:"status_2xx" table:"status_2xx"`
-	Status3xx  int64  `json:"status_3xx" table:"status_3xx"`
-	Status4xx  int64  `json:"status_4xx" table:"status_4xx"`
-	Status5xx  int64  `json:"status_5xx" table:"status_5xx"`
+	URLCount   *int64 `json:"url_count,omitempty" table:"url_count"`
+	Status2xx  *int64 `json:"status_2xx,omitempty" table:"status_2xx"`
+	Status3xx  *int64 `json:"status_3xx,omitempty" table:"status_3xx"`
+	Status4xx  *int64 `json:"status_4xx,omitempty" table:"status_4xx"`
+	Status5xx  *int64 `json:"status_5xx,omitempty" table:"status_5xx"`
 	TopMIME    string `json:"top_mime,omitempty" table:"top_mime"`
 	Language   string `json:"language,omitempty" table:"language"`
 	FirstSeen  string `json:"first_seen,omitempty" table:"first_seen"`
 	LastSeen   string `json:"last_seen,omitempty" table:"last_seen"`
-	TotalBytes int64  `json:"total_bytes" table:"total_bytes"`
+	TotalBytes *int64 `json:"total_bytes,omitempty" table:"total_bytes"`
 }
+
+// Counted wraps a number somebody actually measured, so it survives being zero.
+func Counted(n int64) *int64 { return &n }
 
 // HostFromRank builds a minimal HostRecord from a Rank entry.
 func HostFromRank(r Rank) HostRecord {
