@@ -56,7 +56,12 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `crawls list` | List the monthly crawls, newest first |
 | `crawls latest` | Print the newest crawl ID |
 | `crawls resolve <ref>` | Resolve a year or `latest` to a crawl ID |
-| `crawls info <id>` | File counts per archive kind for a crawl |
+| `crawls info [id]` | File counts per archive kind for a crawl |
+
+`crawls info` and `stats` are the same command under two names, so they count the same kinds and answer with the same rows: `crawl`, `kind`, `files`.
+Both take `--kinds` to narrow the list, and both honour `-o`, so `crawls info -o csv` writes CSV the way every other read command does.
+The one difference is how you name the crawl: `crawls info` takes it as a positional argument, `stats` reads `-c`, and either one falls back to the configured crawl when you leave it out.
+A kind whose manifest could not be fetched comes back with `files` of `-1` rather than being dropped, so a row is never silently missing.
 
 ---
 

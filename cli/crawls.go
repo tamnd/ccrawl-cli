@@ -24,12 +24,6 @@ func crawlsEscapeHatches() []kit.Command {
 			Args:  kit.ExactArgs(1),
 			Run:   runCrawlsResolve,
 		},
-		{
-			Use:   "info <id>",
-			Short: "Show details for a crawl (file counts per format)",
-			Args:  kit.MaximumNArgs(1),
-			Run:   runCrawlsInfo,
-		},
 	}
 }
 
@@ -53,27 +47,5 @@ func runCrawlsResolve(ctx context.Context, args []string) error {
 		return err
 	}
 	_, _ = fmt.Fprintln(cmdOut, id)
-	return nil
-}
-
-func runCrawlsInfo(ctx context.Context, args []string) error {
-	app := appFromCtx(ctx)
-	ref := app.Cfg.CrawlID
-	if len(args) == 1 {
-		ref = args[0]
-	}
-	id, err := ccrawl.ResolveCrawl(ctx, app.HTTP, app.Cache, ref)
-	if err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(cmdOut, "Crawl: %s\n", id)
-	for _, kind := range []string{"warc", "wat", "wet", "robotstxt", "cc-index-table"} {
-		paths, err := ccrawl.FetchPaths(ctx, app.HTTP, app.Cache, id, kind)
-		if err != nil {
-			_, _ = fmt.Fprintf(cmdOut, "  %-16s (unavailable)\n", kind)
-			continue
-		}
-		_, _ = fmt.Fprintf(cmdOut, "  %-16s %d files\n", kind, len(paths))
-	}
 	return nil
 }
