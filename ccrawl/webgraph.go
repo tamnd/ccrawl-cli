@@ -262,12 +262,12 @@ func vertexStreamPart(ctx context.Context, h *HTTPClient, url string, fn func(Ve
 
 // resolvePartURL turns a manifest path into a fetchable URL. If the path is
 // already an absolute HTTP/S URL (used in tests) it is returned as-is;
-// otherwise DataBaseURL is prepended.
+// otherwise the data host is prepended.
 func resolvePartURL(part string) string {
 	if strings.HasPrefix(part, "http://") || strings.HasPrefix(part, "https://") {
 		return part
 	}
-	return DataBaseURL + part
+	return Endpoints.Data + part
 }
 
 // EdgeDegrees holds the in-degree and out-degree for one node.

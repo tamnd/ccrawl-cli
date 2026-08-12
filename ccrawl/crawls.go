@@ -26,7 +26,7 @@ func ListCrawls(ctx context.Context, h *HTTPClient, cache *Cache) ([]Crawl, erro
 			}
 		}
 	}
-	data, err := h.FetchBytes(ctx, CollInfoURL)
+	data, err := h.FetchBytes(ctx, Endpoints.CollInfo)
 	if err != nil {
 		return nil, fmt.Errorf("fetch collinfo: %w", err)
 	}

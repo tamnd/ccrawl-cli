@@ -46,6 +46,11 @@ import (
 // whole conversation at an httptest server.
 var hfEndpoint = "https://huggingface.co"
 
+// hfRetryBase scales the wait between hub retries: the nth retry waits n squared
+// times this. Five seconds is the right first wait against the real hub, which a
+// test cannot afford to sit through, so it is a variable rather than a constant.
+var hfRetryBase = 5 * time.Second
+
 // Typed errors for the failure modes a caller needs to tell apart. A retry loop
 // should back off on ErrHFRateLimited, give up immediately on ErrHFAuth and
 // ErrHFQuota, and re-read the repo state on ErrHFConflict.

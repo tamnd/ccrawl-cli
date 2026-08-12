@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X github.com/tamnd/ccrawl-cli/cli.Commit=$(COMMIT) \
 	-X github.com/tamnd/ccrawl-cli/cli.Date=$(DATE)
 
-.PHONY: build install test vet lint fmt clean run docs-drift
+.PHONY: build install test vet lint fmt clean run docs-drift coverage
 
 build:
 	@mkdir -p $(dir $(BINARY))
@@ -31,6 +31,10 @@ fmt:
 # Fail if the reference docs and the binary have drifted apart.
 docs-drift: build
 	CCRAWL=./$(BINARY) ./scripts/docs-drift.sh
+
+# Run the tests with coverage and fail if a package slipped below its floor.
+coverage:
+	./scripts/coverage.sh
 
 clean:
 	rm -rf bin dist

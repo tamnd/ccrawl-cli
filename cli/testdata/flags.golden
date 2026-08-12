@@ -1,0 +1,180 @@
+ccrawl (global)
+	--color --crawl --data-dir --db --dry-run --fields --global-rate --help --journal --library --library-dir --limit --metrics-addr --no-cache --no-header --output --profile --progress --quiet --rate --retries --source --template --timeout --verbose --workers --yes
+ccrawl api
+	--addr --index-dir
+ccrawl cache
+	
+ccrawl cache clear
+	
+ccrawl cache dir
+	
+ccrawl cache info
+	
+ccrawl columnar
+	
+ccrawl columnar count
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar langs
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar locations
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar mimes
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar query
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar schema
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar sql
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl columnar urls
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --tld
+ccrawl config
+	
+ccrawl config show
+	
+ccrawl content
+	
+ccrawl content extract
+	
+ccrawl content lang
+	
+ccrawl content outlinks
+	
+ccrawl content quality
+	
+ccrawl convert
+	--markdown --out --to
+ccrawl crawl
+	
+ccrawl crawl fetch
+	--robots --warc-dir
+ccrawl crawl run
+	--delay --max-depth --max-pages --no-robots --out --prefix --robots --same-host --seeds --state --warc-size
+ccrawl crawl seed
+	--graph --max-seeds --max-tier
+ccrawl crawl status
+	
+ccrawl crawls
+	
+ccrawl crawls info
+	
+ccrawl crawls latest
+	
+ccrawl crawls list
+	
+ccrawl crawls resolve
+	
+ccrawl db
+	
+ccrawl db load
+	--domain --domains-file --engine --host --hosts-file --lang --mime --not-lang --not-mime --not-status --not-tld --path-prefix --print --status --subset --table --tld
+ccrawl db path
+	
+ccrawl db shell
+	
+ccrawl db sql
+	
+ccrawl dedup
+	--distance --json --top
+ccrawl domains
+	
+ccrawl domains diff
+	--added-out --from --repo --to
+ccrawl domains publish
+	--commit-every --graph --keep --max-stall --min-free-gb --no-push --private --repo --shard-rows
+ccrawl domains recount
+	--graph --no-push --repo
+ccrawl download
+	--flat --out --sample --segment
+ccrawl export
+	--creator --filter --from --lang --match --mime --operator --out-dir --prefix --size --status --subprefix --to --url-fgrep --url-fgrepv
+ccrawl extract
+	
+ccrawl extract links
+	--out
+ccrawl extract markdown
+	--out
+ccrawl extract text
+	--out
+ccrawl extract title
+	--out
+ccrawl fetch
+	--batch --body --dir --file --gap --headers --ledger --length --links --lookahead --markdown --max-span --meta --offset --order --out-dir --raw --text
+ccrawl get
+	--all --at --body --headers --links --markdown --meta --out --raw --text
+ccrawl host
+	
+ccrawl host cdx
+	--filter
+ccrawl host degrees
+	--graph
+ccrawl host enrich
+	--cdx --degrees --graph
+ccrawl host get
+	--cdx --graph
+ccrawl host top
+	--graph --tld
+ccrawl host vertices
+	--graph
+ccrawl index
+	
+ccrawl index build
+	--dir --input --urls
+ccrawl index search
+	--dir
+ccrawl markdown
+	
+ccrawl markdown export
+	--commit-batch --dedup-digest --extractor --gap --keep-parquet --lang --ledger --locations --max-span --min-free-gb --min-lang-confidence --out --parallel --part-size --push --repo --shards --skip-errors --source-kind
+ccrawl markdown refetch
+	--commit-batch --dedup-digest --extractor --fetch-only --fetch-workers --keep-parquet --lang --ledger --max-redirects --min-free-gb --min-lang-confidence --no-warc-cache --out --parallel --push --repo --shards --warc-cache-dir
+ccrawl mcp
+	
+ccrawl news
+	
+ccrawl news download
+	--month --out --year
+ccrawl news list
+	--month --year
+ccrawl news search
+	--month --year
+ccrawl parse
+	--format --lang --links --markdown --meta --mime --status --text --type --url
+ccrawl paths
+	--kinds --segment
+ccrawl publish
+	
+ccrawl publish delete-obsolete
+	
+ccrawl publish verify
+	--graph --json --no-push --repair --repo --sample
+ccrawl rank
+	
+ccrawl rank all
+	--table --tld
+ccrawl rank domain
+	--table
+ccrawl rank host
+	--table
+ccrawl rank top
+	--table --tld
+ccrawl sched
+	
+ccrawl sched assign
+	--change-rate --graph
+ccrawl sched diff
+	--crawl-a --crawl-b
+ccrawl search
+	--at --closest --dedup --estimate --filter --from --lang --latest-only --locations --match --max-buffer --mime --pages --sort --status --to --url-contains --url-not-contains
+ccrawl serve
+	--addr --allow-writes
+ccrawl stats
+	--kinds
+ccrawl urls
+	
+ccrawl urls publish
+	--commit-every --keep --max-stall --min-free-gb --no-push --private --repo --whole
+ccrawl urls recount
+	--no-push --repo
+ccrawl version
+	--short

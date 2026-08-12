@@ -21,28 +21,23 @@ func FileURL(path string, src Source) string {
 	if src == SourceS3 {
 		return S3BaseURL + path
 	}
-	return DataBaseURL + path
+	return Endpoints.Data + path
 }
 
 // HTTPSURL always returns the HTTPS mirror URL (used for control-plane fetches
 // like manifests and collinfo regardless of the bulk source).
 func HTTPSURL(path string) string {
-	return DataBaseURL + strings.TrimPrefix(path, "/")
+	return Endpoints.Data + strings.TrimPrefix(path, "/")
 }
-
-// cdxBase is the root of the CDX server. It is a variable rather than the
-// constant so a test can point the paging path at a local server; nothing in the
-// program reassigns it.
-var cdxBase = CDXBaseURL
 
 // cdxAPIURL is the CDX server endpoint for one crawl.
 func cdxAPIURL(crawlID string) string {
-	return cdxBase + crawlID + "-index"
+	return Endpoints.CDX + crawlID + "-index"
 }
 
 // pathsURL is the URL of a crawl's gzipped path manifest for a file kind.
 func pathsURL(crawlID, kind string) string {
-	return DataBaseURL + "crawl-data/" + crawlID + "/" + kind + ".paths.gz"
+	return Endpoints.Data + "crawl-data/" + crawlID + "/" + kind + ".paths.gz"
 }
 
 // ColumnarSource returns the parquet glob for one crawl's columnar index subset
@@ -50,7 +45,7 @@ func pathsURL(crawlID, kind string) string {
 func ColumnarSource(crawlID, subset string, src Source) string {
 	base := S3BaseURL
 	if src != SourceS3 {
-		base = DataBaseURL
+		base = Endpoints.Data
 	}
 	if subset == "" {
 		subset = "warc"
