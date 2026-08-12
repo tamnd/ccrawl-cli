@@ -9,6 +9,7 @@ What shipped in each release, newest first.
 Every tagged version builds the same set of artifacts: archives for Linux, macOS, Windows, and FreeBSD, Linux packages (deb, rpm, apk), a multi-arch container image on GHCR, and entries for the package managers.
 Binaries are pure Go, so there is nothing to install alongside them.
 
+- [v0.10.0](/release-notes/v0-10-0/)
 - [v0.9.0](/release-notes/v0-9-0/)
 - [v0.8.0](/release-notes/v0-8-0/)
 - [v0.7.0](/release-notes/v0-7-0/)
