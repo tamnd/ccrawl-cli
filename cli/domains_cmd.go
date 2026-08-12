@@ -81,7 +81,7 @@ func (v *domainsPublishCmd) flags(f *kit.FlagSet) {
 func (v *domainsPublishCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.repo == "" {
-		return usageErr("--repo is required (or set CCRAWL_DOMAINS_REPO)")
+		return usageErr("name the dataset with --repo, or set CCRAWL_DOMAINS_REPO")
 	}
 
 	var graph ccrawl.WebGraph
@@ -173,7 +173,7 @@ table; pass --graph to pick one.
 func (v *domainsRecountCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.repo == "" {
-		return usageErr("--repo is required (or set CCRAWL_DOMAINS_REPO)")
+		return usageErr("name the dataset with --repo, or set CCRAWL_DOMAINS_REPO")
 	}
 
 	var graph ccrawl.WebGraph
@@ -246,7 +246,7 @@ func (v *domainsDiffCmd) flags(f *kit.FlagSet) {
 func (v *domainsDiffCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.repo == "" {
-		return usageErr("--repo is required (or set CCRAWL_DOMAINS_REPO)")
+		return usageErr("name the dataset with --repo, or set CCRAWL_DOMAINS_REPO")
 	}
 	hf := ccrawl.NewHFClient("")
 
@@ -264,7 +264,7 @@ func (v *domainsDiffCmd) run(ctx context.Context, args []string) error {
 		}
 	}
 	if from == to {
-		return usageErr("--from and --to are the same release; nothing to diff")
+		return usageErr("the same release is on both sides of --from and --to, so there is nothing to diff")
 	}
 
 	// Optional sink for the added domains. It is written to a caller-named path,

@@ -62,7 +62,7 @@ func runDownload(ctx context.Context, app *App, kind, outDir, segment string, sa
 		outDir = app.Cfg.RawDir()
 	}
 	if app.UseLibrary && kind == "-" {
-		return usageErr("--library needs a kind so files can be filed under <library>/<crawl>/<kind>/")
+		return usageErr("name a kind, because --library files what it downloads under <library>/<crawl>/<kind>/")
 	}
 
 	var paths []string

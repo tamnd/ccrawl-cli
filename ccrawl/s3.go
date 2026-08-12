@@ -296,7 +296,7 @@ func s3AuthError(uri string, resp *http.Response) error {
 	_ = xml.Unmarshal(body, &e)
 	switch e.Code {
 	case "InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "ExpiredToken", "InvalidToken", "RequestTimeTooSkewed":
-		return fmt.Errorf("GET %s: S3 %s: %s", uri, e.Code, e.Message)
+		return fmt.Errorf("get %s: S3 %s: %s", uri, e.Code, e.Message)
 	}
 	return nil
 }
@@ -363,7 +363,7 @@ func imdsRegion(ctx context.Context) string {
 func readAllLimited(resp *http.Response, limit int64) (string, error) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("the server answered HTTP %d", resp.StatusCode)
 	}
 	buf := make([]byte, limit)
 	n, _ := resp.Body.Read(buf)

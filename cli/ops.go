@@ -416,7 +416,7 @@ func registerRank(app *kit.App) {
 
 	lookup := func(ctx context.Context, in rankLookupIn, emit func(ccrawl.Rank) error) error {
 		if in.Table == "" {
-			return usageErr("--table is required (URL of a gzipped rank table)")
+			return usageErr("point --table at a gzipped rank table")
 		}
 		r, err := ccrawl.RankLookup(ctx, in.App.HTTP, in.Table, in.Key)
 		if err != nil {
@@ -440,7 +440,7 @@ func registerRank(app *kit.App) {
 		Summary: "Top-ranked hosts or domains",
 	}, func(ctx context.Context, in rankTopIn, emit func(ccrawl.Rank) error) error {
 		if in.Table == "" {
-			return usageErr("--table is required (URL of a gzipped rank table)")
+			return usageErr("point --table at a gzipped rank table")
 		}
 		n := in.Limit
 		if n == 0 {
@@ -472,7 +472,7 @@ Examples:
   ccrawl rank all --table <url> -o jsonl > hosts.jsonl`,
 	}, func(ctx context.Context, in rankAllIn, emit func(ccrawl.Rank) error) error {
 		if in.Table == "" {
-			return usageErr("--table is required (URL of a gzipped rank table)")
+			return usageErr("point --table at a gzipped rank table")
 		}
 		return ccrawl.RankStream(ctx, in.App.HTTP, in.Table, in.TLD, emit)
 	})

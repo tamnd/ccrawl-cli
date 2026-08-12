@@ -77,7 +77,7 @@ func (v *urlsPublishCmd) flags(f *kit.FlagSet) {
 func (v *urlsPublishCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.repo == "" {
-		return usageErr("--repo is required (or set CCRAWL_URLS_REPO)")
+		return usageErr("name the dataset with --repo, or set CCRAWL_URLS_REPO")
 	}
 
 	crawls, err := app.AllCrawls(ctx)
@@ -168,7 +168,7 @@ crawl. Pick the crawls with the global -c flag.
 func (v *urlsRecountCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.repo == "" {
-		return usageErr("--repo is required (or set CCRAWL_URLS_REPO)")
+		return usageErr("name the dataset with --repo, or set CCRAWL_URLS_REPO")
 	}
 
 	crawls, err := app.AllCrawls(ctx)

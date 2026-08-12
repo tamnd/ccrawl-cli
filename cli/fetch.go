@@ -96,7 +96,7 @@ func (c *fetchCmd) runBatch(ctx context.Context, app *App) error {
 	switch c.order {
 	case "input", "file":
 	default:
-		return usageErr("--order must be input or file")
+		return usageErr("pass --order input or --order file")
 	}
 	asDir := c.asDir || app.Out.Format() == "dir"
 

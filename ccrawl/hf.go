@@ -147,7 +147,7 @@ func (c *HFClient) pathsInfoBatch(ctx context.Context, repoID string, paths []st
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.http.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("paths-info: %w", err)
+			lastErr = fmt.Errorf("ask the hub for paths-info: %w", err)
 			continue
 		}
 		if resp.StatusCode == 404 {
@@ -159,7 +159,7 @@ func (c *HFClient) pathsInfoBatch(ctx context.Context, repoID string, paths []st
 			derr := json.NewDecoder(resp.Body).Decode(&infos)
 			_ = resp.Body.Close()
 			if derr != nil {
-				return nil, fmt.Errorf("paths-info decode: %w", derr)
+				return nil, fmt.Errorf("decode the paths-info reply: %w", derr)
 			}
 			return infos, nil
 		}
@@ -170,12 +170,12 @@ func (c *HFClient) pathsInfoBatch(ctx context.Context, repoID string, paths []st
 		case resp.StatusCode == 429:
 			lastErr = &RateLimitError{Msg: msg}
 		case resp.StatusCode >= 500:
-			lastErr = fmt.Errorf("paths-info HTTP %d: %s", resp.StatusCode, msg)
+			lastErr = fmt.Errorf("the paths-info endpoint answered HTTP %d: %s", resp.StatusCode, msg)
 		default:
-			return nil, fmt.Errorf("paths-info HTTP %d: %s", resp.StatusCode, msg)
+			return nil, fmt.Errorf("the paths-info endpoint answered HTTP %d: %s", resp.StatusCode, msg)
 		}
 	}
-	return nil, fmt.Errorf("paths-info after retries: %w", lastErr)
+	return nil, fmt.Errorf("gave up on paths-info after retries: %w", lastErr)
 }
 
 // pathsInfoAll walks paths in batches of 100 through pathsInfoBatch and returns
@@ -257,5 +257,5 @@ func (c *HFClient) CommitWithRetry(ctx context.Context, repoID, message string, 
 		lastErr = err
 		fmt.Fprintf(os.Stderr, "  HF commit attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
 	}
-	return "", fmt.Errorf("HF commit after %d attempts: %w", maxAttempts, lastErr)
+	return "", fmt.Errorf("commit to the hub after %d attempts: %w", maxAttempts, lastErr)
 }

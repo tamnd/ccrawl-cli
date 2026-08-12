@@ -97,14 +97,14 @@ Examples:
 		}
 		r, err := ccrawl.RankLookup(ctx, in.App.HTTP, g.HostRankURL(), in.Host)
 		if err != nil {
-			return fmt.Errorf("%s: %w", in.Host, err)
+			return fmt.Errorf("rank for %s: %w", in.Host, err)
 		}
 		rec := ccrawl.HostFromRank(r)
 		rec.RegisteredDomain = registeredDomain(rec.Host)
 
 		if in.CDX {
 			if !ccrawl.DuckDBAvailable() {
-				return fmt.Errorf("--cdx requires the duckdb binary on PATH")
+				return fmt.Errorf("the --cdx aggregate needs a duckdb binary on PATH")
 			}
 			crawlID, err := in.App.Crawl(ctx)
 			if err != nil {
@@ -336,7 +336,7 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 	if e.cdx {
 		sp.Phase("cdx aggregate")
 		if !ccrawl.DuckDBAvailable() {
-			return fmt.Errorf("--cdx requires duckdb binary on PATH")
+			return fmt.Errorf("the --cdx aggregate needs a duckdb binary on PATH")
 		}
 		crawlID, err := app.Crawl(ctx)
 		if err != nil {

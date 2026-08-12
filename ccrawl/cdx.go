@@ -149,7 +149,7 @@ func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, f
 			return cbErr
 		}
 		if err != nil && err != errStop {
-			pageErr := fmt.Errorf("CDX page %d: %w", page, err)
+			pageErr := fmt.Errorf("read CDX page %d: %w", page, err)
 			if q.OnPageError == nil {
 				return pageErr
 			}
