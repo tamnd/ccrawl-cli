@@ -144,8 +144,38 @@ until ccrawl urls publish --crawl CC-MAIN-2026-17; do
 done
 ```
 
-## Caveat
+## Caveats
 
 An unrecognised flag comes back as `1` rather than `2`, because that error is raised by the flag parser before ccrawl sees the command. Everything ccrawl rejects itself, a missing required flag or an argument it cannot parse, exits `2`.
 
 An unknown `-o` value is one ccrawl rejects itself, so it exits `2`. The formatter would otherwise render it as JSON Lines and exit `0`, which is the one place a typo could produce the wrong bytes with nothing on screen to say so.
+
+### A misspelled subcommand exits 0 today
+
+A misspelling at the top level is caught and exits `1`:
+
+```bash
+ccrawl serch example.com; echo $?
+# Unknown command "serch" for "ccrawl". Did you mean this? search
+# 1
+```
+
+A misspelling one level down is not. Every parent command answers a subcommand it does not have by writing its own help to stdout and exiting `0`:
+
+```bash
+ccrawl host lst -o jsonl > hosts.jsonl; echo $?
+# 0
+head -1 hosts.jsonl
+#   Enumerate and enrich hosts from the CC web graph
+```
+
+That is 2808 bytes of help text in a file a script believes holds host records, with nothing in the exit code or on stderr to say otherwise. It is the legacy argument rule in the command-line library underneath: a command with subcommands, no handler of its own, and no declared argument count accepts anything and falls back to printing help.
+
+Until that is fixed, a script that runs a subcommand it built from a variable should check that its output looks like what it asked for, rather than trusting the exit code alone:
+
+```bash
+ccrawl "$cmd" "$sub" -o jsonl > out.jsonl || exit $?
+head -1 out.jsonl | jq -e . > /dev/null || { echo "not JSON, check the subcommand name" >&2; exit 1; }
+```
+
+Tracked in [#141](https://github.com/tamnd/ccrawl-cli/issues/141). The fix belongs in the framework, which builds those parent commands, so this page records the behaviour rather than promising a workaround ccrawl does not have.
