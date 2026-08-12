@@ -836,24 +836,25 @@ ccrawl index search "machine learning" --dir /data/idx -n 20 -o json
 ## api
 
 Start the v2 HTTP REST API server.
-The host store is loaded from the web-graph rank table on startup (top 1 M hosts).
-Full-text search is available when `--index-dir` points to a built index.
+This is a local exploration tool with no authentication, no rate limiting, no request log and no pagination, so it binds loopback by default and warns if pointed anywhere else; see the [API server guide](/guides/api-server/).
+The host store is loaded from the web-graph rank table on startup (top 1 M hosts) and a load that fails is fatal.
+Full-text search is available when `--index-dir` points to a built index, and answers 503 without it.
 
 ```
-GET /v2/host/{host}       enriched host profile
+GET /v2/host/{host}       host profile from the rank table
 GET /v2/hosts?tld=&n=     top N hosts, optional TLD filter
 GET /v2/search?q=&k=      BM25 full-text search (requires --index-dir)
-GET /v2/health            health check
+GET /v2/health            liveness, and which stores are loaded
 ```
 
 ```sh
-ccrawl api --addr :8080
-ccrawl api --addr :8080 --index-dir /data/idx
+ccrawl api
+ccrawl api --addr 127.0.0.1:9090 --index-dir /data/idx
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--addr` | Listen address (default `:8080`) |
+| `--addr` | Listen address (default `127.0.0.1:8080`) |
 | `--index-dir` | Path to a built inverted index directory |
 
 ---
