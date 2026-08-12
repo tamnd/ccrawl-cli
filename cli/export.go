@@ -51,7 +51,7 @@ warcinfo record carrying provenance (the tool and version, the prefix, and the
 exact command line), so the output is self-describing. Files rotate once they
 pass --size bytes.
 
-Give a URL or wildcard pattern to run a query, or pass "-" to read location
+Give a page URL or wildcard pattern to run a query, or pass "-" to read location
 records (filename, offset, length) as JSONL on stdin, exactly what
 "ccrawl search --locations" and "ccrawl columnar locations" produce.
 
@@ -78,7 +78,7 @@ func (c *exportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&c.match, "match", "", "match type: exact|prefix|host|domain")
 	f.StringVar(&c.from, "from", "", "earliest capture date (e.g. 2023 or 2023-06)")
 	f.StringVar(&c.to, "to", "", "latest capture date")
-	f.StringVar(&c.status, "status", "", "HTTP status filter (e.g. 200)")
+	f.StringVar(&c.status, "status", "", "keep only this HTTP status (e.g. 200)")
 	f.StringVar(&c.mime, "mime", "", "detected MIME filter")
 	f.StringVar(&c.lang, "lang", "", "language filter (ISO-639-3)")
 	f.StringSliceVar(&c.filter, "filter", nil, "raw CDX filter field:regex (repeatable)")

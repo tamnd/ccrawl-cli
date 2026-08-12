@@ -134,7 +134,7 @@ func urlFromLine(line string) (string, error) {
 
 type contentLangIn struct {
 	App *App   `kit:"inject"`
-	URL string `kit:"arg" name:"url" help:"URL to fetch and identify, or \"-\" to read URLs from stdin"`
+	URL string `kit:"arg" name:"url" help:"fetch and identify this URL, or read URLs from stdin with \"-\""`
 }
 
 // LangReport is what the markdown pipelines decide on for one URL.
@@ -196,7 +196,7 @@ Examples:
 
 type contentExtractIn struct {
 	App *App   `kit:"inject"`
-	URL string `kit:"arg" name:"url" help:"URL to fetch and extract, or \"-\" to read URLs from stdin"`
+	URL string `kit:"arg" name:"url" help:"fetch and extract this URL, or read URLs from stdin with \"-\""`
 }
 
 // ContentExtractResult is the output of content extraction.
@@ -266,7 +266,7 @@ Examples:
 
 type contentQualityIn struct {
 	App *App   `kit:"inject"`
-	URL string `kit:"arg" name:"url" help:"URL to fetch and score, or \"-\" to read URLs from stdin"`
+	URL string `kit:"arg" name:"url" help:"fetch and score this URL, or read URLs from stdin with \"-\""`
 }
 
 // QualityReport is the output of content quality analysis.
@@ -328,7 +328,7 @@ Examples:
 
 type contentLinksV2In struct {
 	App *App   `kit:"inject"`
-	URL string `kit:"arg" name:"url" help:"URL to extract links from, or \"-\" to read URLs from stdin"`
+	URL string `kit:"arg" name:"url" help:"extract links from this URL, or read URLs from stdin with \"-\""`
 }
 
 // LinkRecord is one outbound link extracted from a page.

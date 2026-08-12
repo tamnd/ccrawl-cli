@@ -56,9 +56,9 @@ one output so -n caps the whole run.`,
 
 func (pf *parseFlags) flags(f *kit.FlagSet) {
 	f.StringVar(&pf.format, "format", "", "force format: warc|wat|wet")
-	f.StringVar(&pf.wtype, "type", "", "WARC-Type filter (response|request|metadata|...)")
-	f.StringVar(&pf.status, "status", "", "HTTP status filter")
-	f.StringVar(&pf.mime, "mime", "", "HTTP MIME filter (substring)")
+	f.StringVar(&pf.wtype, "type", "", "keep only this WARC-Type (response|request|metadata|...)")
+	f.StringVar(&pf.status, "status", "", "keep only this HTTP status")
+	f.StringVar(&pf.mime, "mime", "", "keep only this HTTP MIME type, matched as a substring")
 	f.StringVar(&pf.lang, "lang", "", "language filter (WET)")
 	f.StringVar(&pf.urlRe, "url", "", "keep records whose URL contains this substring")
 	f.BoolVar(&pf.links, "links", false, "flatten WAT links into one row each")

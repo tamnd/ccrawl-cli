@@ -34,12 +34,12 @@ func registerOps(app *kit.App) {
 // capture records, byte locations (--locations), and a page count (--pages).
 type searchIn struct {
 	App            *App     `kit:"inject"`
-	Pattern        string   `kit:"arg" help:"URL or wildcard pattern"`
+	Pattern        string   `kit:"arg" help:"page URL or wildcard pattern"`
 	Match          string   `kit:"flag" help:"match type: exact|prefix|host|domain"`
 	From           string   `kit:"flag" help:"earliest capture date (e.g. 2023 or 2023-06)"`
 	To             string   `kit:"flag" help:"latest capture date"`
 	At             string   `kit:"flag" help:"keep the capture nearest this date, per URL (cdx_toolkit --closest)"`
-	Status         string   `kit:"flag" help:"HTTP status filter (e.g. 200)"`
+	Status         string   `kit:"flag" help:"keep only this HTTP status (e.g. 200)"`
 	MIME           string   `kit:"flag,name=mime" help:"detected MIME filter"`
 	Lang           string   `kit:"flag" help:"language filter (ISO-639-3)"`
 	Filter         []string `kit:"flag" help:"raw CDX filter field:regex (repeatable)"`
@@ -83,7 +83,7 @@ Examples:
   ccrawl search '*.example.com' --at 2022-06       the capture nearest a date, per URL
   ccrawl search '*.example.com' --estimate         approximate record count per crawl
   ccrawl search example.com/* --url-contains /blog/ filter URLs after the query`,
-		Args: []kit.Arg{{Name: "url-or-pattern", Help: "URL or wildcard pattern"}},
+		Args: []kit.Arg{{Name: "url-or-pattern", Help: "page URL or wildcard pattern"}},
 	}, func(ctx context.Context, in searchIn, emit func(any) error) (err error) {
 		app := in.App
 		lost := &pageLosses{cmd: "search", strict: in.Strict}
@@ -395,19 +395,19 @@ func registerNewsList(app *kit.App) {
 type rankLookupIn struct {
 	App   *App   `kit:"inject"`
 	Key   string `kit:"arg" help:"host or domain"`
-	Table string `kit:"flag" help:"URL of a gzipped rank table"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
 }
 
 type rankTopIn struct {
 	App   *App   `kit:"inject"`
-	Table string `kit:"flag" help:"URL of a gzipped rank table"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
 	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
 	Limit int    `kit:"flag,inherit" name:"limit"`
 }
 
 type rankAllIn struct {
 	App   *App   `kit:"inject"`
-	Table string `kit:"flag" help:"URL of a gzipped rank table"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
 	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
 }
 

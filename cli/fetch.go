@@ -61,7 +61,7 @@ Examples:
 
 func (c *fetchCmd) flags(f *kit.FlagSet) {
 	c.mode.bind(f)
-	f.StringVar(&c.file, "file", "", "WARC file path (relative to data.commoncrawl.org)")
+	f.StringVar(&c.file, "file", "", "path of the WARC file, relative to data.commoncrawl.org")
 	f.Int64Var(&c.offset, "offset", 0, "byte offset of the record")
 	f.Int64Var(&c.length, "length", 0, "byte length of the record")
 	f.StringVar(&c.outDir, "out-dir", "pages", "output directory when --output dir")
@@ -69,7 +69,7 @@ func (c *fetchCmd) flags(f *kit.FlagSet) {
 	f.BoolVar(&c.batch, "batch", false, "coalesce nearby records in the same WARC file into shared ranged GETs")
 	f.Int64Var(&c.gap, "gap", ccrawl.DefaultFetchGap, "coalesce records at most this many bytes apart")
 	f.Int64Var(&c.maxSpan, "max-span", ccrawl.DefaultFetchMaxSpan, "never read more than this in one GET")
-	f.StringVar(&c.order, "order", "file", "input|file: emit in the order given or the order on disk")
+	f.StringVar(&c.order, "order", "file", "emit in the order given (input) or the order on disk (file)")
 	f.StringVar(&c.ledger, "ledger", "", "file of finished locations, to skip on a resume")
 	f.IntVar(&c.window, "lookahead", 64, "ranged GETs allowed to run ahead of the writer")
 }

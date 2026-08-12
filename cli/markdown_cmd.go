@@ -150,7 +150,7 @@ Examples:
 func (v *markdownExportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&v.shards, "shards", "0", "shard range: N, N-M, N,M, or all")
 	f.StringVar(&v.outDir, "out", "", "directory for parquet files (default: <data-dir>/markdown)")
-	f.StringVar(&v.repo, "repo", ccrawl.DefaultMarkdownRepo, "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.repo, "repo", ccrawl.DefaultMarkdownRepo, "dataset repo on HuggingFace (org/name)")
 	f.IntVar(&v.workers, "workers", 0, "total conversion workers shared across shards (0 = NumCPU)")
 	f.IntVar(&v.limit, "limit", 0, "process at most this many shards (0 = all)")
 	f.BoolVar(&v.skip, "skip-errors", false, "continue past per-shard failures instead of aborting")

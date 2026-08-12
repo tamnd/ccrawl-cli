@@ -87,21 +87,21 @@ func readSetFile(kind, path string) ([]string, error) {
 // bind registers the columnar filter flags shared by every table subcommand. It
 // is a method so a command can wire it as kit.Command.Flags without a closure.
 func (tf *tableFlags) bind(f *kit.FlagSet) {
-	f.StringVar(&tf.domain, "domain", "", "url_host_registered_domain")
-	f.StringVar(&tf.host, "host", "", "url_host_name")
-	f.StringVar(&tf.tld, "tld", "", "url_host_tld (e.g. gov)")
-	f.StringVar(&tf.mime, "mime", "", "content_mime_detected")
-	f.StringVar(&tf.lang, "lang", "", "content_languages contains")
-	f.IntVar(&tf.status, "status", 0, "fetch_status (e.g. 200)")
-	f.StringVar(&tf.pathPrefix, "path-prefix", "", "url_path prefix")
-	f.StringVar(&tf.subset, "subset", "warc", "warc|crawldiagnostics|robotstxt")
-	f.StringVar(&tf.notTLD, "not-tld", "", "url_host_tld is missing or something else")
-	f.StringVar(&tf.notMIME, "not-mime", "", "content_mime_detected is missing or something else")
-	f.StringVar(&tf.notLang, "not-lang", "", "content_languages is missing or does not contain this")
-	f.IntVar(&tf.notStatus, "not-status", 0, "fetch_status is missing or something else")
+	f.StringVar(&tf.domain, "domain", "", "match url_host_registered_domain")
+	f.StringVar(&tf.host, "host", "", "match url_host_name")
+	f.StringVar(&tf.tld, "tld", "", "match url_host_tld (e.g. gov)")
+	f.StringVar(&tf.mime, "mime", "", "match content_mime_detected")
+	f.StringVar(&tf.lang, "lang", "", "match a value in content_languages")
+	f.IntVar(&tf.status, "status", 0, "match fetch_status (e.g. 200)")
+	f.StringVar(&tf.pathPrefix, "path-prefix", "", "match a url_path prefix")
+	f.StringVar(&tf.subset, "subset", "warc", "subset of the columnar index: warc|crawldiagnostics|robotstxt")
+	f.StringVar(&tf.notTLD, "not-tld", "", "keep rows where url_host_tld is missing or something else")
+	f.StringVar(&tf.notMIME, "not-mime", "", "keep rows where content_mime_detected is missing or something else")
+	f.StringVar(&tf.notLang, "not-lang", "", "keep rows where content_languages is missing or does not contain this")
+	f.IntVar(&tf.notStatus, "not-status", 0, "keep rows where fetch_status is missing or something else")
 	f.StringVar(&tf.hostsFile, "hosts-file", "", "file of url_host_name values, one per line (- for stdin)")
 	f.StringVar(&tf.domainsFile, "domains-file", "", "file of url_host_registered_domain values, one per line")
-	f.StringVar(&tf.engine, "engine", "auto", "auto|duckdb|native|print")
+	f.StringVar(&tf.engine, "engine", "auto", "query engine: auto|duckdb|native|print")
 	f.BoolVar(&tf.print, "print", false, "print the SQL and exit")
 }
 
@@ -139,7 +139,7 @@ Examples:
 			newTableLocationsCmd(),
 			newTableCountCmd(),
 			newTableBreakdownCmd("langs", "content_languages"),
-			newTableBreakdownCmd("mimes", "content_mime_detected"),
+			newTableBreakdownCmd("mimes", "match content_mime_detected"),
 			newTableSQLCmd(),
 			newTableQueryCmd(),
 			newTableSchemaCmd(),

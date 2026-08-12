@@ -26,7 +26,7 @@ func registerCrawl(app *kit.App) {
 
 type crawlSeedIn struct {
 	App      *App   `kit:"inject"`
-	Graph    string `kit:"flag" help:"web-graph release ID (default: latest)"`
+	Graph    string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	MaxSeeds int    `kit:"flag,name=max-seeds" help:"max hosts to seed (default 10000000)"`
 	MaxTier  int    `kit:"flag,name=max-tier" help:"skip hosts at tiers higher than this (1=top 100K only, 5=all)"`
 }
@@ -101,7 +101,7 @@ Examples:
 
 type crawlFetchIn struct {
 	App     *App   `kit:"inject"`
-	URL     string `kit:"arg" name:"url" help:"URL to crawl"`
+	URL     string `kit:"arg" name:"url" help:"page to crawl, as a URL"`
 	Robots  bool   `kit:"flag" help:"check robots.txt before fetching"`
 	WARCDir string `kit:"flag,name=warc-dir" help:"write the fetch to a WARC file in this directory"`
 }
