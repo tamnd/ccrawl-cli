@@ -158,15 +158,17 @@ It tells you what a full recrawl at each tier interval would cost so you can siz
 
 ## Feeding a search index
 
-`ccrawl index build` builds a local BM25 index, and it takes URLs directly rather than reading crawl output on stdin:
+`ccrawl index build` builds a local BM25 index. It takes a list of URLs to fetch itself, or a JSONL file of documents you already have:
 
 ```bash
 ccrawl index build --dir idx/ --urls "$(ccrawl crawl seed -n 20 -o jsonl | jq -r .url | paste -sd,)"
 ccrawl index search --dir idx/ "golang concurrency"
 ```
 
-`index build` does its own fetching and text extraction, with `--workers` for concurrency.
-It also accepts `--input docs.jsonl` for a JSONL file of documents you already have.
+With `--urls` it does its own fetching and text extraction, with `-j` for concurrency.
+With `--input docs.jsonl`, or `--input -` for stdin, it reads documents that already carry their text.
+Note that `crawl fetch` output is not one of them: those rows are fetch metadata and hold no page text.
+It is a reference implementation with a corpus ceiling of a few hundred thousand documents.
 See the [search index guide](/guides/search-index/) for the details.
 
 ## Planned

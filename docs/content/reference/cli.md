@@ -787,34 +787,39 @@ ccrawl sched diff --crawl-a CC-MAIN-2026-12 --crawl-b CC-MAIN-2026-17 -o jsonl >
 
 ## index
 
-Build and query a local BM25 full-text search index over any set of URLs.
+Build and query a local BM25 full-text search index over a JSONL page corpus.
+This is a reference implementation with a corpus ceiling of a few hundred thousand documents, not a production search engine; the [search index guide](/guides/search-index/) has the measured numbers.
 
 | Subcommand | Does |
 |---|---|
-| `index build` | Fetch URLs, extract text, and build a BM25 inverted index |
+| `index build` | Build a BM25 inverted index from JSONL documents or a list of URLs |
 | `index search <query>` | Query the index; results ranked by BM25 score |
 
 ### index build
 
-Fetches each URL in parallel (8 workers by default), extracts clean text, tokenizes it, and writes a BM25 inverted index with per-document length normalization.
-The index directory contains `terms.dat`, `postings.dat`, `forward.jsonl`, and `stats.dat`.
+Reads JSONL documents from `--input`, or fetches and extracts the pages named by `--urls`, tokenizes them, and writes a BM25 inverted index with per-document length normalization.
+Each `--input` line is a JSON object with a `url` and the `text` to index, and optionally a `title` and a `language`, which is the shape `ccrawl parse` writes for a WET file.
+The index directory contains `terms.dat`, `postings.dat`, `forward.jsonl`, and `stats.dat`, and a rebuild replaces all four.
+One of `--input` or `--urls` is required; without either the command exits 2 rather than writing an empty index.
 
 ```sh
-ccrawl index build --urls https://golang.org/,https://pkg.go.dev/ -o json
-ccrawl index build --dir /data/idx --urls https://example.com/ --workers 16
 ccrawl index build --dir /data/idx --input docs.jsonl
+ccrawl parse file.warc.wet.gz --lang eng -o jsonl | ccrawl index build --dir /data/idx --input -
+ccrawl index build --dir /data/idx --urls https://golang.org/,https://pkg.go.dev/ -o json
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--dir` | Directory to write the index into (default: `~/data/ccrawl/index`) |
+| `--input` | JSONL file of documents to index, or `-` for stdin |
 | `--urls` | Comma-separated URLs to fetch and index |
-| `--input` | JSONL file of `ForwardDoc` records to index directly |
-| `--workers` | Parallel fetch workers (default 8) |
+| `-j`, `--workers` | Fetch concurrency for `--urls` (default 8) |
 
 ### index search
 
-Queries the local index using BM25 scoring with per-document length normalization and optional link-graph boost.
+Queries the local index using BM25 scoring with per-document length normalization.
+Query terms are ORed: a document matches if it holds any of them, and the ones holding more score higher.
+A query that matches nothing exits 3.
 
 ```sh
 ccrawl index search "golang web server"
@@ -824,6 +829,7 @@ ccrawl index search "machine learning" --dir /data/idx -n 20 -o json
 | Flag | Meaning |
 |---|---|
 | `--dir` | Index directory to search (default: `~/data/ccrawl/index`) |
+| `-n`, `--limit` | Documents to return (default 100) |
 
 ---
 

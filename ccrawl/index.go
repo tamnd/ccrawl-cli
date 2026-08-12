@@ -15,6 +15,25 @@ import (
 	"unicode"
 )
 
+// This file is a reference implementation of BM25 search: enough of an index to
+// rank the pages a ccrawl run produced, and to show what the pieces are, not a
+// search engine to put behind a service. Two limits set the scale.
+//
+// The builder holds every posting list in memory and writes them once, so the
+// corpus a machine can index is bounded by its RAM. Measured on English WET
+// records from CC-MAIN-2026-30, a build costs about 26 KB per document: 13,053
+// documents took 458 MB and 4.2 seconds, 52,495 took 1.45 GB and 17.4 seconds.
+// A 16 GB machine therefore tops out near 600,000 documents, which is 45 of the
+// 100,000 WET files in a crawl.
+//
+// The reader loads the whole term table, and the caller loads the whole forward
+// index, on every query. That is a fixed cost linear in the corpus rather than
+// in the query: about 0.4 seconds on the 13,000 document index and 1.05 seconds
+// on the 52,000 document one, whether or not anything matches.
+//
+// For search over a real fraction of a crawl, build the corpus here and hand it
+// to something built for the job.
+
 // ── tokenization ──────────────────────────────────────────────────────────────
 
 // englishStopwords is a minimal set of high-frequency English stopwords.
@@ -94,7 +113,8 @@ type PostingEntry struct {
 }
 
 // InvertedIndexBuilder accumulates (term → postings) in memory and writes the
-// index to disk when Flush() is called.
+// index to disk when Flush() is called. Nothing spills, so the whole corpus has
+// to fit: see the note at the top of this file for what that costs.
 type InvertedIndexBuilder struct {
 	dir       string
 	postings  map[string][]PostingEntry // term → posting list
@@ -240,7 +260,9 @@ type termEntry struct {
 	idf    float64
 }
 
-// OpenIndex opens a flushed inverted index directory.
+// OpenIndex opens a flushed inverted index directory. The term table is read
+// whole into memory here, so opening an index costs time proportional to the
+// corpus, not to the query that follows.
 func OpenIndex(dir string) (*IndexReader, error) {
 	r := &IndexReader{dir: dir, terms: make(map[string]termEntry)}
 	if err := r.loadStats(); err != nil {
@@ -331,7 +353,9 @@ type ScoredDoc struct {
 	Score float64
 }
 
-// Search returns the top-k documents for query tokens using BM25.
+// Search returns the top-k documents for query tokens using BM25. A document
+// matches if it holds any of the tokens, not all of them: the terms are ORed
+// and the documents holding more of them score higher.
 func (r *IndexReader) Search(tokens []string, k int) []ScoredDoc {
 	scores := make(map[uint64]float64)
 	p := DefaultBM25Params
@@ -415,9 +439,12 @@ type ForwardIndexWriter struct {
 	w *bufio.Writer
 }
 
-// NewForwardIndexWriter opens (or creates) a JSONL forward index file.
+// NewForwardIndexWriter creates a JSONL forward index file, replacing whatever
+// was there. A build rewrites the term and posting files from scratch, so the
+// forward index has to be rewritten with them or a second build over the same
+// directory leaves the first build's documents behind with no postings.
 func NewForwardIndexWriter(path string) (*ForwardIndexWriter, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
