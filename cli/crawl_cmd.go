@@ -28,7 +28,7 @@ type crawlSeedIn struct {
 	App      *App   `kit:"inject"`
 	Graph    string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	MaxSeeds int    `kit:"flag,name=max-seeds" help:"max hosts to seed (default 10000000)"`
-	MaxTier  int    `kit:"flag,name=max-tier" help:"skip hosts at tiers higher than this (1=top 100K only, 5=all)"`
+	MaxTier  int    `kit:"flag,name=max-tier" help:"skip hosts at tiers higher than this (2=top million, 5=all)"`
 }
 
 // SeedRecord is one crawl seed URL derived from the host rank table.
@@ -39,6 +39,17 @@ type SeedRecord struct {
 	Priority float32 `json:"priority" table:"priority"`
 }
 
+// seedChangeRate is the change rate crawl seed assumes. The rank table says how
+// central a host is and nothing about how often it changes, and a tier needs
+// both, so every seed is tiered as if it changed at the middle rate.
+//
+// seedTierFloor follows from that: 0.5 clears the 0.5 that tier 2 asks for and
+// not the 0.8 that tier 1 asks for, so tier 2 is the best a seed can do.
+const (
+	seedChangeRate = 0.5
+	seedTierFloor  = 2
+)
+
 func registerCrawlSeed(app *kit.App) {
 	handle(app, kit.OpMeta{
 		Name:    "seed",
@@ -46,7 +57,9 @@ func registerCrawlSeed(app *kit.App) {
 		Summary: "Generate crawl seed URLs from the web-graph host rank table",
 		Long: `Stream the top hosts from the CC web-graph rank table and emit one seed URL
 per host (https://{host}/) as a SeedRecord. Use --max-tier to restrict to
-high-priority hosts.
+high-priority hosts. Tier 2 is the top million hosts and the best a seed can
+reach, since a rank says nothing about how often a host changes and tier 1
+needs that.
 
 Examples:
   ccrawl crawl seed --graph cc-main-2026-mar-apr-may -n 100 -o table
@@ -64,6 +77,13 @@ Examples:
 		if maxTier <= 0 || maxTier > 5 {
 			maxTier = 5 // emit all tiers by default
 		}
+		// A seed carries a rank and no measured change rate, and tier 1 wants a
+		// change rate above 0.8, so no host this command sees can reach it. Said
+		// here rather than found out at the end of a 262 million row scan that
+		// emits nothing.
+		if maxTier < seedTierFloor {
+			return usageErr("seeds carry no measured change rate, so no host reaches tier 1; use --max-tier 2 for the top million hosts, or feed real change rates in with ccrawl sched diff")
+		}
 		// Seeding the full rank table is a ten million row stream, so the ticks
 		// carry an ETA against --max-seeds and one line per seed would be noise.
 		rep, stopRun, err := in.App.StartRun("crawl seed", "")
@@ -79,9 +99,7 @@ Examples:
 			if count >= maxSeeds {
 				return errStop
 			}
-			// Use change_rate=0.5 as conservative default for tier assignment.
-			// Tier 1 requires change_rate>0.8, so most hosts land in tier 2 to 5.
-			tier := ccrawl.CrawlTier(r.HarmonicPos, 0.5)
+			tier := ccrawl.CrawlTier(r.HarmonicPos, seedChangeRate)
 			if tier > maxTier {
 				return nil // skip hosts below the requested tier ceiling
 			}
