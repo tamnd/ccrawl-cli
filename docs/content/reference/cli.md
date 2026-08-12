@@ -829,7 +829,8 @@ This is a reference implementation with a corpus ceiling of a few hundred thousa
 ### index build
 
 Reads JSONL documents from `--input`, or fetches and extracts the pages named by `--urls`, tokenizes them, and writes a BM25 inverted index with per-document length normalization.
-Each `--input` line is a JSON object with a `url` and the `text` to index, and optionally a `title` and a `language`, which is the shape `ccrawl parse` writes for a WET file.
+Each `--input` line is a JSON object with a `url` and the `text` to index, and optionally a `title` and a language, which is the shape `ccrawl parse` writes for a WET file.
+The language key can be `language`, which is what a file written by hand tends to say, or `content_language`, which is what `ccrawl parse wet -o jsonl` writes; a file written by a ccrawl older than v0.10.1 says `ContentLanguage` and is still read.
 The index directory contains `terms.dat`, `postings.dat`, `forward.jsonl`, and `stats.dat`, and a rebuild replaces all four.
 One of `--input` or `--urls` is required; without either the command exits 2 rather than writing an empty index.
 

@@ -12,13 +12,16 @@ import (
 )
 
 // Record is extracted plain text for one page.
+//
+// The tags are the names the parquet schema uses, so the JSON a command writes
+// and the columns a dataset holds are one set of names rather than two.
 type Record struct {
-	RecordID        string
-	CrawlID         string
-	URL             string
-	Date            time.Time
-	ContentLanguage string
-	Text            string
+	RecordID        string    `json:"record_id"`
+	CrawlID         string    `json:"crawl_id"`
+	URL             string    `json:"url"`
+	Date            time.Time `json:"date"`
+	ContentLanguage string    `json:"content_language"`
+	Text            string    `json:"text"`
 }
 
 // Iterate reads a WET file (WARC conversion records holding plain text) and

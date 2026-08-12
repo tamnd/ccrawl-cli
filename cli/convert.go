@@ -161,11 +161,7 @@ func convertJSONL(r interface{ Read([]byte) (int, error) }, format, id, out stri
 		return ccrawl.IterateWET(r, id, func(w ccrawl.WETRecord) error { return enc.Encode(w) })
 	default:
 		return ccrawl.IterateWARC(r, func(rec ccrawl.WARCRecord) error {
-			return enc.Encode(map[string]any{
-				"type": rec.Header.Type, "url": rec.Header.TargetURI,
-				"status": rec.Header.HTTPStatus, "mime": rec.Header.HTTPMIME,
-				"date": rec.Header.Date, "payload_digest": rec.Header.PayloadDigest,
-			})
+			return enc.Encode(warcJSON(rec))
 		})
 	}
 }
