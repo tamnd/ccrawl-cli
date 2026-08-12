@@ -950,6 +950,85 @@ The global flags apply, so `-c`, `--data-dir`, and `--no-cache` all set the serv
 
 ---
 
+## config
+
+```sh
+ccrawl config show
+```
+
+`config show` prints every setting a run resolved, the value it ended up with, and where that value came from. The source column is the reason to run it: a run that behaves oddly is nearly always a setting arriving from somewhere you did not look, and `workers 7 config [bulk]` ends that search in one line.
+
+```
+key          value                        source
+crawl        CC-MAIN-2026-30              flag --crawl
+workers      7                            config [bulk]
+retries      2                            config [default]
+user_agent   my-crawler/1                 env CCRAWL_USER_AGENT
+timeout      2m0s                         default
+profile      bulk                         flag --profile
+config_file  ~/.config/ccrawl/config.toml derived from config_dir
+```
+
+### The config file
+
+ccrawl reads `~/.config/ccrawl/config.toml` if it is there. `CCRAWL_CONFIG_DIR` names the directory outright, and `XDG_CONFIG_HOME` moves it the usual way. There is no file by default and nothing needs one.
+
+The `[default]` table applies to every run. Any other table is a profile, and `--profile <name>` layers it on top of `[default]` for that run.
+
+```toml
+[default]
+workers = 8
+global_rate = "500ms"
+
+[bulk]
+workers = 64
+global_rate = "50ms"
+library_dir = "/data/ccrawl"
+
+[polite]
+global_rate = "5s"
+retries = 8
+```
+
+```sh
+ccrawl --profile bulk markdown build -c 2026-30
+ccrawl --profile polite search '*.gov' --limit 1000
+```
+
+`CCRAWL_PROFILE` selects a profile from the environment, for a shell or a systemd unit that should run everything one way.
+
+Precedence is flag, then environment, then profile, then `[default]`, then the built-in default. A profile cannot undo an `export` in the shell that started the run, and a flag on the command line always wins.
+
+The settings, with the environment variable that beats each one:
+
+| Setting | Env | What it sets |
+|---|---|---|
+| `crawl` | `CCRAWL_CRAWL` | Default crawl, same values as `-c` |
+| `source` | `CCRAWL_SOURCE` | `https` or `s3` |
+| `data_dir` | `CCRAWL_DATA_DIR` | Root data directory |
+| `cache_dir` | `CCRAWL_CACHE_DIR` | Cache directory, follows `data_dir` when unset |
+| `library_dir` | `CCRAWL_LIBRARY` | Dataset library root |
+| `db_path` | `CCRAWL_DB_PATH` | Local DuckDB file |
+| `workers` | `CCRAWL_WORKERS` | Concurrency |
+| `rate` | `CCRAWL_RATE` | Per-process delay between requests |
+| `global_rate` | `CCRAWL_GLOBAL_RATE` | Host-wide gap between Common Crawl requests |
+| `timeout` | `CCRAWL_TIMEOUT` | Per-request timeout |
+| `retries` | `CCRAWL_RETRIES` | Retry attempts |
+| `backoff` | `CCRAWL_BACKOFF` | Base wait before the first retry |
+| `backoff_max` | `CCRAWL_BACKOFF_MAX` | Cap on a single retry wait |
+| `user_agent` | `CCRAWL_USER_AGENT` | User agent sent to Common Crawl |
+| `urls_repo` | `CCRAWL_URLS_REPO` | HuggingFace dataset for `urls publish` |
+| `domains_repo` | `CCRAWL_DOMAINS_REPO` | HuggingFace dataset for `domains publish` |
+| `collinfo_endpoint` | `CCRAWL_COLLINFO_ENDPOINT` | Where the crawl list comes from |
+| `data_endpoint` | `CCRAWL_DATA_ENDPOINT` | Where manifests, WARC files and the columnar index come from |
+| `cdx_endpoint` | `CCRAWL_CDX_ENDPOINT` | Where the URL index comes from |
+
+Durations are written the way the flags are written, `"500ms"` or `"5s"`, and have to be quoted. The endpoints are there for a mirror or a local proxy; the defaults are Common Crawl's own hosts.
+
+A setting ccrawl does not read stops the run and names the line, since the alternative is a config file that looks like it is doing something and is not. So does `--profile` naming a table the file does not declare, and the error lists the ones it does. A value of the right key and the wrong type, `workers = "lots"`, is reported on stderr and the run continues on the default: that is read while the flags are being registered, where there is nowhere to return an error.
+
+---
+
 ## Global flags
 
 These apply to every command.

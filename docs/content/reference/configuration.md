@@ -5,7 +5,7 @@ weight: 20
 ---
 
 ccrawl needs almost no configuration.
-There is no config file; every option is a flag or an environment variable, and the defaults are chosen so the common case needs neither.
+The defaults are chosen so the common case needs none, every option is a flag or an environment variable, and there is a config file for the settings you got tired of typing.
 
 ## The data directory
 
@@ -17,14 +17,50 @@ ccrawl config show
 ```
 
 ```
-data_dir     ~/data/ccrawl
-cache_dir    ~/data/ccrawl/cache
-raw_dir      ~/data/ccrawl/raw
-parquet_dir  ~/data/ccrawl/parquet
-db_path      ~/data/ccrawl/ccrawl.duckdb
+data_dir     ~/data/ccrawl                 default
+cache_dir    ~/data/ccrawl/cache           default
+raw_dir      ~/data/ccrawl/raw             derived from data_dir
+parquet_dir  ~/data/ccrawl/parquet         derived from data_dir
+db_path      ~/data/ccrawl/ccrawl.duckdb   default
 ```
 
+The third column is where the value came from, which is the answer to nearly every question about why a run did something unexpected.
+
 Point the whole tree somewhere else with `CCRAWL_DATA_DIR`, or per-command with `--data-dir`.
+
+## The config file
+
+ccrawl reads `~/.config/ccrawl/config.toml` if it is there, and nothing needs one to exist.
+`CCRAWL_CONFIG_DIR` names the directory outright, `XDG_CONFIG_HOME` moves it the usual way, and `ccrawl config show` reports both the directory and the file.
+
+The `[default]` table applies to every run.
+Any other table is a profile, and `--profile <name>` layers it on top of `[default]` for that run.
+
+```toml
+[default]
+workers = 8
+global_rate = "500ms"
+
+[bulk]
+workers = 64
+global_rate = "50ms"
+library_dir = "/data/ccrawl"
+
+[polite]
+global_rate = "5s"
+retries = 8
+```
+
+```sh
+ccrawl --profile bulk markdown build -c 2026-30
+ccrawl --profile polite search '*.gov' --limit 1000
+```
+
+`CCRAWL_PROFILE` selects a profile from the environment, for a shell or a systemd unit that runs everything one way.
+
+Precedence is flag, then environment, then profile, then `[default]`, then the built-in default.
+So a profile cannot undo an `export` in the shell that started the run, and a flag on the command line always wins.
+See [the CLI reference](/reference/cli/#the-config-file) for the full list of settings and the environment variable that beats each one.
 
 ## The dataset library
 
@@ -45,6 +81,8 @@ Inside it, raw archives live under `<crawl>/<kind>/` and processed output under 
 | `CCRAWL_DATA_DIR` | Root data directory (overrides the default `~/data/ccrawl`) |
 | `CCRAWL_LIBRARY` | Dataset library root (overrides the default `~/notes/ccrawl`) |
 | `CCRAWL_CACHE_DIR` | Cache directory (overrides the default under the data dir) |
+| `CCRAWL_CONFIG_DIR` | Config file directory (overrides `~/.config/ccrawl`) |
+| `CCRAWL_PROFILE` | Profile to load from the config file, the same as `--profile` |
 | `HF_TOKEN` | HuggingFace write token, required by the publishing commands (`HUGGINGFACE_TOKEN` also works) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credentials for `--source s3` (see [the source flag](#the-source-flag)) |
 | `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE` | Which profile and file to read credentials from when the variables above are unset |
@@ -81,6 +119,7 @@ The `CCRAWL_HF_COMMIT=python` escape hatch that v0.6.0 shipped is gone as of v0.
 | `-q, --quiet` | off | Suppress progress output |
 | `-v, --verbose` | off | Increase verbosity (repeatable) |
 | `--dry-run` | off | Print actions without performing them |
+| `--profile` | none | Profile to load from the config file |
 
 ## The source flag
 

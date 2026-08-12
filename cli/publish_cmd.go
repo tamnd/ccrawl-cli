@@ -110,7 +110,7 @@ func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 		}
 		repo := v.repo
 		if repo == "" {
-			repo = envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo)
+			repo = setting("domains_repo", defaultDomainsRepo)
 		}
 		rep, err := ccrawl.VerifyDomainGraph(ctx, app.HTTP, hf, ccrawl.DomainPublishOptions{
 			Repo:     repo,
@@ -133,7 +133,7 @@ func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 		}
 		repo := v.repo
 		if repo == "" {
-			repo = envOr("CCRAWL_URLS_REPO", defaultURLsRepo)
+			repo = setting("urls_repo", defaultURLsRepo)
 		}
 		for _, crawl := range crawls {
 			rep, err := ccrawl.VerifyURLCrawl(ctx, app.HTTP, app.Cache, hf, ccrawl.URLPublishOptions{

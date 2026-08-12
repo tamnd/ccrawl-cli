@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/tamnd/any-cli/kit"
+	"github.com/tamnd/any-cli/kit/errs"
 	"github.com/tamnd/ccrawl-cli/internal/fakecc"
 )
 
@@ -84,6 +86,14 @@ func invoke(t *testing.T, stdin string, argv []string) (int, string, string) {
 	// The library root is read at flag-registration time from the environment,
 	// so it has to be set before NewApp rather than passed as a flag.
 	t.Setenv("CCRAWL_LIBRARY", dir+"/library")
+	// An empty config dir, so a developer's own ~/.config/ccrawl/config.toml
+	// cannot reach a test. It would not be a subtle failure either: a profile is
+	// allowed to move the endpoints, which would send a test past the fake
+	// Common Crawl and at the real one. A test that wants a config file calls
+	// withConfig first, which is why an already-set value is left alone.
+	if os.Getenv("CCRAWL_CONFIG_DIR") == "" {
+		t.Setenv("CCRAWL_CONFIG_DIR", dir+"/config")
+	}
 
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -107,7 +117,16 @@ func invoke(t *testing.T, stdin string, argv []string) (int, string, string) {
 	go func() { b, _ := io.ReadAll(outR); outCh <- string(b) }()
 	go func() { b, _ := io.ReadAll(errR); errCh <- string(b) }()
 
-	code := kit.Run(context.Background(), NewApp())
+	// The same two lines main has, for the same reason: a config file the program
+	// could not read is settled before there is a command tree to run.
+	code := 0
+	app, err := NewApp()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccrawl: %v\n", err)
+		code = errs.ExitCode(err)
+	} else {
+		code = kit.Run(context.Background(), app)
+	}
 
 	_ = outW.Close()
 	_ = errW.Close()
