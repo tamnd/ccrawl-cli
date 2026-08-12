@@ -27,7 +27,7 @@ func (f *fakeCDX) start(t *testing.T) {
 		q := r.URL.Query()
 		if q.Get("showNumPages") == "true" {
 			f.hits["numpages"]++
-			fmt.Fprintf(w, `{"pages": %d}`, len(f.pages))
+			_, _ = fmt.Fprintf(w, `{"pages": %d}`, len(f.pages))
 			return
 		}
 		page := 0
@@ -39,7 +39,7 @@ func (f *fakeCDX) start(t *testing.T) {
 		}
 		if page < len(f.pages) {
 			for _, line := range f.pages[page] {
-				fmt.Fprintln(w, line)
+				_, _ = fmt.Fprintln(w, line)
 			}
 		}
 	}))
