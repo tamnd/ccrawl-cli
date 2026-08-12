@@ -498,6 +498,22 @@ All subcommands accept `--graph <release-id>` to pin a specific web-graph releas
 | `host cdx` | Aggregate CDX statistics per host via DuckDB |
 | `host enrich` | Full enrichment pipeline: rank + degrees + CDX |
 
+### A host record only carries what was measured
+
+Every `host` subcommand emits the same record, and each one fills a different part of it.
+`host top` and `host get` read the rank table, so they answer with the rank signals.
+The degree counts come from `host degrees` or `host enrich`, and the CDX counts from `host cdx`, `host enrich`, or `host get --cdx`.
+
+A count nothing measured is left out rather than written as zero, because zero is an answer and this is the absence of one:
+
+```
+$ ccrawl host top -n 1 -o jsonl
+{"host":"www.facebook.com","host_rev":"com.facebook.www","tld":"com","registered_domain":"facebook.com","harmonic_pos":1,"harmonic_val":34375268,"pagerank_pos":3,"pagerank_val":0.0055143537769673755}
+```
+
+In `-o csv` and `-o table` the column is still there and the cell is blank, so the shape of the output does not change with what a run happened to measure.
+A count that was taken and came out zero prints as `0`, which is the whole point of the distinction.
+
 ### host top
 
 ```sh

@@ -58,6 +58,10 @@ Examples:
 		}
 		for _, r := range ranks {
 			rec := ccrawl.HostFromRank(r)
+			// The registered domain is the host with its labels dropped, so
+			// there is nothing to fetch and no reason for this command to leave
+			// the column empty when host get and host enrich both fill it.
+			rec.RegisteredDomain = registeredDomain(rec.Host)
 			if err := emit(rec); err != nil {
 				return err
 			}
@@ -363,8 +367,8 @@ func (e *hostEnrichCmd) run(ctx context.Context, _ []string) error {
 		// Join graph topology
 		if inDeg != nil {
 			if id, ok := hostToID[rec.Host]; ok && id < int64(len(inDeg)) {
-				rec.InDegree = int64(inDeg[id])
-				rec.OutDegree = int64(outDeg[id])
+				rec.InDegree = ccrawl.Counted(int64(inDeg[id]))
+				rec.OutDegree = ccrawl.Counted(int64(outDeg[id]))
 			}
 		}
 
@@ -406,14 +410,14 @@ func applyHostCDXStats(rec *ccrawl.HostRecord, s ccrawl.HostCDXStats) {
 	if s.RegisteredDomain != "" {
 		rec.RegisteredDomain = s.RegisteredDomain
 	}
-	rec.URLCount = s.URLCount
-	rec.Status2xx = s.Status2xx
-	rec.Status3xx = s.Status3xx
-	rec.Status4xx = s.Status4xx
-	rec.Status5xx = s.Status5xx
+	rec.URLCount = ccrawl.Counted(s.URLCount)
+	rec.Status2xx = ccrawl.Counted(s.Status2xx)
+	rec.Status3xx = ccrawl.Counted(s.Status3xx)
+	rec.Status4xx = ccrawl.Counted(s.Status4xx)
+	rec.Status5xx = ccrawl.Counted(s.Status5xx)
 	rec.TopMIME = s.TopMIME
 	rec.Language = s.Language
 	rec.FirstSeen = s.FirstSeen
 	rec.LastSeen = s.LastSeen
-	rec.TotalBytes = s.TotalBytes
+	rec.TotalBytes = ccrawl.Counted(s.TotalBytes)
 }
