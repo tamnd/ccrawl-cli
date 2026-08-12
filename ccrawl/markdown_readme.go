@@ -11,7 +11,15 @@ import (
 // are committed than the crawl holds, GenerateMarkdownREADME scales them to a
 // full-crawl estimate the same way the original open-markdown card did.
 type MarkdownDatasetStats struct {
-	CrawlID         string
+	CrawlID string
+
+	// Repo is the dataset the card is being committed to, as org/name. Every
+	// download snippet and link on the card is built from it, because a card
+	// that tells a reader to download some other dataset is wrong on the one
+	// page they came to for the download line. Empty falls back to the export
+	// default, which is what a card rendered outside a run gets.
+	Repo string
+
 	CommittedShards int
 	TotalShards     int
 	Rows            int64
@@ -36,14 +44,35 @@ type MarkdownDatasetStats struct {
 	Lang string
 }
 
-// GenerateMarkdownREADME produces the HuggingFace dataset card for
-// open-markdown-v2. It mirrors the original open-index/open-markdown card
-// section for section: the intro, the released-files description, the download
-// snippets, the full dataset card, the schema, the compression-ratio table, and
-// the processing-time chart. The only deltas are this dataset's Hive partition
+// DefaultMarkdownRepo is where 'markdown export' publishes unless told
+// otherwise, and the repo a dataset card names when the run did not say. It
+// lives here rather than beside the flag so the card and the flag cannot drift
+// apart, which is the bug that made a v3 dataset ship a card advertising v2.
+const DefaultMarkdownRepo = "open-index/open-markdown-v3"
+
+// GenerateMarkdownREADME produces the HuggingFace dataset card for a markdown
+// dataset. It mirrors the original open-index/open-markdown card section for
+// section: the intro, the released-files description, the download snippets,
+// the full dataset card, the schema, the compression-ratio table, and the
+// processing-time chart. The only deltas are this dataset's Hive partition
 // layout (data/crawl=.../NNNNNN.parquet) and its actual column set, which drops
 // warc_refers_to and uses a SHA-256 doc_id.
+//
+// Every snippet names s.Repo, so a run publishing to your own dataset gets a
+// card telling readers to download yours.
 func GenerateMarkdownREADME(s MarkdownDatasetStats) string {
+	repo := s.Repo
+	if repo == "" {
+		repo = DefaultMarkdownRepo
+	}
+	// The local directory the snapshot snippet writes into is the dataset's own
+	// name, so downloading two of them side by side does not put both in one
+	// directory.
+	localDir := repo
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		localDir = repo[i+1:]
+	}
+
 	shards := s.CommittedShards
 	if s.TotalShards > shards {
 		shards = s.TotalShards
@@ -165,13 +194,13 @@ Every row in a Parquet file is one web page. Each row keeps the `+"`warc_record_
 from datasets import load_dataset
 
 # stream the entire dataset
-ds = load_dataset("open-index/open-markdown-v2", name="%s", split="train", streaming=True)
+ds = load_dataset("%s", name="%s", split="train", streaming=True)
 for doc in ds:
     print(doc["url"], doc["markdown_length"])
 
 # load a single shard into memory
 ds = load_dataset(
-    "open-index/open-markdown-v2",
+    "%s",
     data_files="data/crawl=%s/000000.parquet",
     split="train",
 )
@@ -183,9 +212,9 @@ ds = load_dataset(
 from huggingface_hub import snapshot_download
 
 folder = snapshot_download(
-    "open-index/open-markdown-v2",
+    "%s",
     repo_type="dataset",
-    local_dir="./open-markdown-v2/",
+    local_dir="./%s/",
     allow_patterns="data/crawl=%s/**/*.parquet",
 )
 `+"```"+`
@@ -196,7 +225,7 @@ For faster downloads, install `+"`pip install huggingface_hub[hf_transfer]`"+` a
 
 `+"```sql"+`
 SELECT url, host, markdown_length
-FROM read_parquet('hf://datasets/open-index/open-markdown-v2/data/crawl=%s/**/*.parquet')
+FROM read_parquet('hf://datasets/%s/data/crawl=%s/**/*.parquet')
 WHERE host = 'en.wikipedia.org'
 LIMIT 10;
 `+"```"+`
@@ -205,7 +234,7 @@ LIMIT 10;
 
 ## Dataset Description
 
-- **Homepage and Repository:** [https://huggingface.co/datasets/open-index/open-markdown-v2](https://huggingface.co/datasets/open-index/open-markdown-v2)
+- **Homepage and Repository:** [https://huggingface.co/datasets/%s](https://huggingface.co/datasets/%s)
 - **Point of Contact:** please create a discussion on the Community tab
 - **License:** Open Data Commons Attribution License (ODC-By) v1.0
 
@@ -277,11 +306,12 @@ Every row records the engine that produced it as `+"`%s`"+`, so two shards built
 
 `,
 		s.CrawlID, docsStr, fmtInt(int64(shards)), reduction, // intro line
-		s.CrawlID,    // file tree
-		s.CrawlID,    // datasets name=
-		s.CrawlID,    // datasets data_files=
-		s.CrawlID,    // huggingface_hub allow_patterns=
-		s.CrawlID,    // duckdb path
+		s.CrawlID,       // file tree
+		repo, s.CrawlID, // datasets name=
+		repo, s.CrawlID, // datasets data_files=
+		repo, localDir, s.CrawlID, // huggingface_hub snapshot_download
+		repo, s.CrawlID, // duckdb path
+		repo, repo, // homepage link
 		extractorID,  // example row extractor
 		s.CrawlID,    // data splits example
 		downloadStep, // processing step 1
@@ -344,7 +374,7 @@ Every row records the engine that produced it as `+"`%s`"+`, so two shards built
 		b.WriteString("```\n\n")
 	}
 
-	b.WriteString(`### Personal and Sensitive Information
+	fmt.Fprintf(&b, `### Personal and Sensitive Information
 
 No additional PII filtering is applied beyond what Common Crawl provides. As the dataset is sourced from the public web, it is likely that some personally identifiable information is present. If you find your own PII in the dataset and would like it removed, please open an issue on the repository.
 
@@ -370,8 +400,8 @@ The dataset is released under the **Open Data Commons Attribution License (ODC-B
 
 ### Contact
 
-Please open a discussion on the [Community tab](https://huggingface.co/datasets/open-index/open-markdown-v2/discussions) for questions, feedback, or issues.
-`)
+Please open a discussion on the [Community tab](https://huggingface.co/datasets/%s/discussions) for questions, feedback, or issues.
+`, repo)
 
 	return b.String()
 }
