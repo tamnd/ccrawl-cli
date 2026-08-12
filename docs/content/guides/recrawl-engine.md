@@ -34,7 +34,7 @@ ccrawl crawl seed --graph cc-main-2026-mar-apr-may --max-tier 3 -o jsonl > seeds
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--max-tier` | 5 | Skip hosts at a tier above this (1 = top 100 K only, 5 = everything) |
+| `--max-tier` | 5 | Skip hosts at a tier above this (2 = top million, 5 = everything) |
 | `--max-seeds` | 10 000 000 | Hard cap on hosts emitted |
 | `--graph` | latest | Web-graph release to read ranks from |
 
@@ -42,7 +42,7 @@ Note the seed is the host root, one URL per host, not every URL the host has in 
 If you want per-URL seeds, that comes from the [columnar index](/guides/columnar-index/) instead.
 
 One thing worth knowing about the tier column here: `crawl seed` has ranks but no measured change rates, so it assumes 0.5 for every host.
-Tier 1 needs a change rate above 0.8, so nothing seeded this way lands in tier 1.
+Tier 1 needs a change rate above 0.8, so nothing seeded this way lands in tier 1, and `--max-tier 1` says so instead of reading the whole table to emit nothing.
 Feed real change rates in with `ccrawl sched diff` if the tier split matters to you.
 
 The `-n` limit and `--max-seeds` do the same job from different ends.
