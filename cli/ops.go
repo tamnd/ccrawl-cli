@@ -395,58 +395,92 @@ func registerNewsList(app *kit.App) {
 type rankLookupIn struct {
 	App   *App   `kit:"inject"`
 	Key   string `kit:"arg" help:"host or domain"`
-	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL (default: the release's own table)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 }
 
 type rankTopIn struct {
 	App   *App   `kit:"inject"`
-	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL (default: the release's own table)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
 	Limit int    `kit:"flag,inherit" name:"limit"`
 }
 
 type rankAllIn struct {
 	App   *App   `kit:"inject"`
-	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL"`
+	Table string `kit:"flag" help:"location of a gzipped rank table, as a URL (default: the release's own table)"`
+	Graph string `kit:"flag" help:"release ID of the web graph (default: latest)"`
 	TLD   string `kit:"flag,name=tld" help:"restrict to a TLD"`
+}
+
+// rankTable is the table a rank command reads. A URL given with --table wins,
+// then the release named by --graph, then the newest release published.
+//
+// The domain ranks resolve through their own call, because a release is listed
+// as soon as its host tables land and its domain table follows later, so the
+// newest release is often the wrong answer for a domain lookup.
+func rankTable(ctx context.Context, app *App, table, graphID string, domain bool) (string, error) {
+	if table != "" {
+		return table, nil
+	}
+	if graphID == "" && domain {
+		g, err := ccrawl.LatestDomainWebGraph(ctx, app.HTTP, app.Cache)
+		if err != nil {
+			return "", err
+		}
+		return g.DomainRankURL(), nil
+	}
+	g, err := resolveGraph(ctx, app, graphID)
+	if err != nil {
+		return "", err
+	}
+	if domain {
+		return g.DomainRankURL(), nil
+	}
+	return g.HostRankURL(), nil
 }
 
 func registerRank(app *kit.App) {
 	app.CommandGroup("rank", "Look up host and domain ranks from the web graph")
 
-	lookup := func(ctx context.Context, in rankLookupIn, emit func(ccrawl.Rank) error) error {
-		if in.Table == "" {
-			return usageErr("point --table at a gzipped rank table")
+	lookup := func(domain bool) func(context.Context, rankLookupIn, func(ccrawl.Rank) error) error {
+		return func(ctx context.Context, in rankLookupIn, emit func(ccrawl.Rank) error) error {
+			table, err := rankTable(ctx, in.App, in.Table, in.Graph, domain)
+			if err != nil {
+				return err
+			}
+			r, err := ccrawl.RankLookup(ctx, in.App.HTTP, table, in.Key)
+			if err != nil {
+				return err
+			}
+			return emit(r)
 		}
-		r, err := ccrawl.RankLookup(ctx, in.App.HTTP, in.Table, in.Key)
-		if err != nil {
-			return err
-		}
-		return emit(r)
 	}
 	kit.Handle(app, kit.OpMeta{
 		Name: "domain", Parent: "rank", Single: true,
 		Summary: "Rank of a registered domain",
 		Args:    []kit.Arg{{Name: "domain"}},
-	}, lookup)
+	}, lookup(true))
 	kit.Handle(app, kit.OpMeta{
 		Name: "host", Parent: "rank", Single: true,
 		Summary: "Rank of a host",
 		Args:    []kit.Arg{{Name: "host"}},
-	}, lookup)
+	}, lookup(false))
 
 	kit.Handle(app, kit.OpMeta{
 		Name: "top", Parent: "rank",
 		Summary: "Top-ranked hosts or domains",
 	}, func(ctx context.Context, in rankTopIn, emit func(ccrawl.Rank) error) error {
-		if in.Table == "" {
-			return usageErr("point --table at a gzipped rank table")
+		table, err := rankTable(ctx, in.App, in.Table, in.Graph, false)
+		if err != nil {
+			return err
 		}
 		n := in.Limit
 		if n == 0 {
 			n = 50
 		}
-		ranks, err := ccrawl.RankTop(ctx, in.App.HTTP, in.Table, in.TLD, n)
+		ranks, err := ccrawl.RankTop(ctx, in.App.HTTP, table, in.TLD, n)
 		if err != nil {
 			return err
 		}
@@ -463,18 +497,22 @@ func registerRank(app *kit.App) {
 		Summary: "Stream every host from a rank table",
 		Long: `Stream all hosts from a Common Crawl web-graph rank table.
 
-The table is sorted by harmonic centrality (most central first). Use --tld to
-restrict output to a single top-level domain, and --limit to cap the row count.
+The table is the host ranks of the newest web-graph release, unless --graph
+names a release or --table gives a URL outright. It is sorted by harmonic
+centrality (most central first). Use --tld to restrict output to a single
+top-level domain, and --limit to cap the row count.
 
 Examples:
-  ccrawl rank all --table https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2024-10/host/cc-main-2024-10-host-rank.txt.gz
-  ccrawl rank all --table <url> --tld com -n 1000
-  ccrawl rank all --table <url> -o jsonl > hosts.jsonl`,
+  ccrawl rank all -n 1000
+  ccrawl rank all --tld com -n 1000
+  ccrawl rank all --graph cc-main-2026-mar-apr-may -o jsonl > hosts.jsonl
+  ccrawl rank all --table https://data.commoncrawl.org/projects/hyperlinkgraph/cc-main-2024-10/host/cc-main-2024-10-host-ranks.txt.gz`,
 	}, func(ctx context.Context, in rankAllIn, emit func(ccrawl.Rank) error) error {
-		if in.Table == "" {
-			return usageErr("point --table at a gzipped rank table")
+		table, err := rankTable(ctx, in.App, in.Table, in.Graph, false)
+		if err != nil {
+			return err
 		}
-		return ccrawl.RankStream(ctx, in.App.HTTP, in.Table, in.TLD, emit)
+		return ccrawl.RankStream(ctx, in.App.HTTP, table, in.TLD, emit)
 	})
 }
 

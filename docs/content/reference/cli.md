@@ -461,15 +461,20 @@ A part is to a location run what a shard is to a full export: the unit that gets
 |---|---|
 | `rank domain <domain>` | Rank of a registered domain |
 | `rank host <host>` | Rank of a host |
-| `rank top` | Top-ranked hosts or domains (requires `--table <url>`) |
-| `rank all` | Stream every host in a rank table, most central first (requires `--table <url>`) |
+| `rank top` | Top-ranked hosts |
+| `rank all` | Stream every host in a rank table, most central first |
+
+All four read the newest web-graph release without being told where it is. `--graph <release-id>` pins a release, the way the `host` commands take it, and `--table <url>` points at a table directly and skips the lookup.
+`rank domain` reads the domain ranks and the other three read the host ranks, which are separate tables with separate positions in them: `wikipedia.org` is domain 14 and host 864 in the same release.
+The newest release for a domain lookup is the newest one whose domain table is published, which is not always the newest release, because a release is listed as soon as its host tables land.
 
 `rank top` and `rank all` take `--tld` to filter by TLD.
 The rank table is sorted by harmonic centrality, so `rank all -n 1000` is the top 1000 hosts without any sorting on your side.
 
 ```sh
-ccrawl rank all --table <url> --tld com -n 1000
-ccrawl rank all --table <url> -o jsonl > hosts.jsonl
+ccrawl rank host wikipedia.org
+ccrawl rank all --tld com -n 1000
+ccrawl rank all --graph cc-main-2026-mar-apr-may -o jsonl > hosts.jsonl
 ```
 
 ---
