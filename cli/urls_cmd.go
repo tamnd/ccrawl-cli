@@ -63,7 +63,7 @@ HF_TOKEN (or HUGGINGFACE_TOKEN) must be set to push. Examples:
 }
 
 func (v *urlsPublishCmd) flags(f *kit.FlagSet) {
-	f.StringVar(&v.repo, "repo", envOr("CCRAWL_URLS_REPO", defaultURLsRepo), "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.repo, "repo", setting("urls_repo", defaultURLsRepo), "HuggingFace dataset repo (org/name)")
 	f.IntVar(&v.commitEvery, "commit-every", 16, "shards per HuggingFace commit")
 	f.IntVar(&v.workers, "workers", 0, "download-and-convert workers (0 picks a default from CPU count)")
 	f.BoolVar(&v.whole, "whole", false, "download each part whole before reading (fallback for range-hostile mirrors)")
@@ -157,7 +157,7 @@ crawl. Pick the crawls with the global -c flag.
   ccrawl urls recount -c CC-MAIN-2026-25 --no-push   # report the totals, commit nothing`,
 		Args: kit.NoArgs,
 		Flags: func(f *kit.FlagSet) {
-			f.StringVar(&v.repo, "repo", envOr("CCRAWL_URLS_REPO", defaultURLsRepo), "HuggingFace dataset repo (org/name)")
+			f.StringVar(&v.repo, "repo", setting("urls_repo", defaultURLsRepo), "HuggingFace dataset repo (org/name)")
 			f.IntVar(&v.workers, "workers", 0, "footer-read workers (0 picks a default from CPU count)")
 			f.BoolVar(&v.noPush, "no-push", false, "read and report totals but skip the commit")
 		},
@@ -195,29 +195,4 @@ func (v *urlsRecountCmd) run(ctx context.Context, args []string) error {
 		DoCommit: push,
 		Logf:     func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
-}
-
-// envOr returns the environment value for key, or def when it is unset or empty.
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-// envDuration returns the environment value for key parsed as a duration, or def
-// when it is unset or unparseable. A bad value falls back rather than failing the
-// run, because this is read while flags are being registered, before there is any
-// error path to return on.
-func envDuration(key string, def time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ccrawl: %s=%q is not a duration, using %s\n", key, v, def)
-		return def
-	}
-	return d
 }

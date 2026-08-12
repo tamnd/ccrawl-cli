@@ -36,6 +36,10 @@ type App struct {
 	UseLibrary bool
 	LibraryDir string
 
+	// Settings is the config file this run resolved, kept so config show can say
+	// where each value came from. Nil in a run that did not go through NewApp.
+	Settings *settings
+
 	// Run reporting, from --progress, --journal and --metrics-addr. StartRun
 	// turns these into the reporter a long command hands to the pipeline.
 	Progress    string
@@ -62,11 +66,19 @@ type domainGlobals struct {
 // buildApp is the client factory kit calls once per run. It folds the resolved
 // framework config and the ccrawl globals into a ccrawl.Config and opens the
 // shared HTTP client and cache.
-func buildApp(kc kit.Config, dom *domainGlobals) *App {
-	cfg := ccrawl.DefaultConfig()
+// base is the ccrawl defaults with the config file already folded in, so the
+// settings that have no flag of their own (the backoff pair, the DuckDB path)
+// survive into the run.
+func buildApp(kc kit.Config, dom *domainGlobals, base ccrawl.Config) *App {
+	cfg := base
 	cfg.DataDir = kc.DataDir
 	cfg.CacheDir = kc.CacheDir
-	cfg.DBPath = kc.DataDir + "/ccrawl.duckdb"
+	// The DuckDB file follows the data dir unless the config file put it
+	// somewhere else, since a moved data dir with the database left behind in the
+	// old one is nobody's intent.
+	if base.DBPath == ccrawl.DefaultConfig().DBPath {
+		cfg.DBPath = kc.DataDir + "/ccrawl.duckdb"
+	}
 	cfg.Workers = dom.workers
 	cfg.Delay = kc.Rate
 	cfg.GlobalRate = dom.globalRate
@@ -74,6 +86,7 @@ func buildApp(kc kit.Config, dom *domainGlobals) *App {
 	cfg.Timeout = kc.Timeout
 	cfg.UserAgent = kc.UserAgent
 	cfg.CrawlID = dom.crawl
+	cfg.Source = ccrawl.SourceHTTPS
 	if dom.source == "s3" {
 		cfg.Source = ccrawl.SourceS3
 	}

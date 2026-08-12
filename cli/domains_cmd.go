@@ -67,7 +67,7 @@ HF_TOKEN (or HUGGINGFACE_TOKEN) must be set to push. Examples:
 }
 
 func (v *domainsPublishCmd) flags(f *kit.FlagSet) {
-	f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.repo, "repo", setting("domains_repo", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
 	f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest with a domain-ranks table)")
 	f.IntVar(&v.shardRows, "shard-rows", ccrawl.DefaultShardRows, "rows per output shard")
 	f.IntVar(&v.commitEvery, "commit-every", 4, "shards per HuggingFace commit")
@@ -161,7 +161,7 @@ table; pass --graph to pick one.
   ccrawl domains recount --graph cc-main-2026-mar-apr-may --no-push   # report only`,
 		Args: kit.NoArgs,
 		Flags: func(f *kit.FlagSet) {
-			f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
+			f.StringVar(&v.repo, "repo", setting("domains_repo", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
 			f.StringVar(&v.graph, "graph", "", "web-graph release id (default: the latest with a domain-ranks table)")
 			f.IntVar(&v.workers, "workers", 0, "footer-read workers (0 picks a default from CPU count)")
 			f.BoolVar(&v.noPush, "no-push", false, "read and report totals but skip the commit")
@@ -236,7 +236,7 @@ to also write the domains that are new in the later release, one per line.
 }
 
 func (v *domainsDiffCmd) flags(f *kit.FlagSet) {
-	f.StringVar(&v.repo, "repo", envOr("CCRAWL_DOMAINS_REPO", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
+	f.StringVar(&v.repo, "repo", setting("domains_repo", defaultDomainsRepo), "HuggingFace dataset repo (org/name)")
 	f.StringVar(&v.from, "from", "", "older web-graph release id (default: second-newest published)")
 	f.StringVar(&v.to, "to", "", "newer web-graph release id (default: newest published)")
 	f.IntVar(&v.workers, "workers", 0, "concurrent shard readers (0 picks a default from CPU count)")

@@ -133,8 +133,13 @@ func cacheDir() string {
 	return filepath.Join(dataDir(), "cache")
 }
 
-// ConfigDir returns the directory holding the config file.
+// ConfigDir returns the directory holding the config file. CCRAWL_CONFIG_DIR
+// names it outright, which is the override kit uses for its own config dir and
+// the one a test needs to keep a developer's real config out of a run.
 func ConfigDir() string {
+	if d := os.Getenv("CCRAWL_CONFIG_DIR"); d != "" {
+		return d
+	}
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
 		return filepath.Join(d, "ccrawl")
 	}
