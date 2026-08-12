@@ -172,7 +172,7 @@ check_flags_in "$MD_DOC" "$(printf 'markdown export\nmarkdown refetch')"
 # The requirements page is organised by dependency rather than by command, so its
 # headings name no command to scope against. The fallback is every command it
 # talks about, and a flag passes if any one of them has it.
-check_flags_in "$REQ_DOC" "$(printf '\ncolumnar sql\ndb sql\ndownload\nhost get\nhost enrich\nindex build\nurls publish\ndomains publish\nmarkdown export\nmarkdown refetch\npublish verify\napi\nserve')"
+check_flags_in "$REQ_DOC" "$(printf '\ncolumnar sql\ncrawl fetch\ncrawl run\ndb sql\ndownload\nhost get\nhost enrich\nindex build\nurls publish\ndomains publish\nmarkdown export\nmarkdown refetch\npublish verify\napi\nserve')"
 
 echo
 if [ "$fail" -ne 0 ]; then
