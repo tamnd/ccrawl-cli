@@ -30,9 +30,14 @@ func HTTPSURL(path string) string {
 	return DataBaseURL + strings.TrimPrefix(path, "/")
 }
 
+// cdxBase is the root of the CDX server. It is a variable rather than the
+// constant so a test can point the paging path at a local server; nothing in the
+// program reassigns it.
+var cdxBase = CDXBaseURL
+
 // cdxAPIURL is the CDX server endpoint for one crawl.
 func cdxAPIURL(crawlID string) string {
-	return CDXBaseURL + crawlID + "-index"
+	return cdxBase + crawlID + "-index"
 }
 
 // pathsURL is the URL of a crawl's gzipped path manifest for a file kind.

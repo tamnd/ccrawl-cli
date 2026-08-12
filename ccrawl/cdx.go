@@ -106,10 +106,17 @@ func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, f
 	count := 0
 	for page := 0; page < pages; page++ {
 		stop := false
+		// The callback's error is carried out here rather than returned through
+		// cdxPage, so it reaches the caller exactly as it was raised. Callers stop
+		// a stream by returning a sentinel and comparing it on the way back, and
+		// half of them, kit's row limit among them, compare it by identity. Adding
+		// "CDX page 0: " to it turns "stop here" into a failed search.
+		var cbErr error
 		err := cdxPage(ctx, h, crawlID, q, page, func(r CDXRecord) error {
 			r.CrawlID = crawlID
 			if err := fn(r); err != nil {
-				return err
+				cbErr = err
+				return errStop
 			}
 			count++
 			if q.Limit > 0 && count >= q.Limit {
@@ -118,6 +125,9 @@ func CDXStream(ctx context.Context, h *HTTPClient, crawlID string, q CDXQuery, f
 			}
 			return nil
 		})
+		if cbErr != nil {
+			return cbErr
+		}
 		if err != nil && err != errStop {
 			return fmt.Errorf("CDX page %d: %w", page, err)
 		}
