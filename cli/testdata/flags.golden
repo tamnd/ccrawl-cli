@@ -163,13 +163,13 @@ ccrawl publish verify
 ccrawl rank
 	
 ccrawl rank all
-	--table --tld
+	--graph --table --tld
 ccrawl rank domain
-	--table
+	--graph --table
 ccrawl rank host
-	--table
+	--graph --table
 ccrawl rank top
-	--table --tld
+	--graph --table --tld
 ccrawl sched
 	
 ccrawl sched assign
