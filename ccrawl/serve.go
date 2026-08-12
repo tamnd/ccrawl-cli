@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+// The v2 HTTP API is a local exploration tool, not a service. There is no
+// authentication, no rate limiting, no request log and no pagination cursor,
+// the host store is rebuilt in memory on every start, and nothing here has been
+// run against hostile traffic. The CLI binds it to loopback by default and says
+// so if it is pointed anywhere else. Anything more than that belongs behind a
+// reverse proxy, or in a different program.
+
 // ServeConfig holds configuration for the HTTP API server.
 type ServeConfig struct {
 	Addr     string // e.g. ":8080"
@@ -84,8 +91,15 @@ func (s *APIServer) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// handleHealth answers with the stores that are actually loaded. "ok" on its
+// own would be true of a server whose host and search endpoints both answer
+// 503, which is not what anyone asking is trying to find out.
 func (s *APIServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, map[string]string{"status": "ok"})
+	writeJSON(w, 200, map[string]any{
+		"status": "ok",
+		"hosts":  s.hosts != nil,
+		"search": s.search != nil,
+	})
 }
 
 func (s *APIServer) handleHostGet(w http.ResponseWriter, r *http.Request) {
