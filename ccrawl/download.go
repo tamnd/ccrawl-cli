@@ -2,6 +2,8 @@ package ccrawl
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -15,8 +17,12 @@ type DownloadResult struct {
 	Path      string
 	LocalPath string
 	Bytes     int64
-	Skipped   bool
-	Err       error
+	// SHA256 is the checksum of what was written, hex encoded, computed from the
+	// bytes on their way to disk. It is empty for a file that was already there,
+	// since nothing was read to hash.
+	SHA256  string
+	Skipped bool
+	Err     error
 }
 
 // DownloadFiles fetches a list of Common Crawl relative paths into localDir,
@@ -85,7 +91,11 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 	if err != nil {
 		return DownloadResult{Path: ccPath, Err: err}
 	}
-	n, err := io.Copy(f, resp.Body)
+	// Hashed on the way past rather than by reading the file back: the checksum
+	// is what the library manifest records, and a second pass over a gigabyte
+	// WARC to get it would be the slowest part of a fast download.
+	sum := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, sum), resp.Body)
 	if cerr := f.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
@@ -97,7 +107,7 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 		_ = os.Remove(tmp)
 		return DownloadResult{Path: ccPath, Err: err}
 	}
-	return DownloadResult{Path: ccPath, LocalPath: local, Bytes: n}
+	return DownloadResult{Path: ccPath, LocalPath: local, Bytes: n, SHA256: hex.EncodeToString(sum.Sum(nil))}
 }
 
 // FetchWARCRecord retrieves a single WARC record from the given file using a

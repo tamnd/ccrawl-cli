@@ -98,6 +98,10 @@ func runConvert(ctx context.Context, app *App, input, to, outPath string, markdo
 		return noResults("no archive files found")
 	}
 
+	var written []writtenFile
+	root := libraryRootFor(app, outPath)
+	defer func() { recordLibraryFiles(root, written) }()
+
 	for _, f := range files {
 		out := outPath
 		if out == "" || info.IsDir() {
@@ -114,6 +118,11 @@ func runConvert(ctx context.Context, app *App, input, to, outPath string, markdo
 		if err := convertOne(ctx, app, f, out, to, markdown); err != nil {
 			return err
 		}
+		// A Parquet writer does not hand back a checksum, so the manifest reads it
+		// off the finished file. It is one pass over output that is already in the
+		// page cache, and it is what makes library verify able to say anything
+		// about processed output at all.
+		written = append(written, writtenFile{Path: out})
 		_, _ = fmt.Fprintln(cmdErr, "wrote "+out)
 	}
 	return nil

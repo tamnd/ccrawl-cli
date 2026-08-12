@@ -125,6 +125,30 @@ A few things worth knowing:
 
 `ccrawl config show` prints the active `library_dir` so you can confirm where a run reads and writes.
 
+### Knowing what you have
+
+A directory listing tells you the file names. It does not tell you whether the bytes are still the ones that were downloaded, which crawl a file came from once it has been moved, or what any of it is costing you.
+`library.json` at the root of the tree does: every artifact with its size, sha256, creation time, and the version of ccrawl that produced it, updated by every command that writes into the library.
+
+```bash
+ccrawl library list                  # what is in the library
+ccrawl library du                    # what it costs, per crawl
+ccrawl library verify                # rehash it all, report what moved
+ccrawl library gc --older-than 90d   # free the crawls you are done with
+```
+
+`verify` is the one worth putting in a cron. A WARC that lost a block to a bad disk still parses, still converts, and quietly produces wrong rows; the checksum is what turns that into a line of output.
+It exits 1 when anything failed, so it can gate a publish run.
+
+`gc` is a dry run unless you pass `--yes`, and the dry run prints exactly the list the real run deletes.
+
+```bash
+ccrawl library gc --older-than 90d          # what would go
+ccrawl library gc --older-than 90d --yes    # and now it goes
+```
+
+If your library predates all of this, or you copied files into it by hand, `ccrawl library scan` reads the tree and writes the manifest. It hashes every byte the first time and is a no-op after that.
+
 ## Counting files
 
 `ccrawl stats` shows the shape of a crawl: how many files of each kind it ships.

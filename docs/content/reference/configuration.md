@@ -74,6 +74,10 @@ library_dir  ~/notes/ccrawl
 Move it with `CCRAWL_LIBRARY` or per-command with `--library-dir`.
 Inside it, raw archives live under `<crawl>/<kind>/` and processed output under `<crawl>/<format>/<kind>/`.
 
+`library.json` at the root records every artifact with its size, sha256, creation time, and the version of ccrawl that wrote it, and every command that materialises into the library keeps it current.
+The [`library` command](/reference/cli/#library) reads it: `library list` for what is there, `library du` for what it costs, `library verify` to catch a file that rotted or went missing, and `library gc --older-than 90d` to get the disk back.
+A library built before the manifest existed is brought under it with `library scan`.
+
 ## Environment variables
 
 | Variable | Used for |
