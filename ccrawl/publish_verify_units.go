@@ -126,7 +126,7 @@ func repairURLShards(ctx context.Context, h *HTTPClient, hf *HFClient, o URLPubl
 		o.Logf("repair %s: re-projecting %s", j.repoPath, j.sourceURL)
 		rows, bytes, err := projectURLPart(ctx, h, j, o.Whole)
 		if err != nil {
-			return done, fmt.Errorf("re-project %s: %w", j.repoPath, err)
+			return done, fmt.Errorf("project %s again: %w", j.repoPath, err)
 		}
 		if err := c.add(ctx, shard{Index: j.index, RepoPath: j.repoPath, Local: j.outPath, Rows: rows, Bytes: bytes}); err != nil {
 			return done, err

@@ -265,7 +265,7 @@ func (m *Metrics) Handler() http.Handler {
 func ServeMetrics(addr string, m *Metrics) (*http.Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("--metrics-addr %s: %w", addr, err)
+		return nil, fmt.Errorf("listen on the --metrics-addr %s: %w", addr, err)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())

@@ -246,7 +246,7 @@ func (v *libraryDuCmd) run(ctx context.Context, _ []string) error {
 	switch v.by {
 	case "crawl", "kind", "format":
 	default:
-		return usageErr("--by takes crawl, kind, or format")
+		return usageErr("pass --by crawl, --by kind, or --by format")
 	}
 	root := libraryRoot(app)
 	m, err := ccrawl.LoadManifest(root)

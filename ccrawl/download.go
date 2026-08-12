@@ -79,11 +79,11 @@ func downloadOne(ctx context.Context, h *HTTPClient, src Source, ccPath, localDi
 	url := FileURL(ccPath, src)
 	resp, err := h.GetDownload(ctx, url)
 	if err != nil {
-		return DownloadResult{Path: ccPath, Err: fmt.Errorf("GET %s: %w", url, err)}
+		return DownloadResult{Path: ccPath, Err: fmt.Errorf("get %s: %w", url, err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return DownloadResult{Path: ccPath, Err: fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)}
+		return DownloadResult{Path: ccPath, Err: fmt.Errorf("get %s: HTTP %d", url, resp.StatusCode)}
 	}
 
 	tmp := local + ".tmp"

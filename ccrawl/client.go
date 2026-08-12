@@ -269,7 +269,7 @@ func (h *HTTPClient) doWith(ctx context.Context, client *http.Client, url, range
 		}
 		if isS3 && !h.creds.valid() {
 			// Not retryable: no amount of backing off produces a credential.
-			return nil, fmt.Errorf("GET %s: %w", url, ErrNoAWSCredentials)
+			return nil, fmt.Errorf("get %s: %w", url, ErrNoAWSCredentials)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetch, nil)
 		if err != nil {

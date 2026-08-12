@@ -68,7 +68,7 @@ func fetchNewsPaths(ctx context.Context, h *HTTPClient, monthPath string) ([]New
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("the server answered HTTP %d", resp.StatusCode)
 	}
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {

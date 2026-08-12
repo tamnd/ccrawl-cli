@@ -89,7 +89,7 @@ func (v *publishVerifyCmd) flags(f *kit.FlagSet) {
 func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 	app := appFromCtx(ctx)
 	if v.sample < 0 {
-		return usageErr("--sample cannot be negative")
+		return usageErr("a negative --sample is not a number of shards")
 	}
 	push := !v.noPush && !app.dryRun
 	hf := ccrawl.NewHFClient("")
@@ -106,7 +106,7 @@ func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 	var reports []*ccrawl.VerifyReport
 	if v.graph != "" {
 		if v.repair {
-			return usageErr("--repair does not apply to a graph: a domain shard is a cut of one stream, so re-run ccrawl domains publish to rebuild it")
+			return usageErr("there is nothing for --repair to do on a graph: a domain shard is a cut of one stream, so re-run ccrawl domains publish to rebuild it")
 		}
 		repo := v.repo
 		if repo == "" {

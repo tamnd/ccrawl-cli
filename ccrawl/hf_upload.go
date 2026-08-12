@@ -648,7 +648,7 @@ func splitCommitMessage(message string) (summary, description string) {
 // commit URL.
 func (c *HFClient) createCommitGo(ctx context.Context, repoID, message string, ops []HFOperation) (string, error) {
 	if !c.Valid() {
-		return "", fmt.Errorf("HF commit: %w: no token, set HF_TOKEN", ErrHFAuth)
+		return "", fmt.Errorf("commit to the hub: %w: no token, set HF_TOKEN", ErrHFAuth)
 	}
 
 	// Same ceiling the Python path had. The publish stall clock is what turns a
@@ -671,7 +671,7 @@ func (c *HFClient) createCommitGo(ctx context.Context, repoID, message string, o
 				missing++
 				continue
 			}
-			return "", fmt.Errorf("HF commit: read %s: %w", op.LocalPath, err)
+			return "", fmt.Errorf("commit to the hub: read %s: %w", op.LocalPath, err)
 		}
 		files = append(files, f)
 	}
@@ -679,7 +679,7 @@ func (c *HFClient) createCommitGo(ctx context.Context, repoID, message string, o
 		fmt.Fprintf(os.Stderr, "  HF commit: %d file(s) missing locally\n", missing)
 	}
 	if len(files) == 0 {
-		return "", errors.New("HF commit: no files to commit")
+		return "", errors.New("commit to the hub: no files to commit")
 	}
 
 	if err := c.preupload(ctx, repoID, "main", files); err != nil {

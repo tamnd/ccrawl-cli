@@ -84,10 +84,10 @@ Examples:
   ccrawl sched diff --crawl-a CC-MAIN-2026-12 --crawl-b CC-MAIN-2026-17 -o jsonl > changes.jsonl`,
 	}, func(ctx context.Context, in schedDiffIn, emit func(ccrawl.HostDiffEntry) error) error {
 		if in.CrawlA == "" || in.CrawlB == "" {
-			return usageErr("--crawl-a and --crawl-b are required")
+			return usageErr("name both crawls, with --crawl-a and --crawl-b")
 		}
 		if !ccrawl.DuckDBAvailable() {
-			return usageErr("DuckDB binary not found on PATH")
+			return usageErr("no duckdb binary on PATH, and the diff runs its SQL through one")
 		}
 		urlsA, err := ccrawl.ColumnarParquetURLs(ctx, in.App.HTTP, in.App.Cache, in.CrawlA, "warc", in.App.Cfg.Source)
 		if err != nil {
