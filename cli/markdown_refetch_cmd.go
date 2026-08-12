@@ -23,7 +23,7 @@ func init() {
 // registerMarkdownRefetch attaches the refetch sub-command under markdown.
 // Called by registerMarkdown in markdown_cmd.go.
 func registerMarkdownRefetch(app *kit.App) {
-	app.AddCommandUnder("markdown", newMarkdownRefetchCmd())
+	addCmdUnder(app, "markdown", newMarkdownRefetchCmd())
 }
 
 // markdownRefetchCmd holds the flags for `ccrawl markdown refetch`.

@@ -17,7 +17,7 @@ func registerHost(app *kit.App) {
 	registerHostVertices(app)
 	registerHostDegrees(app)
 	registerHostCDX(app)
-	app.AddCommandUnder("host", newHostEnrichCmd())
+	addCmdUnder(app, "host", newHostEnrichCmd())
 }
 
 // ── host top ──────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ type hostTopIn struct {
 }
 
 func registerHostTop(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "top",
 		Parent:  "host",
 		Summary: "Top hosts by harmonic centrality from the web graph",
@@ -76,7 +76,7 @@ type hostGetIn struct {
 }
 
 func registerHostGet(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "get",
 		Parent:  "host",
 		Single:  true,
@@ -133,7 +133,7 @@ type hostVerticesIn struct {
 }
 
 func registerHostVertices(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "vertices",
 		Parent:  "host",
 		Summary: "Stream the host vertex ID → hostname mapping",
@@ -168,7 +168,7 @@ type hostDegreesIn struct {
 }
 
 func registerHostDegrees(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "degrees",
 		Parent:  "host",
 		Summary: "Compute in-degree and out-degree for every host from the edge files",
@@ -225,7 +225,7 @@ type hostCDXIn struct {
 }
 
 func registerHostCDX(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "cdx",
 		Parent:  "host",
 		Summary: "Aggregate CDX statistics per host via DuckDB (requires duckdb on PATH)",

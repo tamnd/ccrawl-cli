@@ -23,7 +23,7 @@ type schedAssignIn struct {
 }
 
 func registerSchedAssign(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "assign",
 		Parent:  "sched",
 		Summary: "Assign crawl tiers to hosts from the web-graph rank table",
@@ -64,7 +64,7 @@ type schedDiffIn struct {
 }
 
 func registerSchedDiff(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "diff",
 		Parent:  "sched",
 		Summary: "Compute per-host change rates between two CC crawl snapshots",

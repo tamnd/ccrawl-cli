@@ -19,7 +19,7 @@ import (
 // registerMarkdown attaches the markdown command group.
 func registerMarkdown(app *kit.App) {
 	app.CommandGroup("markdown", "Build open-index/open-markdown-style Markdown-parquet datasets from CC WARCs")
-	app.AddCommandUnder("markdown", newMarkdownExportCmd())
+	addCmdUnder(app, "markdown", newMarkdownExportCmd())
 	registerMarkdownRefetch(app)
 }
 

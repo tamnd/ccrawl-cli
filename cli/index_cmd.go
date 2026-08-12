@@ -78,7 +78,7 @@ func snippet(s string) string {
 }
 
 func registerIndexBuild(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "build",
 		Parent:  "index",
 		Single:  true,
@@ -284,7 +284,7 @@ type SearchHit struct {
 }
 
 func registerIndexSearch(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "search",
 		Parent:  "index",
 		Summary: "Search the local inverted index with BM25 ranking",

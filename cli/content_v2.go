@@ -152,7 +152,7 @@ type LangReport struct {
 }
 
 func registerContentLang(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "lang",
 		Parent:  "content",
 		Summary: "Identify the language of a page the way the markdown pipelines do",
@@ -212,7 +212,7 @@ type ContentExtractResult struct {
 }
 
 func registerContentExtract(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "extract",
 		Parent:  "content",
 		Summary: "Fetch a URL and extract clean text, title, and metadata",
@@ -280,7 +280,7 @@ type QualityReport struct {
 }
 
 func registerContentQuality(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "quality",
 		Parent:  "content",
 		Summary: "Compute content quality signals for a URL",
@@ -343,7 +343,7 @@ type LinkRecord struct {
 }
 
 func registerContentLinksV2(app *kit.App) {
-	kit.Handle(app, kit.OpMeta{
+	handle(app, kit.OpMeta{
 		Name:    "outlinks",
 		Parent:  "content",
 		Summary: "Extract structured outbound links from a URL",

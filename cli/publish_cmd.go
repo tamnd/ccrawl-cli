@@ -24,8 +24,8 @@ var obsoleteRepos = []string{
 // maintenance that does not belong to a single dataset.
 func registerPublish(app *kit.App) {
 	app.CommandGroup("publish", "Maintenance for the published Common Crawl datasets")
-	app.AddCommandUnder("publish", newPublishVerifyCmd())
-	app.AddCommandUnder("publish", newDeleteObsoleteCmd())
+	addCmdUnder(app, "publish", newPublishVerifyCmd())
+	addCmdUnder(app, "publish", newDeleteObsoleteCmd())
 }
 
 type publishVerifyCmd struct {

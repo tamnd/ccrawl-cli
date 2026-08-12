@@ -21,9 +21,9 @@ const defaultDomainsRepo = "open-index/ccrawl-domains"
 // registerDomains attaches the `domains` command group.
 func registerDomains(app *kit.App) {
 	app.CommandGroup("domains", "Publish the Common Crawl domain ranks to HuggingFace")
-	app.AddCommandUnder("domains", newDomainsPublishCmd())
-	app.AddCommandUnder("domains", newDomainsRecountCmd())
-	app.AddCommandUnder("domains", newDomainsDiffCmd())
+	addCmdUnder(app, "domains", newDomainsPublishCmd())
+	addCmdUnder(app, "domains", newDomainsRecountCmd())
+	addCmdUnder(app, "domains", newDomainsDiffCmd())
 }
 
 type domainsPublishCmd struct {

@@ -11,10 +11,10 @@ func registerEscapeHatches(app *kit.App) {
 	app.CommandGroup("crawls", "Discover Common Crawl collections")
 	app.CommandGroup("news", "Work with the CC-NEWS dataset")
 	for _, c := range crawlsEscapeHatches() {
-		app.AddCommandUnder("crawls", c)
+		addCmdUnder(app, "crawls", c)
 	}
 	for _, c := range newsEscapeHatches() {
-		app.AddCommandUnder("news", c)
+		addCmdUnder(app, "news", c)
 	}
 
 	registerMarkdown(app)
@@ -22,19 +22,19 @@ func registerEscapeHatches(app *kit.App) {
 	registerDomains(app)
 	registerPublish(app)
 
-	app.AddCommand(newGetCmd())
-	app.AddCommand(newFetchCmd())
-	app.AddCommand(newExportCmd())
-	app.AddCommand(newDownloadCmd())
-	app.AddCommand(newPathsCmd())
-	app.AddCommand(newParseCmd())
-	app.AddCommand(newExtractCmd())
-	app.AddCommand(newTableCmd())
-	app.AddCommand(newDBCmd())
-	app.AddCommand(newConvertCmd())
-	app.AddCommand(newDedupCmd())
-	app.AddCommand(newLibraryCmd())
-	app.AddCommand(newConfigCmd())
-	app.AddCommand(newCacheCmd())
-	app.AddCommand(newVersionCmd())
+	addCmd(app, newGetCmd())
+	addCmd(app, newFetchCmd())
+	addCmd(app, newExportCmd())
+	addCmd(app, newDownloadCmd())
+	addCmd(app, newPathsCmd())
+	addCmd(app, newParseCmd())
+	addCmd(app, newExtractCmd())
+	addCmd(app, newTableCmd())
+	addCmd(app, newDBCmd())
+	addCmd(app, newConvertCmd())
+	addCmd(app, newDedupCmd())
+	addCmd(app, newLibraryCmd())
+	addCmd(app, newConfigCmd())
+	addCmd(app, newCacheCmd())
+	addCmd(app, newVersionCmd())
 }
