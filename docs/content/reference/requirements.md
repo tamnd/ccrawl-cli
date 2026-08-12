@@ -31,7 +31,11 @@ Three hosts cover the whole tool:
 - `data.commoncrawl.org` serves the archives, the file manifests, the columnar Parquet index, and the web graph, so `get`, `fetch`, `download`, `paths`, `stats`, `columnar`, `rank`, `host`, `news`, `markdown`, and `sched` need it.
 - `huggingface.co` is only for the publish commands, covered below.
 
-`crawl fetch` and `crawl run` are the exception: they fetch the live web rather than Common Crawl, so they need a route to whatever hosts you point them at, and they read `robots.txt` from each one first.
+`crawl fetch`, `crawl run` and the four `content` commands are the exception: they fetch the live web rather than Common Crawl, so they need a route to whatever hosts you point them at and nothing from Common Crawl at all.
+`crawl run` reads `robots.txt` for each host first, unless you pass `--no-robots`.
+`crawl fetch` checks it only when you pass `--robots`, and the `content` commands do not check it at all.
+None of them draw on `--global-rate` either, which is a budget for Common Crawl's servers and not for anyone else's.
+That is fine for the handful of URLs those commands were built for, and it is not fine for a long list on stdin: `crawl run` is the command for crawling a site, and it is the one that paces itself and asks permission first.
 
 When Common Crawl itself is having a bad day, [troubleshooting](/reference/troubleshooting/) covers what the retries do and what a partial result looks like.
 
