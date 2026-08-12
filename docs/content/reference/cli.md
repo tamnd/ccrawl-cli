@@ -1169,6 +1169,20 @@ These apply to every command.
 
 See [run journal](/reference/run-journal/) for the event schema, the metric names, and the queries worth keeping.
 
+### The crawl list outlives the index server
+
+Turning `latest` into a crawl ID needs `collinfo.json` from `index.commoncrawl.org`. It is cached for six hours, and when the fetch fails the cached copy is used at any age, with a line on stderr saying how old it is:
+
+```
+crawls: the index server is unreachable, using the crawl list cached 19h0m0s ago; pass -c to name a crawl instead of resolving it
+```
+
+Common Crawl publishes about six crawls a year, so a day-old list is almost always the list a fresh fetch would return, and the index server has gone away for three days at a stretch. Most of what ccrawl does reads `data.commoncrawl.org`, which stays up through those outages, and only touches the index server to resolve that one word. Without the fallback `paths`, `columnar` and `download` all failed on a crawl ID sitting in the cache.
+
+Naming a crawl with `-c CC-MAIN-2026-30` skips the lookup entirely, and is the right move for a scheduled job that should not depend on it. With no cached copy and the server unreachable the run still fails with exit 8: guessing a crawl list is worse than saying nothing.
+
+`--no-cache` turns the whole cache off, the fallback with it.
+
 ### The shared request budget
 
 `--rate` spaces the requests one ccrawl process makes. That is not the number Common Crawl sees. Running the URL publish, the domain publish, and a Markdown export at once means three processes each pacing themselves politely and three times the traffic arriving at a nonprofit that serves this for free.

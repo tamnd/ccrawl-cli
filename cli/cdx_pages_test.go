@@ -109,4 +109,34 @@ func TestSearchDoesNotCallAnOutageAnEmptyResult(t *testing.T) {
 	if !strings.Contains(r.Err, "not an empty result") {
 		t.Fatalf("the error does not say why this is not exit 3:\n%s", r.Err)
 	}
+	// A 503 is the server answering, so this is exit 1 and not the exit 8 the
+	// next test is about. The two look identical from the shell without this.
+	if r.Code != 1 {
+		t.Fatalf("a query the server refused exited %d, want 1\n%s", r.Code, r.Err)
+	}
+}
+
+// TestSearchExitsEightWhenTheIndexNeverAnswered is the other half of that
+// distinction. Exit 1 tells a supervisor the command is wrong and to stop; exit
+// 8 tells it Common Crawl is unreachable and the same command is worth running
+// in an hour. The index server refused connections for three days while this
+// was written, so this is not a hypothetical.
+func TestSearchExitsEightWhenTheIndexNeverAnswered(t *testing.T) {
+	r := runFaulty(t, func(s *fakecc.Server) { s.HangupPage = 0 },
+		"search", "other.test", "--match", "domain", "-o", "url", "--retries", "1")
+	if r.Code != 8 {
+		t.Fatalf("a query whose only page never answered exited %d, want 8\n%s%s", r.Code, r.Out, r.Err)
+	}
+}
+
+// TestSearchExitsOneWhenOnlySomeOfTheLossWasTransport keeps exit 8 honest. A
+// run that hit a hangup and a 503 is not a clean outage, and telling a
+// supervisor to retry it forever against a server that is up and refusing is
+// how a backoff loop becomes a hot loop.
+func TestSearchExitsOneWhenOnlySomeOfTheLossWasTransport(t *testing.T) {
+	r := runFaulty(t, func(s *fakecc.Server) { s.HangupPage, s.DeadPage = 0, 1 },
+		"search", "example.com", "--match", "domain", "-o", "url", "--retries", "1")
+	if r.Code != 1 {
+		t.Fatalf("a run that lost one page to a hangup and one to a 503 exited %d, want 1\n%s%s", r.Code, r.Out, r.Err)
+	}
 }

@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+
+	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
 // pageLosses collects the index pages a query could not read. A wide query is
@@ -17,6 +20,13 @@ type pageLosses struct {
 	strict bool
 	pages  int
 	crawls int
+
+	// otherThanTransport counts the losses that were not the transport giving
+	// up. A run where every loss was the transport is an outage rather than a
+	// bad query, and the caller turns that into exit 8 so a supervisor knows to
+	// come back later. One 404 or one truncated page in the mix and it is not
+	// that story any more.
+	otherThanTransport int
 }
 
 // handler returns the callback for CDXQuery.OnPageError. In strict mode it
@@ -27,6 +37,9 @@ func (p *pageLosses) handler() func(string, int, error) error {
 		return nil
 	}
 	return func(crawlID string, page int, err error) error {
+		if !errors.Is(err, ccrawl.ErrTransport) {
+			p.otherThanTransport++
+		}
 		if page < 0 {
 			p.crawls++
 			fmt.Fprintf(os.Stderr, "%s: %s: %v, skipping the crawl\n", p.cmd, crawlID, err)
@@ -36,6 +49,12 @@ func (p *pageLosses) handler() func(string, int, error) error {
 		fmt.Fprintf(os.Stderr, "%s: %s: %v, skipping the page\n", p.cmd, crawlID, err)
 		return nil
 	}
+}
+
+// everyLossWasTransport reports whether the run lost something and every last
+// bit of it was the bytes not arriving.
+func (p *pageLosses) everyLossWasTransport() bool {
+	return p.total() > 0 && p.otherThanTransport == 0
 }
 
 // total is how many pages and whole crawls the run gave up on.
