@@ -40,7 +40,7 @@ A negated filter prunes nothing. Page statistics record a page's minimum and max
 
 Pair a negation with something positive when you can. `--tld vn --not-lang vie` prunes on the TLD first and only then applies the negation to what survives, which is a different amount of work from `--not-lang vie` on its own.
 
-A set filter does prune, on the smallest and largest member of the whole set rather than one comparison per member, so a ten thousand host list costs the same page decision as a single host. It is conservative: a page holding none of the hosts but sorting between two that it does will still be read.
+A set filter does prune. The membership test itself compares the smallest and largest member of the whole set rather than one member at a time, so a ten thousand host list costs the same page decision as a single host, and it is conservative: a page holding none of the hosts but sorting between two that it does will still be read. On its own that rules almost nothing out, because it is a span of `url_host_name` and the files are not sorted on that column. The `url_surtkey` prefixes described above are what actually does the work.
 
 ## Speed
 
