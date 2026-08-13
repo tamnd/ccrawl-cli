@@ -67,18 +67,13 @@ func (q ColumnarQuery) SQL(src Source) string {
 		// above keeps the result exact; this only narrows the bytes read. The two
 		// patterns cover the apex (com,example)/...) and every subdomain
 		// (com,example,www)...) without also matching example2.com.
-		if rev := surtHostKey(q.Domain); rev != "" {
-			r := sqlEscape(rev)
-			where = append(where, fmt.Sprintf("(url_surtkey LIKE '%s)%%' OR url_surtkey LIKE '%s,%%')", r, r))
-		}
+		where = appendSurtPrefixSQL(where, surtPrefixes([]string{q.Domain}, true))
 	}
 	if q.Host != "" {
 		where = append(where, eq("url_host_name", q.Host))
 		// Same row-group pruning for an exact host: its surtkey is the reversed
 		// host followed by ')'.
-		if rev := surtHostKey(q.Host); rev != "" {
-			where = append(where, fmt.Sprintf("url_surtkey LIKE '%s)%%'", sqlEscape(rev)))
-		}
+		where = appendSurtPrefixSQL(where, surtPrefixes([]string{q.Host}, false))
 	}
 	if q.TLD != "" {
 		where = append(where, eq("url_host_tld", q.TLD))
@@ -97,9 +92,11 @@ func (q ColumnarQuery) SQL(src Source) string {
 	}
 	if len(q.Hosts) > 0 {
 		where = append(where, inSet("url_host_name", q.Hosts))
+		where = appendSurtPrefixSQL(where, surtPrefixes(q.Hosts, false))
 	}
 	if len(q.Domains) > 0 {
 		where = append(where, inSet("url_host_registered_domain", q.Domains))
+		where = appendSurtPrefixSQL(where, surtPrefixes(q.Domains, true))
 	}
 	// The negated forms all spell out IS NULL rather than relying on <>, which
 	// in SQL is unknown against a null and therefore drops the row. A row with
@@ -147,6 +144,88 @@ func inSet(col string, vals []string) string {
 		quoted[i] = "'" + sqlEscape(v) + "'"
 	}
 	return col + " IN (" + strings.Join(quoted, ", ") + ")"
+}
+
+// surtPrefixCap is how many url_surtkey prefixes a set filter may expand into
+// before the list collapses to the one prefix they all share. Sixty four keeps
+// the WHERE clause readable and the per-page comparison count small, and a set
+// larger than that is usually a generated file rather than something typed.
+const surtPrefixCap = 64
+
+// surtPrefixes returns the url_surtkey prefixes that cover every value in a host
+// or domain filter. The files are sorted on url_surtkey, so this is the only
+// predicate that skips row groups by their min/max statistics; the equality or
+// IN test alongside it is what keeps the answer exact. Widening a prefix is
+// therefore always safe and narrowing it never is.
+//
+// sub says whether subdomains count, which is the difference between a
+// registered domain and an exact host. A domain needs both endings, ')' for the
+// apex and ',' for everything under it, and needs them as two prefixes rather
+// than one: stopping at "com,example" would also cover com,example2.
+//
+// Past surtPrefixCap values the list collapses to their longest common prefix,
+// which is a widening and so still correct. A hosts file of ten thousand
+// subdomains of one company collapses to that company, which is nearly all the
+// pruning the full list would have bought. Domains spread across the alphabet
+// share nothing and get no prefix at all, which is the honest answer: there is
+// no contiguous stretch of the index to read.
+func surtPrefixes(vals []string, sub bool) []string {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(vals)*2)
+	for _, v := range vals {
+		rev := surtHostKey(v)
+		if rev == "" {
+			// One unusable value and the set is no longer covered, so there is
+			// nothing safe to prune on. A blank line in a hosts file lands here.
+			return nil
+		}
+		out = append(out, rev+")")
+		if sub {
+			out = append(out, rev+",")
+		}
+	}
+	if len(out) <= surtPrefixCap {
+		return out
+	}
+	if lcp := commonPrefix(out); lcp != "" {
+		return []string{lcp}
+	}
+	return nil
+}
+
+// commonPrefix returns the longest string every value starts with.
+func commonPrefix(vals []string) string {
+	p := vals[0]
+	for _, v := range vals[1:] {
+		n := 0
+		for n < len(p) && n < len(v) && p[n] == v[n] {
+			n++
+		}
+		p = p[:n]
+		if p == "" {
+			break
+		}
+	}
+	return p
+}
+
+// appendSurtPrefixSQL adds the prefix test to a WHERE list, as one LIKE or as an
+// OR of them. It appends nothing when there is nothing worth pruning on, since
+// an always-true clause in the WHERE is just noise in the printed SQL.
+func appendSurtPrefixSQL(where, prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return where
+	}
+	parts := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		parts[i] = fmt.Sprintf("url_surtkey LIKE '%s%%'", sqlEscape(p))
+	}
+	if len(parts) == 1 {
+		return append(where, parts[0])
+	}
+	return append(where, "("+strings.Join(parts, " OR ")+")")
 }
 
 // surtHostKey reverses a host's labels into the comma-separated form that begins

@@ -26,7 +26,9 @@ The default is `auto`. It takes the native engine for every query the native eng
 
 A crawl's `warc` subset is thousands of Parquet parts. Reading all of them to count the captures on one TLD would be absurd, so the native engine does what a query planner does.
 
-It opens each part over ranged HTTP and reads only the footer. From the footer it reads the page index for the columns the filters mention, and compares each page's minimum and maximum against the filter. A part whose pages all fall outside the filter is dropped without a single data page being read. Because the files are sorted by `url_surtkey`, a `--domain` or `--host` filter also gets a prefix predicate on that column, which is the one that prunes hardest.
+It opens each part over ranged HTTP and reads only the footer. From the footer it reads the page index for the columns the filters mention, and compares each page's minimum and maximum against the filter. A part whose pages all fall outside the filter is dropped without a single data page being read. Because the files are sorted by `url_surtkey`, a `--domain` or `--host` filter also gets a prefix predicate on that column, which is the one that prunes hardest. `--hosts-file` and `--domains-file` get it too, one prefix per value, so a list of hosts reads no more of the index than the same hosts asked for one at a time.
+
+A list longer than 64 collapses to the one prefix every value shares. Ten thousand subdomains of one company still prune to that company; a list spread across many top level domains shares nothing and gets no prefix, which is the honest answer, since there is no one stretch of the index that holds them. Grouping a large list by top level domain and running it in a few passes reads less than one pass over the lot.
 
 What survives is read a column at a time, cheapest column first, and each column narrows the set of rows still alive. A row group where the first filter kills everything never has the expensive columns touched at all. Only then are the output columns read, and only for the rows that matched.
 
