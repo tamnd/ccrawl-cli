@@ -1078,6 +1078,22 @@ The global flags apply, so `-c`, `--data-dir`, and `--no-cache` all set the serv
 
 ---
 
+## version
+
+```sh
+ccrawl version              # the one-line form
+ccrawl version --short      # just the version number
+ccrawl version -o json      # the same six fields as data
+```
+
+The default line is six facts glued into a sentence: `ccrawl 0.10.1 (commit 664360e, built 2026-08-13, darwin/arm64, go1.26.5)`. Pass `-o` and you get them separately, which is what a CI job wants when it needs one of them and would otherwise write a regular expression:
+
+```bash
+ccrawl version -o json | jq -r .commit
+```
+
+`-o auto`, which is the default, keeps the sentence whether the output is a terminal or a pipe. Every other command switches to JSONL when piped; this one does not, because that line is what `ccrawl version` has always printed and asking for a format is how you say you want data instead.
+
 ## config
 
 ```sh
