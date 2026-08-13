@@ -437,7 +437,7 @@ func (v *libraryVerifyCmd) run(ctx context.Context, _ []string) error {
 	_, _ = fmt.Fprintf(cmdErr, "checked %s, %d ok, %d bad, %d untracked\n",
 		plural(checked, "artifact"), checked-bad, bad, untracked)
 	if bad > 0 {
-		return fmt.Errorf("%s did not verify", plural(bad, "artifact"))
+		return fmt.Errorf("verify failed: %s did not match the manifest", plural(bad, "artifact"))
 	}
 	return nil
 }
@@ -557,7 +557,7 @@ func parseAge(s string) (time.Duration, error) {
 			// is the last thing a delete command should do.
 			n, err := strconv.Atoi(s[:len(s)-1])
 			if err != nil || n < 0 {
-				return 0, fmt.Errorf("%s is not a whole number of %s, which is what --older-than %s asks for", s[:len(s)-1], unitName(s[len(s)-1]), s)
+				return 0, fmt.Errorf("bad --older-than %s: %q is not a whole number of %s", s, s[:len(s)-1], unitName(s[len(s)-1]))
 			}
 			return time.Duration(n) * mul, nil
 		}

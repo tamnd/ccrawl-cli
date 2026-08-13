@@ -74,7 +74,7 @@ func LoadSettings(path string) (*Settings, error) {
 		}
 		if name, ok := tableName(line); ok {
 			if name == "" {
-				return nil, fmt.Errorf("%s:%d: a table needs a name", path, n)
+				return nil, fmt.Errorf("config %s:%d: a table needs a name", path, n)
 			}
 			section = name
 			if section != DefaultSection && !slices.Contains(s.order, section) {
@@ -87,18 +87,18 @@ func LoadSettings(path string) (*Settings, error) {
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
-			return nil, fmt.Errorf("%s:%d: %q is not a key = value line", path, n, line)
+			return nil, fmt.Errorf("config %s:%d: %q is not a key = value line", path, n, line)
 		}
 		key = strings.TrimSpace(key)
 		value, err := scalar(strings.TrimSpace(value))
 		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %s: %w", path, n, key, err)
+			return nil, fmt.Errorf("config %s:%d: %s: %w", path, n, key, err)
 		}
 		if s.sections[section] == nil {
 			s.sections[section] = map[string]settingLine{}
 		}
 		if prev, dup := s.sections[section][key]; dup {
-			return nil, fmt.Errorf("%s:%d: %s is already set on line %d", path, n, key, prev.line)
+			return nil, fmt.Errorf("config %s:%d: %s is already set on line %d", path, n, key, prev.line)
 		}
 		s.sections[section][key] = settingLine{value: value, line: n}
 	}
@@ -195,7 +195,7 @@ func (s *Settings) Validate(known []string) error {
 			if slices.Contains(known, key) {
 				continue
 			}
-			return fmt.Errorf("%s:%d: unknown setting %q in [%s], the ones this version reads are: %s",
+			return fmt.Errorf("config %s:%d: unknown setting %q in [%s], the ones this version reads are: %s",
 				s.Path, s.sections[section][key].line, key, section, strings.Join(known, ", "))
 		}
 	}

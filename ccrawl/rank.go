@@ -69,7 +69,7 @@ func RankLookup(ctx context.Context, h *HTTPClient, url, hostOrDomain string) (R
 	if err := sc.Err(); err != nil {
 		return Rank{}, err
 	}
-	return Rank{}, fmt.Errorf("%s not found in rank table", hostOrDomain)
+	return Rank{}, fmt.Errorf("no rank for %s in the table", hostOrDomain)
 }
 
 // RankTop streams a rank table and returns the first n rows (the table is sorted

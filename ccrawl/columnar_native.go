@@ -363,7 +363,7 @@ func RunColumnarNative(ctx context.Context, h *HTTPClient, s NativeScan, emit fu
 					// A cancelled context is how the limit stops the scan, so it
 					// is not an error the user should see.
 					if ctx.Err() == nil {
-						errOnce.Do(func() { firstErr = fmt.Errorf("%s: %w", u, err) })
+						errOnce.Do(func() { firstErr = fmt.Errorf("scan %s: %w", u, err) })
 						cancel()
 					}
 					return

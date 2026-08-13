@@ -151,7 +151,7 @@ func FetchGroup(ctx context.Context, h *HTTPClient, g LocationGroup) ([]WARCReco
 		}
 		rec, err := parseOneRecord(span[lo:hi])
 		if err != nil {
-			errs[i] = fmt.Errorf("%s at %d: %w", loc.Filename, loc.Offset, err)
+			errs[i] = fmt.Errorf("parse the record at %d in %s: %w", loc.Offset, loc.Filename, err)
 			continue
 		}
 		recs[i] = rec

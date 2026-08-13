@@ -92,10 +92,28 @@ func TestErrorMessagesSurviveTheRenderer(t *testing.T) {
 					return true
 				}
 				first, _, _ := strings.Cut(msg, " ")
-				if first == "" || strings.Contains(first, "%") {
+				if first == "" {
+					return true
+				}
+				// A format that is nothing but "%s" is a pass-through, not a
+				// message. errs.NoResults("%s", msg) and errs.Usage("%s", msg)
+				// are the shims that give a message its exit code, and the
+				// message they carry is written at its own call site, which
+				// this walk checks there.
+				if msg == "%s" {
 					return true
 				}
 				checked++
+				// A message that opens with a verb is the worst case, not an
+				// exempt one. What the verb holds is not knowable here, but a
+				// URL is: "%s: %w" on a parquet URL rendered as
+				// Https://Data.commoncrawl.org/Cc-Index/... , which is not a
+				// URL that resolves, in an error whose whole job was to name
+				// the file that failed. There is always a word to put in front.
+				if strings.Contains(first, "%") {
+					t.Errorf("%s: %s(%q) starts with a value, and the renderer title-cases whatever lands there; put a word first", pos, name, msg)
+					return true
+				}
 				if got := titleFirstWord(msg); got != capFirst(msg) {
 					t.Errorf("%s: %s(%q) renders as %q", pos, name, msg, got)
 				}
