@@ -334,7 +334,7 @@ Aliases: `table`, `athena`.
 
 Filters: `--domain`, `--host`, `--tld`, `--mime`, `--status`, `--lang`, `--path-prefix`, `--subset`.
 Negated filters: `--not-tld`, `--not-mime`, `--not-lang`, `--not-status`. A row where the column is missing counts as a match, so `--not-lang vie` returns the captures Common Crawl never labelled as well as the ones it labelled something else.
-Set filters: `--hosts-file` and `--domains-file` read one value per line, skipping blank lines and `#` comments, and turn the whole list into a single query.
+Set filters: `--hosts-file` and `--domains-file` read one value per line, skipping blank lines and `#` comments, and turn the whole list into a single query. The list prunes the same way a single `--host` or `--domain` does, so it costs one pass over the index rather than one pass per value.
 Engine: `--engine` (`auto|duckdb|native|print`). See [the columnar engines](/reference/columnar-engines/) for what each one can answer and how fast.
 
 ```sh

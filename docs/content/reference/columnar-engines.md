@@ -26,7 +26,9 @@ The default is `auto`. It takes the native engine for every query the native eng
 
 A crawl's `warc` subset is thousands of Parquet parts. Reading all of them to count the captures on one TLD would be absurd, so the native engine does what a query planner does.
 
-It opens each part over ranged HTTP and reads only the footer. From the footer it reads the page index for the columns the filters mention, and compares each page's minimum and maximum against the filter. A part whose pages all fall outside the filter is dropped without a single data page being read. Because the files are sorted by `url_surtkey`, a `--domain` or `--host` filter also gets a prefix predicate on that column, which is the one that prunes hardest.
+It opens each part over ranged HTTP and reads only the footer. From the footer it reads the page index for the columns the filters mention, and compares each page's minimum and maximum against the filter. A part whose pages all fall outside the filter is dropped without a single data page being read. Because the files are sorted by `url_surtkey`, a `--domain` or `--host` filter also gets a prefix predicate on that column, which is the one that prunes hardest. `--hosts-file` and `--domains-file` get it too, one prefix per value, so a list of hosts reads no more of the index than the same hosts asked for one at a time.
+
+A list longer than 64 collapses to the one prefix every value shares. Ten thousand subdomains of one company still prune to that company; a list spread across many top level domains shares nothing and gets no prefix, which is the honest answer, since there is no one stretch of the index that holds them. Grouping a large list by top level domain and running it in a few passes reads less than one pass over the lot.
 
 What survives is read a column at a time, cheapest column first, and each column narrows the set of rows still alive. A row group where the first filter kills everything never has the expensive columns touched at all. Only then are the output columns read, and only for the rows that matched.
 
@@ -38,7 +40,7 @@ A negated filter prunes nothing. Page statistics record a page's minimum and max
 
 Pair a negation with something positive when you can. `--tld vn --not-lang vie` prunes on the TLD first and only then applies the negation to what survives, which is a different amount of work from `--not-lang vie` on its own.
 
-A set filter does prune, on the smallest and largest member of the whole set rather than one comparison per member, so a ten thousand host list costs the same page decision as a single host. It is conservative: a page holding none of the hosts but sorting between two that it does will still be read.
+A set filter does prune. The membership test itself compares the smallest and largest member of the whole set rather than one member at a time, so a ten thousand host list costs the same page decision as a single host, and it is conservative: a page holding none of the hosts but sorting between two that it does will still be read. On its own that rules almost nothing out, because it is a span of `url_host_name` and the files are not sorted on that column. The `url_surtkey` prefixes described above are what actually does the work.
 
 ## Speed
 

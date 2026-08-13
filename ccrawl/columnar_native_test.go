@@ -334,6 +334,13 @@ func TestNativePrunesRowGroups(t *testing.T) {
 		// Group 2 is all .org.
 		{"a present tld still prunes", ColumnarQuery{TLD: "com"}, 1},
 		{"no filter prunes nothing", ColumnarQuery{}, 0},
+		// The set forms get the same surtkey prefixes as the single ones. Both
+		// of these pruned one group before that, not two: group 1 runs from
+		// a.example.com to shop.example.net and "other.org" sorts inside that,
+		// so the membership test on the forward host name cannot rule it out.
+		// Reversed it is not close, and the prefix says so.
+		{"a host set prunes like a single host", ColumnarQuery{Hosts: []string{"other.org"}}, 2},
+		{"a domain set prunes like a single domain", ColumnarQuery{Domains: []string{"other.org"}}, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

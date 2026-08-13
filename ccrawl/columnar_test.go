@@ -1,6 +1,8 @@
 package ccrawl
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -108,6 +110,77 @@ func TestColumnarSQLSurtkeyHost(t *testing.T) {
 	sql := q.SQL(SourceHTTPS)
 	if want := "url_surtkey LIKE 'uk,co,example,www)%'"; !strings.Contains(sql, want) {
 		t.Errorf("SQL missing %q in:\n%s", want, sql)
+	}
+}
+
+// A set filter used to get no surtkey clause at all, so --hosts-file and
+// --domains-file read every row group in the crawl while the single-value forms
+// of the same question read a handful. The membership test prunes on the span of
+// url_host_name, and that is not the column the files are sorted on: a page
+// running from com,a) to com,z) holds forward host names from a.com to z.com and
+// excludes nothing.
+func TestColumnarSQLSurtkeySets(t *testing.T) {
+	q := ColumnarQuery{
+		Crawl:   "CC-MAIN-2026-25",
+		Domains: []string{"example.com", "wikipedia.org"},
+	}
+	sql := q.SQL(SourceHTTPS)
+	want := "(url_surtkey LIKE 'com,example)%' OR url_surtkey LIKE 'com,example,%'" +
+		" OR url_surtkey LIKE 'org,wikipedia)%' OR url_surtkey LIKE 'org,wikipedia,%')"
+	if !strings.Contains(sql, want) {
+		t.Errorf("SQL missing %q in:\n%s", want, sql)
+	}
+
+	// A host set takes only the ')' ending, since nothing sorts under an exact
+	// host.
+	h := ColumnarQuery{Crawl: "CC-MAIN-2026-25", Hosts: []string{"a.example.com"}}
+	if want := "url_surtkey LIKE 'com,example,a)%'"; !strings.Contains(h.SQL(SourceHTTPS), want) {
+		t.Errorf("SQL missing %q in:\n%s", want, h.SQL(SourceHTTPS))
+	}
+}
+
+func TestSurtPrefixes(t *testing.T) {
+	// A domain covers its apex and everything under it, as two prefixes rather
+	// than one. Stopping at "com,example" would also cover com,example2.
+	if got, want := surtPrefixes([]string{"example.com"}, true), []string{"com,example)", "com,example,"}; !slices.Equal(got, want) {
+		t.Errorf("domain prefixes = %v, want %v", got, want)
+	}
+	if got, want := surtPrefixes([]string{"a.example.com"}, false), []string{"com,example,a)"}; !slices.Equal(got, want) {
+		t.Errorf("host prefixes = %v, want %v", got, want)
+	}
+	if got := surtPrefixes(nil, true); got != nil {
+		t.Errorf("no values should give no prefixes, got %v", got)
+	}
+
+	// One value that reverses to nothing and the set is no longer covered, so
+	// there is nothing safe to prune on. A blank line in a hosts file is this.
+	if got := surtPrefixes([]string{"example.com", ""}, true); got != nil {
+		t.Errorf("a blank value should give no prefixes, got %v", got)
+	}
+
+	// Past the cap the list collapses to what they all share, which is a
+	// widening and so still correct. Ten thousand subdomains of one company
+	// collapse to that company.
+	many := make([]string, 5000)
+	for i := range many {
+		many[i] = fmt.Sprintf("h%d.example.com", i)
+	}
+	if got, want := surtPrefixes(many, false), []string{"com,example,h"}; !slices.Equal(got, want) {
+		t.Errorf("collapsed prefixes = %v, want %v", got, want)
+	}
+
+	// Sharing nothing gets no prefix, which is the honest answer: there is no
+	// contiguous stretch of the index that holds them.
+	// The TLD is what has to differ, since it comes first once reversed. Every
+	// host under one TLD shares at least that much, which is still worth having.
+	spread := make([]string, 0, 104)
+	for c := 'a'; c <= 'z'; c++ {
+		for i := 0; i < 4; i++ {
+			spread = append(spread, fmt.Sprintf("host%d.example.%c%c", i, c, c))
+		}
+	}
+	if got := surtPrefixes(spread, false); got != nil {
+		t.Errorf("values sharing no prefix should give none, got %v", got)
 	}
 }
 

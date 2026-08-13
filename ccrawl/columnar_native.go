@@ -209,15 +209,11 @@ func predicatesFor(q ColumnarQuery) []predicate {
 		// the host with ')' and every subdomain's continue with ','. Keeping
 		// them in one predicate rather than two is what stops the apex rows
 		// from being filtered out by the subdomain form.
-		if rev := surtHostKey(q.Domain); rev != "" {
-			ps = append(ps, predicate{col: "url_surtkey", prefixes: []string{rev + ")", rev + ","}})
-		}
+		ps = appendSurtPredicate(ps, surtPrefixes([]string{q.Domain}, true))
 	}
 	if q.Host != "" {
 		ps = append(ps, predicate{col: "url_host_name", equals: q.Host})
-		if rev := surtHostKey(q.Host); rev != "" {
-			ps = append(ps, predicate{col: "url_surtkey", prefixes: []string{rev + ")"}})
-		}
+		ps = appendSurtPredicate(ps, surtPrefixes([]string{q.Host}, false))
 	}
 	if q.TLD != "" {
 		ps = append(ps, predicate{col: "url_host_tld", equals: q.TLD})
@@ -234,11 +230,18 @@ func predicatesFor(q ColumnarQuery) []predicate {
 	if q.Status != 0 {
 		ps = append(ps, predicate{col: "fetch_status", status: int32(q.Status), isStatus: true})
 	}
+	// The set forms get the same surtkey prefixes as the single ones. Without
+	// them a --hosts-file read every row group in the crawl: the set span the
+	// membership test prunes on is a span of url_host_name, and that is not the
+	// column the files are sorted on, so a page holding com,a) through com,z)
+	// spans nearly the whole alphabet of forward host names and never excludes.
 	if len(q.Hosts) > 0 {
 		ps = append(ps, setPredicate("url_host_name", q.Hosts))
+		ps = appendSurtPredicate(ps, surtPrefixes(q.Hosts, false))
 	}
 	if len(q.Domains) > 0 {
 		ps = append(ps, setPredicate("url_host_registered_domain", q.Domains))
+		ps = appendSurtPredicate(ps, surtPrefixes(q.Domains, true))
 	}
 	if q.NotTLD != "" {
 		ps = append(ps, predicate{col: "url_host_tld", equals: q.NotTLD, negate: true})
@@ -253,6 +256,16 @@ func predicatesFor(q ColumnarQuery) []predicate {
 		ps = append(ps, predicate{col: "fetch_status", status: int32(q.NotStatus), isStatus: true, negate: true})
 	}
 	return ps
+}
+
+// appendSurtPredicate adds the prefix test the SQL spells as a LIKE. Every
+// prefix goes in one predicate rather than one each, because a row needs to
+// match only one of them and separate predicates would be an AND.
+func appendSurtPredicate(ps []predicate, prefixes []string) []predicate {
+	if len(prefixes) == 0 {
+		return ps
+	}
+	return append(ps, predicate{col: "url_surtkey", prefixes: prefixes})
 }
 
 // setPredicate builds a membership test over vals, recording the span of the
