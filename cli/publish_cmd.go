@@ -170,7 +170,7 @@ func (v *publishVerifyCmd) run(ctx context.Context, args []string) error {
 		bad += rep.Failed
 	}
 	if bad > 0 && !v.repair {
-		return fmt.Errorf("%d shard(s) did not pass; re-run with --repair to rebuild them", bad)
+		return fmt.Errorf("verify failed: %s did not pass; re-run with --repair to rebuild them", plural(bad, "shard"))
 	}
 	return nil
 }

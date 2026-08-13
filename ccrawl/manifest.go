@@ -80,7 +80,7 @@ func LoadManifest(root string) (*Manifest, error) {
 		return nil, fmt.Errorf("read %s: %w", ManifestPath(root), err)
 	}
 	if file.Version != manifestVersion {
-		return nil, fmt.Errorf("%s is version %d, this ccrawl reads version %d",
+		return nil, fmt.Errorf("manifest %s is version %d, this ccrawl reads version %d",
 			ManifestPath(root), file.Version, manifestVersion)
 	}
 	for _, a := range file.Artifacts {

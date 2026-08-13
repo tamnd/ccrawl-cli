@@ -59,7 +59,7 @@ func DownloadFiles(ctx context.Context, h *HTTPClient, src Source, paths []strin
 	wg.Wait()
 
 	if n := atomic.LoadInt64(&failed); n > 0 {
-		return fmt.Errorf("%d of %d files failed", n, len(paths))
+		return fmt.Errorf("download failed for %d of %d files", n, len(paths))
 	}
 	return nil
 }

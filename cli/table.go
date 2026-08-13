@@ -61,7 +61,7 @@ func readSetFile(kind, path string) ([]string, error) {
 	if path == "" {
 		return nil, nil
 	}
-	fail := func(err error) error { return fmt.Errorf("%s file: %w", kind, err) }
+	fail := func(err error) error { return fmt.Errorf("read the %s file: %w", kind, err) }
 	r, _, closeFn, err := openInput(path)
 	if err != nil {
 		return nil, fail(err)
@@ -79,7 +79,7 @@ func readSetFile(kind, path string) ([]string, error) {
 		return nil, fail(err)
 	}
 	if len(vals) == 0 {
-		return nil, fail(fmt.Errorf("%s holds no values", path))
+		return nil, fail(fmt.Errorf("no values in %s", path))
 	}
 	return vals, nil
 }

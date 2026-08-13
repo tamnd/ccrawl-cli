@@ -204,7 +204,7 @@ func limiterGrants(path string) (uint64, error) {
 		return 0, err
 	}
 	if len(b) < limiterStateSize {
-		return 0, fmt.Errorf("%s holds %d bytes, want %d", path, len(b), limiterStateSize)
+		return 0, fmt.Errorf("limiter state %s holds %d bytes, want %d", path, len(b), limiterStateSize)
 	}
 	return binary.BigEndian.Uint64(b[8:16]), nil
 }

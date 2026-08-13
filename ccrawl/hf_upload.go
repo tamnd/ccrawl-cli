@@ -207,7 +207,7 @@ func (c *HFClient) doJSON(ctx context.Context, op, method, url string, body []by
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("%s: %w", op, err)
+			lastErr = fmt.Errorf("hub %s: %w", op, err)
 			continue
 		}
 		if resp.StatusCode >= 400 {
@@ -230,11 +230,11 @@ func (c *HFClient) doJSON(ctx context.Context, op, method, url string, body []by
 		derr := json.NewDecoder(resp.Body).Decode(out)
 		_ = resp.Body.Close()
 		if derr != nil {
-			return fmt.Errorf("%s: decode response: %w", op, derr)
+			return fmt.Errorf("hub %s: decode response: %w", op, derr)
 		}
 		return nil
 	}
-	return fmt.Errorf("%s after %d attempts: %w", op, hfRetries, lastErr)
+	return fmt.Errorf("hub %s failed after %d attempts: %w", op, hfRetries, lastErr)
 }
 
 // hfBackoff waits before a retry, honouring a Retry-After the hub sent.
@@ -542,7 +542,7 @@ func (c *HFClient) putBytes(ctx context.Context, sem chan struct{}, op, url, loc
 		resp, err := c.http.Do(req)
 		_ = f.Close()
 		if err != nil {
-			lastErr = fmt.Errorf("%s: %w", op, err)
+			lastErr = fmt.Errorf("hub %s: %w", op, err)
 			continue
 		}
 		if resp.StatusCode >= 400 {
@@ -560,7 +560,7 @@ func (c *HFClient) putBytes(ctx context.Context, sem chan struct{}, op, url, loc
 		_ = resp.Body.Close()
 		return etag, nil
 	}
-	return "", fmt.Errorf("%s after %d attempts: %w", op, hfRetries, lastErr)
+	return "", fmt.Errorf("hub %s failed after %d attempts: %w", op, hfRetries, lastErr)
 }
 
 // ── step 3: commit ────────────────────────────────────────────────────────────
