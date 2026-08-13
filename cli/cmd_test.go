@@ -379,6 +379,31 @@ func TestVersion(t *testing.T) {
 	runNoServer(t, "version").wantCode(t, 0).wantOut(t, "ccrawl")
 }
 
+// The version line is six facts glued into a sentence, and a CI job that wants
+// one of them should not have to write a regular expression for it. Asking for
+// a format gets the same six as data.
+func TestVersionRendersAsData(t *testing.T) {
+	r := runNoServer(t, "version", "-o", "jsonl").wantCode(t, 0)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(r.Out)), &got); err != nil {
+		t.Fatalf("-o jsonl is not JSON: %v\n%s", err, r.Out)
+	}
+	for _, k := range []string{"version", "commit", "built", "os", "arch", "go"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("no %q field: %v", k, got)
+		}
+	}
+	runNoServer(t, "version", "-o", "csv").wantCode(t, 0).wantOut(t, "version,commit,built,os,arch,go")
+
+	// auto keeps the sentence, in a pipe as well as on a terminal, because that
+	// is what ccrawl version has always printed and what anything grepping it
+	// expects. A test run is a pipe, so this is the case that would break.
+	runNoServer(t, "version").wantCode(t, 0).
+		wantOut(t, "ccrawl").
+		wantNotOut(t, `"version"`)
+	runNoServer(t, "version", "--short").wantCode(t, 0).wantNotOut(t, "commit")
+}
+
 // An unknown command and an unknown flag exit 1, not the 2 that means a usage
 // error, because the argument parser rejects them before ccrawl sees anything.
 // The reference says so under Caveat in docs/content/reference/exit-codes.md,
