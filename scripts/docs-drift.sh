@@ -174,6 +174,27 @@ check_flags_in "$MD_DOC" "$(printf 'markdown export\nmarkdown refetch')"
 # talks about, and a flag passes if any one of them has it.
 check_flags_in "$REQ_DOC" "$(printf '\ncolumnar sql\ncrawl fetch\ncrawl run\ndb sql\ndownload\nhost get\nhost enrich\nindex build\nurls publish\ndomains publish\nmarkdown export\nmarkdown refetch\npublish verify\napi\nserve')"
 
+# A release notes page nobody links to is a page nobody reads. This is not the
+# binary drifting from the docs, it is one doc drifting from another, but it is
+# the same kind of miss and it happens at the same moment, so it rides along here
+# rather than in a job of its own. v0.10.1 shipped with its notes written and
+# unlinked, which is what put this check in.
+check_release_notes_listed() {
+  local index="docs/content/release-notes/_index.md" f slug checked=0
+  for f in docs/content/release-notes/*.md; do
+    slug="$(basename "$f" .md)"
+    [ "$slug" = "_index" ] && continue
+    checked=$((checked + 1))
+    if ! grep -qF "/release-notes/$slug/" "$index"; then
+      problem "$index does not link $f, so the release notes page will not list it"
+    fi
+  done
+  printf '  checked %d release notes pages against %s\n' "$checked" "$index"
+}
+
+echo
+check_release_notes_listed
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "the docs and the binary disagree, see the DRIFT lines above"
