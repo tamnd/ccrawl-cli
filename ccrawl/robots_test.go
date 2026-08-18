@@ -391,8 +391,7 @@ func TestRobotsCache(t *testing.T) {
 	got := rc.Get("example.com")
 	if got == nil {
 		t.Fatal("Put then Get should return the entry")
-	}
-	if len(got.Rules) != 1 {
+	} else if len(got.Rules) != 1 {
 		t.Errorf("expected 1 rule, got %d", len(got.Rules))
 	}
 }
@@ -400,13 +399,12 @@ func TestRobotsCache(t *testing.T) {
 func TestRobotsCacheKeepsFailuresBriefly(t *testing.T) {
 	rc := NewRobotsCache(24*time.Hour, "ccrawl")
 	rc.Put("example.com", robotsUnreachable())
+	// The failure expires on its own short clock rather than the cache's day, so
+	// a host that comes back up is crawled again in minutes.
 	e := rc.Get("example.com")
 	if e == nil {
 		t.Fatal("the negative entry should be cached")
-	}
-	// The failure expires on its own short clock rather than the cache's day, so
-	// a host that comes back up is crawled again in minutes.
-	if wait := time.Until(time.Unix(e.ExpiresAt, 0)); wait > robotsErrorTTL+time.Second {
+	} else if wait := time.Until(time.Unix(e.ExpiresAt, 0)); wait > robotsErrorTTL+time.Second {
 		t.Errorf("negative entry expires in %s, want at most %s", wait, robotsErrorTTL)
 	}
 }
