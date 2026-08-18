@@ -404,14 +404,32 @@ func TestVersionRendersAsData(t *testing.T) {
 	runNoServer(t, "version", "--short").wantCode(t, 0).wantNotOut(t, "commit")
 }
 
-// An unknown command and an unknown flag exit 1, not the 2 that means a usage
-// error, because the argument parser rejects them before ccrawl sees anything.
-// The reference says so under Caveat in docs/content/reference/exit-codes.md,
-// and this is the test that keeps the two honest: the mistakes ccrawl catches
-// itself do exit 2, TestExportNeedsAPattern covers one of those.
-func TestUnknownCommandAndFlagExitOne(t *testing.T) {
-	runNoServer(t, "definitely-not-a-command").wantCode(t, 1)
-	runNoServer(t, "search", "example.com", "--not-a-flag").wantCode(t, 1)
+// A name ccrawl does not know is never answered with help on stdout and never
+// with exit 0. #141.
+//
+// The exit code is 2 everywhere except a misspelling at the very top, which
+// stays 1. That one is caught by the argument parser inside its command lookup,
+// before ccrawl is reached at all, so its error never gets a kind. Moving it
+// would mean giving up the lookup, and the lookup is what makes
+// "ccrawl serch --help" an error rather than the root's help printed for a
+// command that does not exist. The framework carries the same note.
+func TestUnknownCommandAndFlagExitTwo(t *testing.T) {
+	runNoServer(t, "definitely-not-a-command").wantCode(t, 1).wantOut(t, "")
+	runNoServer(t, "serch", "--help").wantCode(t, 1).wantOut(t, "")
+	runNoServer(t, "search", "example.com", "--not-a-flag").wantCode(t, 2)
+
+	// Every group command, not just the root. These are the two ways ccrawl gets
+	// one: generated from an operation's parent, and written by hand.
+	for _, parent := range []string{"host", "index", "urls", "cache", "columnar", "db", "library"} {
+		r := runNoServer(t, parent, "zzznope").wantCode(t, 2)
+		if r.Out != "" {
+			t.Errorf("%s zzznope wrote %d bytes to stdout, which a redirect would have kept:\n%s", parent, len(r.Out), r.Out)
+		}
+	}
+
+	// A group with nothing after it is a question, not a mistake, and still
+	// answers on stdout with exit 0.
+	runNoServer(t, "host").wantCode(t, 0).wantOut(t, "Enumerate and enrich hosts")
 }
 
 // crawls info walks every manifest a crawl publishes, so it is the one command

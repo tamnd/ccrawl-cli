@@ -144,38 +144,30 @@ until ccrawl urls publish --crawl CC-MAIN-2026-17; do
 done
 ```
 
-## Caveats
+## A name ccrawl does not know
 
-An unrecognised flag comes back as `1` rather than `2`, because that error is raised by the flag parser before ccrawl sees the command. Everything ccrawl rejects itself, a missing required flag or an argument it cannot parse, exits `2`.
-
-An unknown `-o` value is one ccrawl rejects itself, so it exits `2`. The formatter would otherwise render it as JSON Lines and exit `0`, which is the one place a typo could produce the wrong bytes with nothing on screen to say so.
-
-### A misspelled subcommand exits 0 today
-
-A misspelling at the top level is caught and exits `1`:
+A misspelling goes to stderr with a non-zero exit, wherever it is typed:
 
 ```bash
 ccrawl serch example.com; echo $?
-# Unknown command "serch" for "ccrawl". Did you mean this? search
+# Unknown command "serch" for "ccrawl" Did you mean this? search fetch serve .
 # 1
-```
 
-A misspelling one level down is not. Every parent command answers a subcommand it does not have by writing its own help to stdout and exiting `0`:
-
-```bash
 ccrawl host lst -o jsonl > hosts.jsonl; echo $?
+# Unknown command "lst" for "ccrawl host", did you mean "get".
+# 2
+wc -c < hosts.jsonl
 # 0
-head -1 hosts.jsonl
-#   Enumerate and enrich hosts from the CC web graph
 ```
 
-That is 2808 bytes of help text in a file a script believes holds host records, with nothing in the exit code or on stderr to say otherwise. It is the legacy argument rule in the command-line library underneath: a command with subcommands, no handler of its own, and no declared argument count accepts anything and falls back to printing help.
+Nothing goes to stdout either way, so a redirect that was going to hold records holds nothing rather than help text. The subcommand case is worth knowing about because it did not always work that way: until v0.10.2 a group command answered a subcommand it did not have by writing its own help to stdout and exiting `0`, which put 2808 bytes of help in `hosts.jsonl` with nothing anywhere to say the list was not a list. Test for a non-zero exit rather than for `2` if a script has to work across both.
 
-Until that is fixed, a script that runs a subcommand it built from a variable should check that its output looks like what it asked for, rather than trusting the exit code alone:
+A group command with nothing after it is not a mistake, it is how you ask what is under it, so that still prints help on stdout and still exits `0`.
 
-```bash
-ccrawl "$cmd" "$sub" -o jsonl > out.jsonl || exit $?
-head -1 out.jsonl | jq -e . > /dev/null || { echo "not JSON, check the subcommand name" >&2; exit 1; }
-```
+## Caveats
 
-Tracked in [#141](https://github.com/tamnd/ccrawl-cli/issues/141). The fix belongs in the framework, which builds those parent commands, so this page records the behaviour rather than promising a workaround ccrawl does not have.
+A misspelling at the very top exits `1` rather than the `2` that means a usage error, as above. It is caught by the argument parser inside its command lookup, before ccrawl is reached at all, so the error never gets a kind. That lookup is also what makes `ccrawl serch --help` an error rather than the root's own help printed for a command that does not exist, which is worth more than the consistent code.
+
+An unrecognised flag exits `2`, the same as everything else ccrawl rejects. It came back as `1` until v0.10.2.
+
+An unknown `-o` value exits `2`. The formatter would otherwise render it as JSON Lines and exit `0`, which is the one place a typo could produce the wrong bytes with nothing on screen to say so.
