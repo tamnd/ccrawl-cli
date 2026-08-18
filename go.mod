@@ -1,6 +1,6 @@
 module github.com/tamnd/ccrawl-cli
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc
