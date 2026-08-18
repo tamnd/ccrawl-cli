@@ -90,20 +90,29 @@ Everything that has to compare one record against another stays on this machine:
 `--explain` prints the split, along with the request the index server actually answers and the bytes the run read from it:
 
 ```
-$ ccrawl search '*.gov' --url-contains /budget/ --dedup --explain -o url
+$ ccrawl search '*.senate.gov' --url-contains /budget --explain -o url
 search: 1 crawl: CC-MAIN-2026-30
-search: the index server answers https://index.commoncrawl.org/CC-MAIN-2026-30-index?filter=url%3A.%2A%2Fbudget%2F.%2A&matchType=domain&output=json&url=gov
-search: pushed to the server: --url-contains /budget/
-search: applied here: --url-contains /budget/ (again, on what the server sent), --dedup
-search: read 4.1 MB from the index (4297318 bytes)
+search: the index server answers https://index.commoncrawl.org/CC-MAIN-2026-30-index?filter=~url%3A.%2A%2Fbudget.%2A&matchType=domain&output=json&url=senate.gov
+search: pushed to the server: --url-contains /budget
+search: applied here: --url-contains /budget (again, on what the server sent)
+search: read 49.4 KB from the index (50576 bytes)
 ```
 
 Paste that URL into curl and the rows that come back are the rows the command reads.
 Run the same query twice, once with `--no-push-filters`, and the two byte counts say what the push saved.
+That query is 10 index pages over CC-MAIN-2026-30 and 77 of its rows hold `/budget`.
+Pushed, it reads 50,576 bytes.
+With `--no-push-filters` it reads about 75 MB to find the same rows, which is roughly 1,500 times as much for the same answer.
 
 `--no-push-filters` keeps the URL substrings off the wire and filters here instead.
 It is an escape hatch, not a tuning knob: the only reason to reach for it is an index server whose filtering disagrees with ours, and the cost of it is every unwanted row downloaded before it is dropped.
 The `export` command takes the same flag, for the two URL substring filters of its own.
+
+The cost is worse than the bytes suggest, and it is worth knowing before reaching for the flag.
+The index truncates a large page under load and closes the connection as if it had finished, so a run that moves 75 MB to answer a query loses a few rows to that and cannot tell you which.
+The `*.senate.gov` query above was run twice with `--no-push-filters` on 2026-08-18: it read 70.3 MB and returned 75 rows, then read 77.3 MB and returned a different 75, each time missing two the pushed run found.
+Pushed, the same query returned all 77 every time.
+Filtering on the server is the difference between a complete answer and a nearly complete one, not only a faster one.
 
 ### Memory over a wide query
 

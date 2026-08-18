@@ -57,7 +57,7 @@ func TestSearchExplainSaysWhereEachFilterRuns(t *testing.T) {
 	for _, want := range []string{
 		"search: 1 crawl: CC-MAIN-2026-30",
 		"the index server answers",
-		"filter=url%3A.%2A%2Fabout.%2A",
+		"filter=~url%3A.%2A%2Fabout.%2A",
 		"pushed to the server: --url-contains /about",
 		"applied here: --url-contains /about (again, on what the server sent), --dedup",
 	} {

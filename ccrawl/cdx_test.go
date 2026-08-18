@@ -386,10 +386,20 @@ func TestCDXStreamGivesUpOnAPageThatIsAlwaysShort(t *testing.T) {
 // The URL substring filters are the whole point of pushing filters: they go on
 // the wire as regexes so the server drops the rows, rather than arriving here to
 // be counted and thrown away.
+//
+// Every character of the two strings below was paid for once. The first version
+// of this sent "url:.*budget.*" and the server answered 404 No Captures for a
+// page with six of them, because without the ~ the value is compared as a
+// literal string rather than a regex. The whole feature read 1978 bytes and
+// returned nothing, and looked like a spectacular saving until the results were
+// compared against the client side path. Measured on CC-MAIN-2026-30 over
+// abag.ca.gov, 788 rows of which 2 hold "budget": "~url:.*budget.*" returns the
+// 2, "!~url:.*budget.*" returns the other 786, and "url:.*budget.*",
+// "~url:budget" and "~!url:.*budget.*" each return nothing at all.
 func TestQueryPushesTheURLSubstringFilters(t *testing.T) {
 	q := CDXQuery{URL: "*.gov", URLContains: "/budget/", URLNotContains: "?print=1"}
 	got := q.cdxValues(0)["filter"]
-	want := []string{`url:.*/budget/.*`, `!url:.*\?print=1.*`}
+	want := []string{`~url:.*/budget/.*`, `!~url:.*\?print=1.*`}
 	if len(got) != len(want) {
 		t.Fatalf("got filters %q, want %q", got, want)
 	}
@@ -432,7 +442,7 @@ func TestCDXRequestURLIsTheRequestMinusThePage(t *testing.T) {
 	if strings.Contains(got, "page=") {
 		t.Fatalf("request URL %q carries a page parameter", got)
 	}
-	for _, want := range []string{"url=gov", "matchType=domain", "output=json", "filter=url%3A.%2A%2Fbudget%2F.%2A"} {
+	for _, want := range []string{"url=gov", "matchType=domain", "output=json", "filter=~url%3A.%2A%2Fbudget%2F.%2A"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("request URL %q is missing %q", got, want)
 		}

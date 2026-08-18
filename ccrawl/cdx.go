@@ -94,10 +94,10 @@ func (q CDXQuery) serverFilters() []string {
 	}
 	if !q.NoPushFilters {
 		if q.URLContains != "" {
-			f = append(f, "url:"+containsRegex(q.URLContains))
+			f = append(f, "~url:"+containsRegex(q.URLContains))
 		}
 		if q.URLNotContains != "" {
-			f = append(f, "!url:"+containsRegex(q.URLNotContains))
+			f = append(f, "!~url:"+containsRegex(q.URLNotContains))
 		}
 	}
 	f = append(f, q.Filter...)
@@ -108,6 +108,15 @@ func (q CDXQuery) serverFilters() []string {
 // in the field. The leading and trailing .* are not decoration: the index server
 // anchors a filter regex at the start of the value, so "budget" on its own only
 // matches a URL that begins with the word, which no URL does.
+//
+// The ~ that goes in front of the field name is the other half of it, and the
+// pair has to be right or the filter fails silently. Without the ~ the server
+// compares the value as a literal string, so "url:.*budget.*" asks for a URL
+// that is those nine characters and answers 404 No Captures for a page that
+// holds six of them. Measured against CC-MAIN-2026-30: filter=url:.*budget.*
+// over abag.ca.gov returns 0 of 788 rows, filter=~url:.*budget.* returns the 2
+// that match, and filter=!~url:.*budget.* returns the other 786. The negation
+// goes outside the ~, the other way round is another silent 404.
 func containsRegex(sub string) string { return ".*" + regexEscape(sub) + ".*" }
 
 // CDXNumPages returns the number of result pages for a query.

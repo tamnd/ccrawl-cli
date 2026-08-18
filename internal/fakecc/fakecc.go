@@ -429,21 +429,32 @@ func matchURL(url, target, match string) bool {
 	}
 }
 
-// matchFilters applies the CDX filter syntax the client sends: field:regex, with
-// = for an exact match and a leading ! to negate. Only the fields ccrawl builds
-// filters for are understood, and an unknown one keeps the row rather than
-// silently dropping every result.
+// matchFilters applies the CDX filter syntax the client sends: [!][~|=]field:value,
+// where ! negates, ~ makes the value a regex and anything else compares it as a
+// literal string. Only the fields ccrawl builds filters for are understood, and
+// an unknown one keeps the row rather than silently dropping every result.
 //
-// The regex is anchored at the start of the value, because the index server
-// matches it with Python's re.match and that is what re.match does. It matters:
-// a filter of "budget" matches no URL at all there, and a fixture that quietly
-// treated it as "contains" would bless a filter that finds nothing in
-// production.
+// The three parts of that are each a way to get nothing back from the real
+// server without being told, so the fixture copies all three rather than being
+// generous:
+//
+//   - A bare field:value is a string comparison, not a regex. "url:.*budget.*"
+//     asks the index for a URL that is literally those nine characters, and it
+//     answers 404 No Captures for a page holding six of them.
+//   - The regex is anchored at the start, because the server matches it with
+//     Python's re.match. "~url:budget" matches no URL at all.
+//   - The ! goes outside the ~. "~!url:..." is read as a field named "!url",
+//     which no row has, so nothing matches.
+//
+// All three were measured against CC-MAIN-2026-30 over abag.ca.gov, 788 rows of
+// which 2 hold "/budget": only "~url:.*budget.*" returns those 2, and only
+// "!~url:.*budget.*" returns the other 786.
 func matchFilters(c Capture, filters []string) bool {
 	for _, f := range filters {
 		neg := strings.HasPrefix(f, "!")
 		f = strings.TrimPrefix(f, "!")
-		exact := strings.HasPrefix(f, "=")
+		re := strings.HasPrefix(f, "~")
+		f = strings.TrimPrefix(f, "~")
 		f = strings.TrimPrefix(f, "=")
 		field, want, ok := strings.Cut(f, ":")
 		if !ok {
@@ -463,12 +474,12 @@ func matchFilters(c Capture, filters []string) bool {
 			continue
 		}
 		hit := have == want
-		if !exact {
-			re, err := regexp.Compile(`^(?:` + want + `)`)
+		if re {
+			rx, err := regexp.Compile(`^(?:` + want + `)`)
 			if err != nil {
 				continue
 			}
-			hit = re.MatchString(have)
+			hit = rx.MatchString(have)
 		}
 		if hit == neg {
 			return false
