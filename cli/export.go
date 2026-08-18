@@ -21,6 +21,7 @@ type exportCmd struct {
 	outDir    string
 	fgrep     string
 	fgrepv    string
+	noPush    bool
 
 	// query flags, used in pattern mode (mirrors search)
 	match  string
@@ -74,6 +75,7 @@ func (c *exportCmd) flags(f *kit.FlagSet) {
 	f.StringVar(&c.outDir, "out-dir", ".", "directory to write the WARC files into")
 	f.StringVar(&c.fgrep, "url-fgrep", "", "only export captures whose URL contains this substring")
 	f.StringVar(&c.fgrepv, "url-fgrepv", "", "skip captures whose URL contains this substring")
+	f.BoolVar(&c.noPush, "no-push-filters", false, "keep the URL substring filters here instead of sending them to the index server")
 
 	f.StringVar(&c.match, "match", "", "match type: exact|prefix|host|domain")
 	f.StringVar(&c.from, "from", "", "earliest capture date (e.g. 2023 or 2023-06)")
@@ -182,8 +184,11 @@ func (c *exportCmd) exportQuery(ctx context.Context, app *App, exp *ccrawl.WARCE
 		URL: pattern, Match: c.match,
 		From: c.from, To: c.to,
 		Status: c.status, MIME: c.mime, Lang: c.lang,
-		Filter:      c.filter,
-		OnPageError: lost.handler(),
+		Filter:         c.filter,
+		URLContains:    c.fgrep,
+		URLNotContains: c.fgrepv,
+		NoPushFilters:  c.noPush,
+		OnPageError:    lost.handler(),
 	}
 	for _, id := range crawls {
 		stop := false

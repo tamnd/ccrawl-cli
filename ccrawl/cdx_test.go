@@ -382,3 +382,91 @@ func TestCDXStreamGivesUpOnAPageThatIsAlwaysShort(t *testing.T) {
 		t.Fatalf("page 0 was read %d times, want 3: the first go and two retries", f.hits["0"])
 	}
 }
+
+// The URL substring filters are the whole point of pushing filters: they go on
+// the wire as regexes so the server drops the rows, rather than arriving here to
+// be counted and thrown away.
+//
+// Every character of the two strings below was paid for once. The first version
+// of this sent "url:.*budget.*" and the server answered 404 No Captures for a
+// page with six of them, because without the ~ the value is compared as a
+// literal string rather than a regex. The whole feature read 1978 bytes and
+// returned nothing, and looked like a spectacular saving until the results were
+// compared against the client side path. Measured on CC-MAIN-2026-30 over
+// abag.ca.gov, 788 rows of which 2 hold "budget": "~url:.*budget.*" returns the
+// 2, "!~url:.*budget.*" returns the other 786, and "url:.*budget.*",
+// "~url:budget" and "~!url:.*budget.*" each return nothing at all.
+func TestQueryPushesTheURLSubstringFilters(t *testing.T) {
+	q := CDXQuery{URL: "*.gov", URLContains: "/budget/", URLNotContains: "?print=1"}
+	got := q.cdxValues(0)["filter"]
+	want := []string{`~url:.*/budget/.*`, `!~url:.*\?print=1.*`}
+	if len(got) != len(want) {
+		t.Fatalf("got filters %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("filter %d is %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// The index server anchors a filter regex at the start of the value, so the
+// leading .* is what makes a substring filter match a URL at all. Losing it
+// would leave a query that runs, transfers nothing, and returns nothing.
+func TestContainsRegexMatchesAnywhereInTheValue(t *testing.T) {
+	re := containsRegex("/budget/")
+	if !strings.HasPrefix(re, ".*") || !strings.HasSuffix(re, ".*") {
+		t.Fatalf("containsRegex(%q) = %q, want it unanchored at both ends", "/budget/", re)
+	}
+	if got := containsRegex("a.b*c"); got != `.*a\.b\*c.*` {
+		t.Fatalf("containsRegex escaped %q as %q", "a.b*c", got)
+	}
+}
+
+func TestNoPushFiltersKeepsTheURLFiltersOffTheWire(t *testing.T) {
+	q := CDXQuery{URL: "*.gov", URLContains: "/budget/", NoPushFilters: true, Status: "200"}
+	got := q.cdxValues(0)["filter"]
+	if len(got) != 1 || got[0] != "=status:200" {
+		t.Fatalf("got filters %q, want only the status filter", got)
+	}
+}
+
+// --explain prints this, and a URL that is not the one the command fetches is
+// worse than no URL at all.
+func TestCDXRequestURLIsTheRequestMinusThePage(t *testing.T) {
+	q := CDXQuery{URL: "*.gov", URLContains: "/budget/"}
+	got := CDXRequestURL("CC-MAIN-2026-30", q)
+	if !strings.HasPrefix(got, Endpoints.CDX+"CC-MAIN-2026-30-index?") {
+		t.Fatalf("request URL %q does not address the crawl's index", got)
+	}
+	if strings.Contains(got, "page=") {
+		t.Fatalf("request URL %q carries a page parameter", got)
+	}
+	for _, want := range []string{"url=gov", "matchType=domain", "output=json", "filter=~url%3A.%2A%2Fbudget%2F.%2A"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("request URL %q is missing %q", got, want)
+		}
+	}
+}
+
+// The byte total is what --explain reports, and what makes a pushed filter
+// visible as a saving rather than a claim.
+func TestCDXBytesReadCountsTheIndexPages(t *testing.T) {
+	f := &fakeCDX{pages: [][]string{cdxLines(0, 4)}}
+	f.start(t)
+
+	h := testCDXClient()
+	if n := h.CDXBytesRead(); n != 0 {
+		t.Fatalf("a fresh client has read %d index bytes", n)
+	}
+	if _, err := CDXSearch(context.Background(), h, "CC-MAIN-2026-30", CDXQuery{URL: "example.com/*"}); err != nil {
+		t.Fatal(err)
+	}
+	var want int64
+	for _, line := range f.pages[0] {
+		want += int64(len(line)) + 1 // the newline the server writes
+	}
+	if got := h.CDXBytesRead(); got < want {
+		t.Fatalf("counted %d index bytes, want at least the %d bytes of records", got, want)
+	}
+}
