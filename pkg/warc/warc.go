@@ -59,9 +59,43 @@ type Record struct {
 // the next member correctly and no full-file buffering is needed. This is what
 // makes fetching a single record over an HTTP byte range work.
 func Iterate(r io.Reader, fn func(Record) error) error {
+	return IterateFrom(r, 0, fn)
+}
+
+// IterateFrom is Iterate with each record's byte span in the compressed file
+// filled in: Header.WARCOffset is where the record's gzip member starts and
+// Header.WARCLength is how many compressed bytes it occupies. base is the
+// position in the file the reader is starting from, which is 0 for a whole file
+// and the range start when the caller is resuming part way in.
+//
+// Those two numbers plus the filename are what a CDX row is for, so this is the
+// call that lets an index be built for an archive that does not ship one. Fed
+// back to a ranged GET they return exactly this record and nothing else.
+//
+// The offset is tracked rather than accumulated from the decompressed sizes,
+// because a gzip member is a header, a deflate stream and an 8 byte trailer, and
+// only the file knows how long that came out. The reader counts what it has
+// pulled from the source and subtracts what is sitting unread in the buffer, so
+// the difference is the exact position of the byte the next member starts on.
+func IterateFrom(r io.Reader, base int64, fn func(Record) error) error {
+	cr := &countingReader{r: r}
 	br, ok := r.(*bufio.Reader)
 	if !ok {
-		br = bufio.NewReaderSize(r, 1<<20)
+		br = bufio.NewReaderSize(cr, 1<<20)
+	} else {
+		// A caller who handed us a *bufio.Reader already owns the buffering and
+		// we cannot see underneath it, so offsets are not available. Iterate
+		// takes this path and does not ask for them.
+		cr = nil
+	}
+
+	// pos is the position in the file of the next byte the gzip reader will
+	// consume: everything pulled from the source, less what is still buffered.
+	pos := func() int64 {
+		if cr == nil {
+			return 0
+		}
+		return base + cr.n - int64(br.Buffered())
 	}
 
 	gz, err := kgzip.NewReader(br)
@@ -74,11 +108,19 @@ func Iterate(r io.Reader, fn func(Record) error) error {
 	defer func() { _ = gz.Close() }()
 	gz.Multistream(false)
 
+	start := base
 	for {
 		data, readErr := io.ReadAll(gz)
+		// Taken before Reset, which reads the next member's header and would
+		// carry the position past the end of this one.
+		end := pos()
 		if len(data) > 0 {
 			rec, parseErr := parseRecord(bytes.NewReader(data))
 			if parseErr == nil {
+				if cr != nil {
+					rec.Header.WARCOffset = start
+					rec.Header.WARCLength = end - start
+				}
 				if callErr := fn(rec); callErr != nil {
 					return callErr
 				}
@@ -91,7 +133,21 @@ func Iterate(r io.Reader, fn func(Record) error) error {
 			return nil // io.EOF or trailing garbage: clean stop
 		}
 		gz.Multistream(false)
+		start = end
 	}
+}
+
+// countingReader counts the bytes read from the source so a member's position in
+// the compressed file can be worked out.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // parseRecord parses one WARC record from a single decompressed member.

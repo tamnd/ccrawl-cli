@@ -220,6 +220,24 @@ func (h *HTTPClient) GetDownload(ctx context.Context, url string) (*http.Respons
 	return h.doWith(ctx, h.download, url, "", false)
 }
 
+// GetDownloadFrom fetches url from offset to the end of the file, with no client
+// timeout. It is GetDownload for a stream that died partway.
+//
+// A gigabyte WARC read over a long connection does not always survive to the end,
+// and starting the gigabyte again over a dropped byte is most of the cost of a
+// CC-NEWS index for none of the progress. A WARC is a sequence of independent
+// gzip members, so a reader that knows where its last complete record ended can
+// ask for the rest of the file and carry on from that boundary.
+//
+// offset 0 is a plain GetDownload, so a caller that has read nothing yet does not
+// send a pointless range header.
+func (h *HTTPClient) GetDownloadFrom(ctx context.Context, url string, offset int64) (*http.Response, error) {
+	if offset <= 0 {
+		return h.GetDownload(ctx, url)
+	}
+	return h.doWith(ctx, h.download, url, fmt.Sprintf("bytes=%d-", offset), false)
+}
+
 // ContentLength returns the total size of url. It sends a one-byte range request
 // and reads the total out of the Content-Range header, which every Common Crawl
 // data host answers, falling back to a full-response Content-Length when the host

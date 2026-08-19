@@ -117,11 +117,17 @@ type committer struct {
 	logf         func(string, ...any)
 
 	// sidecar, when set, is called during flush with the shard, row, and byte
-	// totals the batch will bring the unit to. It refreshes the ledger and
-	// dataset card for that progress and returns the extra files (stats.csv,
-	// README.md) to commit alongside the shards, so the hub shows current
-	// coverage after every batch instead of only when the whole run finishes.
-	sidecar func(shards int, rows, bytes int64) ([]HFOperation, error)
+	// totals the batch will bring the unit to, and with the batch itself. It
+	// refreshes the ledger and dataset card for that progress and returns the
+	// extra files (stats.csv, README.md) to commit alongside the shards, so the
+	// hub shows current coverage after every batch instead of only when the whole
+	// run finishes.
+	//
+	// The batch is passed because a dataset can track rollups the committer knows
+	// nothing about, such as the per-language counts in the news index. Those have
+	// to be folded in exactly when their shards commit, or the card ends up
+	// describing rows that are not on the hub yet.
+	sidecar func(shards int, rows, bytes int64, batch []shard) ([]HFOperation, error)
 
 	batch     []shard
 	committed int
@@ -161,18 +167,24 @@ func (c *committer) flush(ctx context.Context) error {
 		bytes += s.Bytes
 	}
 
+	// The sidecar runs on a dry run too. It is what folds a batch into the month
+	// rollups and rewrites the ledger and card, so skipping it would leave a
+	// --no-push run staging shards next to a card describing none of them, and
+	// the rehearsal would not rehearse the part most likely to be wrong.
+	var extra []HFOperation
+	if c.sidecar != nil {
+		var err error
+		if extra, err = c.sidecar(shards, rows, bytes, batch); err != nil {
+			return fmt.Errorf("refresh card %q: %w", summary, err)
+		}
+	}
+
 	if c.doCommit {
-		ops := make([]HFOperation, 0, len(batch)+2)
+		ops := make([]HFOperation, 0, len(batch)+len(extra))
 		for _, s := range batch {
 			ops = append(ops, HFOperation{LocalPath: s.Local, PathInRepo: s.RepoPath})
 		}
-		if c.sidecar != nil {
-			extra, err := c.sidecar(shards, rows, bytes)
-			if err != nil {
-				return fmt.Errorf("refresh card %q: %w", summary, err)
-			}
-			ops = append(ops, extra...)
-		}
+		ops = append(ops, extra...)
 		if _, err := c.hf.CommitWithRetry(ctx, c.repo, msg, ops, 5); err != nil {
 			return fmt.Errorf("commit %q: %w", summary, err)
 		}

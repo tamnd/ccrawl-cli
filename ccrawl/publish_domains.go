@@ -181,7 +181,7 @@ func streamDomainShards(ctx context.Context, h *HTTPClient, hf *HFClient, o Doma
 
 	// Now that the source size is known, refresh the ledger and card with every
 	// batch so the hub reflects current coverage as shards land.
-	c.sidecar = func(shards int, rows, bytes int64) ([]HFOperation, error) {
+	c.sidecar = func(shards int, rows, bytes int64, _ []shard) ([]HFOperation, error) {
 		// Mid-stream: the end is not yet known, so this batch is not complete.
 		_, ops, err := refreshDomainCard(o, graph, shards, rows, bytes, srcBytes, false, statsPath)
 		return ops, err

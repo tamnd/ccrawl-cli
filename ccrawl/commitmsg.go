@@ -91,6 +91,17 @@ func finalizeURLMessage(s URLCrawlStat) string {
 		s.Crawl, state, s.Shards, humanCountShort(s.Rows), humanBytes(s.ParquetBytes))
 }
 
+// finalizeNewsMessage is the message for the stats+README commit that closes a
+// CC-NEWS month.
+func finalizeNewsMessage(s NewsMonthStat) string {
+	state := "progress"
+	if s.Complete {
+		state = "complete"
+	}
+	return fmt.Sprintf("Update index: month %s %s (%d/%d files, %s articles, %s)",
+		s.Month, state, s.Files, s.TotalFiles, humanCountShort(s.Rows), humanBytes(s.ParquetBytes))
+}
+
 // finalizeDomainMessage is the message for the stats+README commit that closes a release.
 func finalizeDomainMessage(s DomainGraphStat) string {
 	return fmt.Sprintf("Update index: graph %s complete (%d shards, %s domains)",

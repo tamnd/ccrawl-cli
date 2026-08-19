@@ -35,6 +35,7 @@ var knownSettings = []struct {
 	{"user_agent", "CCRAWL_USER_AGENT"},
 	{"urls_repo", "CCRAWL_URLS_REPO"},
 	{"domains_repo", "CCRAWL_DOMAINS_REPO"},
+	{"news_repo", "CCRAWL_NEWS_REPO"},
 	{"collinfo_endpoint", "CCRAWL_COLLINFO_ENDPOINT"},
 	{"data_endpoint", "CCRAWL_DATA_ENDPOINT"},
 	{"cdx_endpoint", "CCRAWL_CDX_ENDPOINT"},
@@ -47,6 +48,7 @@ var settingFlags = map[string]string{
 	"library_dir":  "library-dir",
 	"urls_repo":    "repo",
 	"domains_repo": "repo",
+	"news_repo":    "repo",
 }
 
 // settings is what a run resolved out of the config file, and where each value

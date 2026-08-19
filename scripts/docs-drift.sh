@@ -17,6 +17,7 @@ cd "$(dirname "$0")/.."
 REF_DIR="docs/content/reference"
 CLI_DOC="$REF_DIR/cli.md"
 MD_DOC="$REF_DIR/markdown.md"
+NEWS_DOC="$REF_DIR/news-index.md"
 REQ_DOC="$REF_DIR/requirements.md"
 
 # Cobra generates these; they are not ccrawl's surface and are not documented.
@@ -169,6 +170,10 @@ check_flags_in "$CLI_DOC" ""
 # The markdown page covers both pipelines at once, so a flag only has to exist on
 # one of them.
 check_flags_in "$MD_DOC" "$(printf 'markdown export\nmarkdown refetch')"
+# The news index page describes the dataset rather than one command. Both sides
+# of it appear on the page, and so does the fetch that turns a row back into an
+# article, so a flag passes if any of the three has it.
+check_flags_in "$NEWS_DOC" "$(printf 'news publish\nnews search\nfetch')"
 # The requirements page is organised by dependency rather than by command, so its
 # headings name no command to scope against. The fallback is every command it
 # talks about, and a flag passes if any one of them has it.

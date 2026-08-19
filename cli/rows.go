@@ -31,6 +31,35 @@ func watRow(r ccrawl.WATRecord) Row {
 	}
 }
 
+// newsRow is one CC-NEWS article, in the shape both news search paths emit. The
+// index answers the query from published Parquet and a scan answers it by
+// reading the archives, and the two have to be indistinguishable downstream or
+// the fallback is a different command wearing the same name.
+//
+// The JSON keys are the columnar ones, so `ccrawl news search ... -o jsonl` pipes
+// straight into `ccrawl fetch -` and pulls the articles it found.
+func newsRow(r ccrawl.NewsRow) Row {
+	return Row{
+		Cols: []string{"timestamp", "url", "status", "mime", "languages", "digest", "filename", "offset", "length"},
+		Vals: []string{
+			r.FetchTime.Format("20060102150405"), r.URL, strconv.Itoa(int(r.FetchStatus)),
+			r.ContentMIMEDetected, r.ContentLanguages, r.ContentDigest,
+			r.WARCFilename, strconv.FormatInt(r.WARCRecordOffset, 10), strconv.FormatInt(r.WARCRecordLength, 10),
+		},
+		Value: map[string]any{
+			"url": r.URL, "url_host_name": r.URLHostName,
+			"fetch_time": r.FetchTime, "fetch_status": r.FetchStatus,
+			"content_mime_type": r.ContentMIMEType, "content_mime_detected": r.ContentMIMEDetected,
+			"content_languages": r.ContentLanguages, "content_language_confidence": r.ContentLanguageConfidence,
+			"content_language_declared": r.ContentLanguageDeclared, "content_digest": r.ContentDigest,
+			"content_length":     r.ContentLength,
+			"warc_filename":      r.WARCFilename,
+			"warc_record_offset": r.WARCRecordOffset,
+			"warc_record_length": r.WARCRecordLength,
+		},
+	}
+}
+
 func warcRow(r ccrawl.WARCRecord) Row {
 	h := r.Header
 	return Row{

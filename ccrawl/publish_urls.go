@@ -220,7 +220,7 @@ func publishURLCrawl(ctx context.Context, h *HTTPClient, cache *Cache, hf *HFCli
 	}
 	// Refresh the ledger and card with every batch so the hub shows current
 	// coverage as shards land, not only when the whole crawl finishes.
-	c.sidecar = func(shards int, rows, bytes int64) ([]HFOperation, error) {
+	c.sidecar = func(shards int, rows, bytes int64, _ []shard) ([]HFOperation, error) {
 		_, ops, err := refreshURLCard(o, crawl, total, shards, rows, bytes, base, statsPath)
 		return ops, err
 	}

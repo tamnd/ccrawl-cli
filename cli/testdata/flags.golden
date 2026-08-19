@@ -148,8 +148,10 @@ ccrawl news download
 	--month --out --year
 ccrawl news list
 	--month --year
+ccrawl news publish
+	--commit-every --files --keep --max-stall --min-free-gb --months --no-push --private --repo
 ccrawl news search
-	--month --year
+	--month --no-index --repo --year
 ccrawl parse
 	--format --lang --links --markdown --meta --mime --status --text --type --url
 ccrawl paths

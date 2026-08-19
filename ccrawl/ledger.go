@@ -1,9 +1,11 @@
 package ccrawl
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -54,6 +56,178 @@ type DomainGraphStat struct {
 var domainStatsHeader = []string{
 	"graph", "shards", "domains", "parquet_bytes", "source_bytes",
 	"shard_rows", "committed_at", "complete", "first_committed",
+}
+
+// NewsMonthStat is one row of the ccrawl-news stats.csv ledger: the rollup for
+// one CC-NEWS month.
+//
+// SourceBytes is the compressed WARC bytes the month's committed files added up
+// to. It is worth carrying because it is the cost of the dataset rather than its
+// size: CC-NEWS has no index to mirror, so every row here was paid for by
+// streaming an archive, and the ratio between the two numbers is the whole
+// argument for publishing this at all.
+type NewsMonthStat struct {
+	Month        string // YYYY-MM
+	Files        int    // WARC files indexed and committed
+	TotalFiles   int    // WARC files the month publishes
+	Rows         int64
+	ParquetBytes int64
+	SourceBytes  int64
+	Rows2xx      int64
+	RowsHTML     int64
+	Complete     bool
+
+	FirstCommitted string
+	LastCommitted  string
+}
+
+var newsStatsHeader = []string{
+	"month", "files", "total_files", "rows", "parquet_bytes", "source_bytes",
+	"rows_2xx", "rows_html", "complete", "first_committed", "last_committed",
+}
+
+// ReadNewsStats reads the ccrawl-news stats.csv ledger. A missing file is an
+// empty ledger, not an error.
+func ReadNewsStats(path string) ([]NewsMonthStat, error) {
+	recs, err := readCSV(path)
+	if err != nil {
+		return nil, err
+	}
+	return newsStatsFrom(recs), nil
+}
+
+// DecodeNewsStats parses a stats.csv that was fetched rather than read off disk.
+// It is how a search finds out which months the published index covers without
+// downloading a single shard.
+func DecodeNewsStats(data []byte) ([]NewsMonthStat, error) {
+	recs, err := decodeCSV(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return newsStatsFrom(recs), nil
+}
+
+func newsStatsFrom(recs [][]string) []NewsMonthStat {
+	var rows []NewsMonthStat
+	for _, r := range recs {
+		if len(r) < len(newsStatsHeader) {
+			continue
+		}
+		rows = append(rows, NewsMonthStat{
+			Month:          r[0],
+			Files:          atoi(r[1]),
+			TotalFiles:     atoi(r[2]),
+			Rows:           atoi64(r[3]),
+			ParquetBytes:   atoi64(r[4]),
+			SourceBytes:    atoi64(r[5]),
+			Rows2xx:        atoi64(r[6]),
+			RowsHTML:       atoi64(r[7]),
+			Complete:       r[8] == "true",
+			FirstCommitted: r[9],
+			LastCommitted:  r[10],
+		})
+	}
+	return rows
+}
+
+// WriteNewsStats writes the ledger sorted by month descending (newest first).
+func WriteNewsStats(path string, rows []NewsMonthStat) error {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Month > rows[j].Month })
+	recs := [][]string{newsStatsHeader}
+	for _, r := range rows {
+		recs = append(recs, []string{
+			r.Month,
+			strconv.Itoa(r.Files),
+			strconv.Itoa(r.TotalFiles),
+			strconv.FormatInt(r.Rows, 10),
+			strconv.FormatInt(r.ParquetBytes, 10),
+			strconv.FormatInt(r.SourceBytes, 10),
+			strconv.FormatInt(r.Rows2xx, 10),
+			strconv.FormatInt(r.RowsHTML, 10),
+			strconv.FormatBool(r.Complete),
+			r.FirstCommitted,
+			r.LastCommitted,
+		})
+	}
+	return writeCSV(path, recs)
+}
+
+// UpsertNewsStat replaces the row for a month, or appends it if new.
+func UpsertNewsStat(rows []NewsMonthStat, s NewsMonthStat) []NewsMonthStat {
+	for i := range rows {
+		if rows[i].Month == s.Month {
+			rows[i] = s
+			return rows
+		}
+	}
+	return append(rows, s)
+}
+
+// NewsLangStat is one row of the ccrawl-news languages.csv ledger: how many
+// articles of one detected language a month holds.
+//
+// It is kept in its own file rather than folded into the month row because it is
+// the one breakdown that cannot be recovered from the shards without reading the
+// whole dataset back, and because the number of languages in a month is not
+// known ahead of time. The counts are accumulated as shards commit, which is
+// safe across restarts for the same reason the row counts are: a file that is
+// already on the hub is skipped, so nothing is counted twice.
+type NewsLangStat struct {
+	Month string
+	Lang  string
+	Rows  int64
+}
+
+var newsLangHeader = []string{"month", "language", "rows"}
+
+// ReadNewsLangs reads the ccrawl-news languages.csv ledger.
+func ReadNewsLangs(path string) ([]NewsLangStat, error) {
+	recs, err := readCSV(path)
+	if err != nil {
+		return nil, err
+	}
+	var rows []NewsLangStat
+	for _, r := range recs {
+		if len(r) < len(newsLangHeader) {
+			continue
+		}
+		rows = append(rows, NewsLangStat{Month: r[0], Lang: r[1], Rows: atoi64(r[2])})
+	}
+	return rows, nil
+}
+
+// WriteNewsLangs writes the language ledger, newest month first and the biggest
+// language first within a month.
+func WriteNewsLangs(path string, rows []NewsLangStat) error {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Month != rows[j].Month {
+			return rows[i].Month > rows[j].Month
+		}
+		if rows[i].Rows != rows[j].Rows {
+			return rows[i].Rows > rows[j].Rows
+		}
+		return rows[i].Lang < rows[j].Lang
+	})
+	recs := [][]string{newsLangHeader}
+	for _, r := range rows {
+		recs = append(recs, []string{r.Month, r.Lang, strconv.FormatInt(r.Rows, 10)})
+	}
+	return writeCSV(path, recs)
+}
+
+// MergeNewsLangs adds a month's per-language counts into the ledger, replacing
+// that month's rows and leaving every other month alone.
+func MergeNewsLangs(rows []NewsLangStat, month string, counts map[string]int64) []NewsLangStat {
+	out := make([]NewsLangStat, 0, len(rows)+len(counts))
+	for _, r := range rows {
+		if r.Month != month {
+			out = append(out, r)
+		}
+	}
+	for lang, n := range counts {
+		out = append(out, NewsLangStat{Month: month, Lang: lang, Rows: n})
+	}
+	return out
 }
 
 // ReadURLStats reads the ccrawl-urls stats.csv ledger. A missing file is an empty
@@ -220,7 +394,13 @@ func readCSV(path string) ([][]string, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	r := csv.NewReader(f)
+	return decodeCSV(f)
+}
+
+// decodeCSV reads a ledger from anywhere, which is how a fetched stats.csv is
+// parsed without being written to disk first.
+func decodeCSV(src io.Reader) ([][]string, error) {
+	r := csv.NewReader(src)
 	r.FieldsPerRecord = -1
 	recs, err := r.ReadAll()
 	if err != nil {
