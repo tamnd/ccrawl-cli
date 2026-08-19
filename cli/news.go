@@ -134,11 +134,11 @@ func runNewsSearch(ctx context.Context, app *App, host string, year, month int, 
 		}
 		if cov.Found {
 			if !cov.Complete {
-				fmt.Fprintf(cmdErr, "warning: %s is %d of %d files indexed, so this answer covers part of the month\n", cov.Month, cov.Files, cov.TotalFiles)
+				_, _ = fmt.Fprintf(cmdErr, "warning: %s is %d of %d files indexed, so this answer covers part of the month\n", cov.Month, cov.Files, cov.TotalFiles)
 			}
 			return searchNewsIndexed(ctx, app, host, year, month, repo)
 		}
-		fmt.Fprintf(cmdErr, "no published index for %04d-%02d in %s, scanning the archives instead\n", year, month, repo)
+		_, _ = fmt.Fprintf(cmdErr, "no published index for %04d-%02d in %s, scanning the archives instead\n", year, month, repo)
 	}
 	return scanNewsArchives(ctx, app, host, year, month)
 }
@@ -306,9 +306,9 @@ func (n *newsPublishCmd) run(ctx context.Context, args []string) error {
 
 	stageDir := filepath.Join(app.Cfg.DataDir, "publish", "news")
 	if push {
-		fmt.Fprintf(cmdErr, "publishing the CC-NEWS index for %d month(s) to https://huggingface.co/datasets/%s\n", len(months), n.repo)
+		_, _ = fmt.Fprintf(cmdErr, "publishing the CC-NEWS index for %d month(s) to https://huggingface.co/datasets/%s\n", len(months), n.repo)
 	} else {
-		fmt.Fprintf(cmdErr, "staging the CC-NEWS index for %d month(s) under %s (no push)\n", len(months), stageDir)
+		_, _ = fmt.Fprintf(cmdErr, "staging the CC-NEWS index for %d month(s) under %s (no push)\n", len(months), stageDir)
 	}
 
 	err := ccrawl.PublishNews(ctx, app.HTTP, hf, ccrawl.NewsPublishOptions{
@@ -323,20 +323,20 @@ func (n *newsPublishCmd) run(ctx context.Context, args []string) error {
 		DoCommit:    push,
 		MinFreeGB:   n.minFreeGB,
 		MaxStall:    n.maxStall,
-		Logf:        func(f string, a ...any) { fmt.Fprintf(cmdErr, f+"\n", a...) },
+		Logf:        func(f string, a ...any) { _, _ = fmt.Fprintf(cmdErr, f+"\n", a...) },
 	})
 	if errors.Is(err, ccrawl.ErrCommitStall) || errors.Is(err, ccrawl.ErrIncomplete) {
 		// The kit framework owns exit codes 0 to 8, so signal a temp-fail restart
 		// to the supervisor directly. A stall and a still-incomplete month both
 		// want the same remote-truth resume on the next run.
-		fmt.Fprintln(cmdErr, "exiting 75 for supervised restart")
+		_, _ = fmt.Fprintln(cmdErr, "exiting 75 for supervised restart")
 		os.Exit(75)
 	}
 	if err != nil {
 		return err
 	}
 	if push {
-		fmt.Fprintf(cmdErr, "dataset: https://huggingface.co/datasets/%s\n", n.repo)
+		_, _ = fmt.Fprintf(cmdErr, "dataset: https://huggingface.co/datasets/%s\n", n.repo)
 	}
 	return nil
 }
