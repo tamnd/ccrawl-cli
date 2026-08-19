@@ -41,6 +41,20 @@ func DetectLanguage(text string) (string, float64) {
 	return code, info.Confidence
 }
 
+// LanguageName turns an ISO 639-3 code back into its English name, for the
+// places a person reads the answer rather than filters on it. A code the
+// identifier does not know comes back unchanged, so a breakdown table never has
+// a blank row where a language should be.
+func LanguageName(code string) string {
+	if code == "" {
+		return ""
+	}
+	if name := whatlanggo.CodeToLang(code).String(); name != "" {
+		return name
+	}
+	return code
+}
+
 // LangMatches reports whether a document's detected language satisfies a filter.
 // An empty want matches everything, which is what makes the filter opt in.
 //

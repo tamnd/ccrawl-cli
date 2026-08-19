@@ -220,11 +220,21 @@ func wetTextPassthrough(body []byte, _ string) string {
 // transcode converts a body to UTF-8 using its declared charset. A page that
 // declares nothing is sniffed, and one that declares a charset it does not
 // honour comes out with replacement characters rather than an error.
-func transcode(body []byte) []byte {
+func transcode(body []byte) []byte { return transcodeAs(body, "") }
+
+// transcodeAs is transcode with the HTTP Content-Type header the response
+// carried, which is the charset that wins when a page and its server disagree
+// and the only one at all for a page that declares nothing in its markup.
+//
+// It is worth passing where it is known. A Windows-1251 news site read as UTF-8
+// is not a garbled string, it is a string the language identifier then reports
+// as Estonian: a wrong answer with a number beside it rather than an obvious
+// failure.
+func transcodeAs(body []byte, contentType string) []byte {
 	if len(body) == 0 {
 		return nil
 	}
-	r, err := charset.NewReader(bytes.NewReader(body), "")
+	r, err := charset.NewReader(bytes.NewReader(body), contentType)
 	if err != nil {
 		return nil
 	}

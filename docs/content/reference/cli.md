@@ -343,11 +343,68 @@ $ ccrawl content lang https://vnexpress.net/ -o json
 
 ## news
 
+CC-NEWS is the one Common Crawl dataset with no index of any kind: no CDX, no columnar table, nothing but the WARC files and a list of their names.
+So finding one publisher's articles in a month means reading the month, which is around 350 files of roughly a gigabyte each.
+`news publish` builds the missing index and puts it on HuggingFace, and `news search` reads that index when it exists.
+
 | Subcommand | Does |
 |---|---|
 | `news list` | List CC-NEWS files for `--year`/`--month` |
 | `news download` | Download CC-NEWS files |
-| `news search <host>` | Stream and match a host (no index) |
+| `news search <host>` | Find a publisher's articles in a month, from the index or by scanning |
+| `news publish` | Build the missing CC-NEWS index and mirror it to a HuggingFace dataset |
+
+### news search
+
+```sh
+ccrawl news search bbc.co.uk --year 2026 --month 7
+ccrawl news search bbc.co.uk --year 2026 --month 7 -o jsonl | ccrawl fetch - --text
+ccrawl news search bbc.co.uk --year 2026 --month 7 --no-index   # force the full scan
+```
+
+It answers from the published index when that month is indexed, and falls back to streaming the archives when it is not, saying on stderr which one it did.
+A month that is indexed but still building is searched from the part that is published, and the shortfall is reported on stderr rather than passed off as the whole month.
+
+The rows are the CDX columns, so the output reads like `index` output and `-o jsonl` pipes straight into `fetch -`.
+
+| Flag | Meaning |
+|---|---|
+| `--year` | CC-NEWS year |
+| `--month` | CC-NEWS month |
+| `--repo` | HuggingFace dataset repo to read the index from (default: `open-index/ccrawl-news`, or `CCRAWL_NEWS_REPO`) |
+| `--no-index` | Skip the index and scan the archives, which is the old behaviour |
+| `--limit` | Stop after this many matches |
+| `--workers` | Concurrent readers (0 picks a default from CPU count) |
+
+### news publish
+
+```sh
+ccrawl news publish --months 2026/07
+ccrawl news publish --months 2026/07,2026/06 --commit-every 16
+ccrawl news publish --months 2026/07 --files 4 --no-push   # index a slice, upload nothing
+```
+
+It streams every WARC file of the month, records the byte span of each stored response, and writes one Parquet shard per source file.
+The archives are never written to disk: they are decompressed, indexed, and dropped as they stream, so a run holds one output shard per worker and nothing else.
+A stream that dies partway resumes at the last complete record rather than restarting the file.
+
+Reading a month is the cost of this dataset, a few hundred gigabytes of transfer, once.
+`HF_TOKEN` (or `HUGGINGFACE_TOKEN`) must be set to push.
+
+| Flag | Meaning |
+|---|---|
+| `--repo` | HuggingFace dataset repo (default: `open-index/ccrawl-news`, or `CCRAWL_NEWS_REPO`) |
+| `--months` | Comma list of months to index, as `YYYY/MM` |
+| `--files` | Index only the first N WARC files of each month (0 indexes the month) |
+| `--commit-every` | Shards per HuggingFace commit |
+| `--workers` | Stream-and-index workers (0 picks a default from CPU count) |
+| `--private` | Create the dataset repo private |
+| `--keep` | Keep local shards after commit instead of deleting them |
+| `--min-free-gb` | Pause new work when free disk is under this many GB |
+| `--max-stall` | Restart the run (exit 75) after this long with no progress |
+| `--no-push` | Index and stage but skip the upload |
+
+The [news index reference](/reference/news-index/) has the schema and the queries.
 
 ---
 
@@ -1197,6 +1254,7 @@ The settings, with the environment variable that beats each one:
 | `user_agent` | `CCRAWL_USER_AGENT` | User agent sent to Common Crawl |
 | `urls_repo` | `CCRAWL_URLS_REPO` | HuggingFace dataset for `urls publish` |
 | `domains_repo` | `CCRAWL_DOMAINS_REPO` | HuggingFace dataset for `domains publish` |
+| `news_repo` | `CCRAWL_NEWS_REPO` | HuggingFace dataset for `news publish` and `news search` |
 | `collinfo_endpoint` | `CCRAWL_COLLINFO_ENDPOINT` | Where the crawl list comes from |
 | `data_endpoint` | `CCRAWL_DATA_ENDPOINT` | Where manifests, WARC files and the columnar index come from |
 | `cdx_endpoint` | `CCRAWL_CDX_ENDPOINT` | Where the URL index comes from |

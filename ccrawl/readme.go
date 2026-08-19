@@ -14,7 +14,7 @@ import (
 // and the pipeline fills in the dynamic parts (totals, breakdown bars, coverage
 // table, timestamps) at publish time.
 //
-//go:embed templates/urls_card.md templates/domains_card.md
+//go:embed templates/urls_card.md templates/domains_card.md templates/news_card.md
 var cardTemplates embed.FS
 
 var cards = template.Must(template.ParseFS(cardTemplates, "templates/*.md"))
@@ -149,6 +149,163 @@ func GenerateDomainsREADME(repo string, stats []DomainGraphStat) string {
 		Updated:         updatedStamp(),
 	}
 	return render("domains_card.md", data)
+}
+
+// GenerateNewsREADME renders the dataset card for open-index/ccrawl-news from
+// templates/news_card.md. stats is the ledger, one row per CC-NEWS month, and
+// langs is the per-month language ledger the breakdown table is built from.
+//
+// The layout mirrors the source: data/YYYY/MM holds one Parquet shard per source
+// WARC, so the default config globs everything and a named config per month
+// loads that month alone.
+func GenerateNewsREADME(repo string, stats []NewsMonthStat, langs []NewsLangStat) string {
+	rows := append([]NewsMonthStat(nil), stats...)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Month > rows[j].Month })
+
+	var totalRows, totalBytes, totalSource int64
+	var totalFiles int
+	var maxRows int64
+	for _, r := range rows {
+		totalRows += r.Rows
+		totalBytes += r.ParquetBytes
+		totalSource += r.SourceBytes
+		totalFiles += r.Files
+		maxRows = max(maxRows, r.Rows)
+	}
+
+	latest := "2026-07"
+	configs := make([]newsConfig, len(rows))
+	bars := make([]string, len(rows))
+	table := make([]newsTableRow, len(rows))
+	for i, r := range rows {
+		configs[i] = newsConfig{Name: r.Month, Path: strings.ReplaceAll(r.Month, "-", "/")}
+		frac := 0.0
+		if maxRows > 0 {
+			frac = float64(r.Rows) / float64(maxRows)
+		}
+		bars[i] = barRow(r.Month, frac, humanCountShort(r.Rows))
+		state := fmtInt(int64(r.Files)) + "/" + fmtInt(int64(r.TotalFiles))
+		if r.Complete {
+			state = "complete"
+		}
+		table[i] = newsTableRow{
+			Month:    r.Month,
+			Files:    fmtInt(int64(r.Files)),
+			Articles: fmtInt(r.Rows),
+			Size:     humanBytes(r.ParquetBytes),
+			Source:   humanBytes(r.SourceBytes),
+			State:    state,
+		}
+	}
+	if len(rows) > 0 {
+		latest = rows[0].Month
+	}
+
+	data := newsCard{
+		Repo:          repo,
+		Latest:        latest,
+		LatestPath:    strings.ReplaceAll(latest, "-", "/"),
+		SizeCat:       sizeCategory(totalRows),
+		HasRows:       len(rows) > 0,
+		Configs:       configs,
+		TotalMonths:   plural(len(rows), "month"),
+		TotalArticles: fmtInt(totalRows) + " articles",
+		TotalBytes:    humanBytes(totalBytes),
+		TotalSource:   humanBytes(totalSource),
+		TotalFiles:    plural(totalFiles, "WARC file"),
+		TotalFilesNum: fmtInt(int64(totalFiles)),
+		TotalRowsNum:  fmtInt(totalRows),
+		Bars:          bars,
+		Langs:         newsLangBars(langs, totalRows),
+		Stats:         table,
+		Columns:       newsColumnDocs,
+		Build:         newsBuild(rows),
+		Savings:       newsSavings(totalSource, totalBytes),
+		Updated:       updatedStamp(),
+	}
+	return render("news_card.md", data)
+}
+
+// newsLangTop is how many languages the card's breakdown lists before folding
+// the rest into an "other" line.
+const newsLangTop = 15
+
+// newsLangBars builds the language breakdown across every month, biggest first.
+// The share is of all indexed articles rather than of the identified ones, so
+// the rows add up to less than 100 percent and the gap is exactly the articles
+// nothing could be said about. That gap is worth showing rather than hiding in a
+// renormalized denominator.
+func newsLangBars(langs []NewsLangStat, totalRows int64) []newsLangRow {
+	if len(langs) == 0 || totalRows == 0 {
+		return nil
+	}
+	sum := map[string]int64{}
+	for _, l := range langs {
+		sum[l.Lang] += l.Rows
+	}
+	type kv struct {
+		code string
+		n    int64
+	}
+	all := make([]kv, 0, len(sum))
+	var identified, maxN int64
+	for c, n := range sum {
+		all = append(all, kv{c, n})
+		identified += n
+		maxN = max(maxN, n)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].n != all[j].n {
+			return all[i].n > all[j].n
+		}
+		return all[i].code < all[j].code
+	})
+
+	out := make([]newsLangRow, 0, newsLangTop+2)
+	var shown int64
+	for i, e := range all {
+		if i >= newsLangTop {
+			break
+		}
+		shown += e.n
+		out = append(out, newsLangRow{
+			Code:     e.code,
+			Name:     LanguageName(e.code),
+			Articles: fmtInt(e.n),
+			Share:    fmt.Sprintf("%.1f%%", float64(e.n)/float64(totalRows)*100),
+			Bar:      rankBar(float64(e.n)/float64(maxN), barWidth),
+		})
+	}
+	if rest := identified - shown; rest > 0 {
+		out = append(out, newsLangRow{
+			Code:     "other",
+			Name:     plural(len(all)-newsLangTop, "further language"),
+			Articles: fmtInt(rest),
+			Share:    fmt.Sprintf("%.1f%%", float64(rest)/float64(totalRows)*100),
+			Bar:      rankBar(float64(rest)/float64(maxN), barWidth),
+		})
+	}
+	if un := totalRows - identified; un > 0 {
+		out = append(out, newsLangRow{
+			Code:     "none",
+			Name:     "too little text to identify",
+			Articles: fmtInt(un),
+			Share:    fmt.Sprintf("%.1f%%", float64(un)/float64(totalRows)*100),
+			Bar:      rankBar(float64(un)/float64(maxN), barWidth),
+		})
+	}
+	return out
+}
+
+// newsSavings phrases what the index cost against what reading it costs, which
+// is the argument for the dataset existing. It is empty until both numbers are
+// known.
+func newsSavings(source, parquet int64) string {
+	if source <= 0 || parquet <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s of WARC archives were read to produce %s of Parquet, about %.0fx smaller",
+		humanBytes(source), humanBytes(parquet), float64(source)/float64(parquet))
 }
 
 // render executes one embedded card template into a string.
@@ -396,6 +553,131 @@ func domainBuild(rows []DomainGraphStat) *domainBuildStats {
 		b.Rate = shardsPerHour(r.Shards, elapsed) + " shards/hour, " + perHour(r.Domains, elapsed) + " domains/hour"
 	}
 	return b
+}
+
+// newsCard is the template data for the CC-NEWS index card.
+type newsCard struct {
+	Repo, Latest, LatestPath, SizeCat, Updated string
+	HasRows                                    bool
+	Configs                                    []newsConfig
+	TotalMonths, TotalArticles, TotalBytes     string
+	TotalSource, TotalFiles                    string
+	TotalFilesNum, TotalRowsNum                string
+	Savings                                    string
+	Bars                                       []string
+	Langs                                      []newsLangRow
+	Stats                                      []newsTableRow
+	Columns                                    [][3]string
+	Build                                      *newsBuildStats
+}
+
+// newsConfig is one named config: the month as the dataset spells it and the
+// month as the directory tree spells it.
+type newsConfig struct {
+	Name string // 2026-07
+	Path string // 2026/07
+}
+
+type newsTableRow struct {
+	Month, Files, Articles, Size, Source, State string
+}
+
+type newsLangRow struct {
+	Code, Name, Articles, Share, Bar string
+}
+
+// newsBuildStats are the live build metrics for the newest month. Unlike the URL
+// index, the interesting cost here is the archive bytes read rather than the
+// Parquet bytes written, because reading them is the work the dataset exists to
+// save everyone else.
+type newsBuildStats struct {
+	Latest    string // month
+	InputFile string // "353 source WARC files"
+	Read      string // compressed WARC bytes streamed so far
+	Projected string // what the whole month will cost at the current average
+	Output    string // Parquet bytes committed for this month
+	Coverage  string // "144 / 353 files"
+	Complete  bool
+	Articles  string // "12,345,678 articles"
+	HTMLShare string // share of rows that sniffed as HTML
+	OKShare   string // share of rows that were a 2xx
+	Elapsed   string
+	Rate      string
+	ETA       string
+}
+
+// newsBuild computes the live build metrics for the newest month from the ledger.
+func newsBuild(rows []NewsMonthStat) *newsBuildStats {
+	if len(rows) == 0 {
+		return nil
+	}
+	r := rows[0]
+	first, ok := parseStamp(r.FirstCommitted)
+	if !ok {
+		return nil
+	}
+	last, ok := parseStamp(r.LastCommitted)
+	if !ok {
+		last = first
+	}
+	elapsed := last.Sub(first)
+	b := &newsBuildStats{
+		Latest:    r.Month,
+		InputFile: fmtInt(int64(r.TotalFiles)) + " source WARC files",
+		Read:      humanBytes(r.SourceBytes),
+		Output:    humanBytes(r.ParquetBytes),
+		Coverage:  fmtInt(int64(r.Files)) + " / " + fmtInt(int64(r.TotalFiles)) + " files",
+		Complete:  r.Complete,
+		Articles:  fmtInt(r.Rows) + " articles",
+		Elapsed:   humanDuration(elapsed),
+	}
+	if r.Files > 0 && r.TotalFiles > r.Files && r.SourceBytes > 0 {
+		perFile := float64(r.SourceBytes) / float64(r.Files)
+		b.Projected = humanBytes(int64(perFile * float64(r.TotalFiles)))
+	}
+	if r.Rows > 0 {
+		b.HTMLShare = fmt.Sprintf("%.1f%%", float64(r.RowsHTML)/float64(r.Rows)*100)
+		b.OKShare = fmt.Sprintf("%.1f%%", float64(r.Rows2xx)/float64(r.Rows)*100)
+	}
+	if elapsed >= time.Minute && r.Files > 0 {
+		b.Rate = shardsPerHour(r.Files, elapsed) + " files/hour, " + perHour(r.Rows, elapsed) + " articles/hour"
+	}
+	if !r.Complete && r.Files > 0 && r.TotalFiles > r.Files && elapsed >= time.Minute {
+		perFile := elapsed / time.Duration(r.Files)
+		eta := perFile * time.Duration(r.TotalFiles-r.Files)
+		finish := last.Add(eta).UTC().Format("2006-01-02 15:04 UTC")
+		b.ETA = "about " + humanDuration(eta) + " remaining at the current rate, finishing around " + finish
+	}
+	return b
+}
+
+// newsColumnDocs documents the CC-NEWS index output schema in source order. The
+// third column says where a value came from, because half of these are read off
+// the capture and half are computed here, and a reader deciding whether to trust
+// one needs to know which.
+var newsColumnDocs = [][3]string{
+	{"url_surtkey", "VARCHAR", "SURT-canonical sort key for the URL, computed here"},
+	{"url", "VARCHAR", "the captured URL, from WARC-Target-URI"},
+	{"url_host_name", "VARCHAR", "full host name, parsed from the URL"},
+	{"url_host_registered_domain", "VARCHAR", "registrable domain, one level below the public suffix"},
+	{"url_host_tld", "VARCHAR", "top-level domain"},
+	{"url_protocol", "VARCHAR", "scheme, http or https"},
+	{"fetch_time", "TIMESTAMP", "when the crawler fetched the page, from WARC-Date, UTC"},
+	{"fetch_status", "INTEGER", "HTTP status code, from the stored response"},
+	{"fetch_redirect", "VARCHAR", "Location header when the capture was a redirect, else empty"},
+	{"content_digest", "VARCHAR", "SHA-1 of the response body, from WARC-Payload-Digest"},
+	{"content_mime_type", "VARCHAR", "MIME type the server reported in Content-Type"},
+	{"content_mime_detected", "VARCHAR", "MIME type sniffed from the first bytes of the body, computed here"},
+	{"content_charset", "VARCHAR", "character set the server reported"},
+	{"content_languages", "VARCHAR", "ISO 639-3 language identified from the extracted text, computed here"},
+	{"content_truncated", "VARCHAR", "reason the capture was truncated, if any"},
+	{"warc_filename", "VARCHAR", "path of the CC-NEWS WARC holding the response"},
+	{"warc_record_offset", "BIGINT", "byte offset of the record's gzip member in that file, computed here"},
+	{"warc_record_length", "BIGINT", "compressed byte length of the record, computed here"},
+	{"content_language_confidence", "DOUBLE", "how sure the identifier was, 0 to 1"},
+	{"content_language_declared", "VARCHAR", "the page's own html lang attribute, BCP-47, as written"},
+	{"content_length", "BIGINT", "size of the stored response body in bytes, decoded"},
+	{"warc_record_id", "VARCHAR", "the record's WARC-Record-ID urn:uuid"},
 }
 
 // urlColumnDocs documents the URL-index output schema in source order.

@@ -30,6 +30,13 @@ func ListNewsFiles(ctx context.Context, h *HTTPClient, year, month int) ([]NewsF
 	for _, mon := range months {
 		files, err := fetchNewsPaths(ctx, h, mon)
 		if err != nil {
+			// Sweeping a whole year walks over months that never existed, so a
+			// missing manifest there is the normal answer. Asking for one month
+			// is different: swallowing the error turns a network blip into "that
+			// month is empty", and a publish run reads that as nothing to do.
+			if month != 0 {
+				return nil, fmt.Errorf("list CC-NEWS %s: %w", mon, err)
+			}
 			continue
 		}
 		all = append(all, files...)

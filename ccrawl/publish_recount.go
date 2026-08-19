@@ -275,7 +275,9 @@ func parquetRowsAt(ctx context.Context, h *HTTPClient, url string, size int64) (
 	return pf.NumRows(), nil
 }
 
-// hfResolveURL is the public download URL for one file on a dataset's main branch.
+// hfResolveURL is the public download URL for one file on a dataset's main
+// branch. It reads the same endpoint the API calls use, so a test that stands up
+// a fake hub gets the downloads as well as the metadata.
 func hfResolveURL(repo, path string) string {
-	return fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%s", repo, path)
+	return fmt.Sprintf("%s/datasets/%s/resolve/main/%s", hfEndpoint, repo, path)
 }
