@@ -82,9 +82,13 @@ var errNewsSearchDone = errors.New("news search: limit reached")
 // of it. The same question against these shards reads one small column out of
 // each and then only opens the shards that had a match.
 //
-// The shard list is not fetched from the hub. Shards are named for the WARC they
-// index, so the month's own warc.paths manifest names every shard that could
-// exist, and a shard that is not published yet answers 404 and is skipped.
+// Shards are named for the WARC they index, so the month's own warc.paths
+// manifest names every shard that could exist. Which of them do exist comes from
+// one batched question to the hub rather than from letting each worker discover
+// a 404, because a month that is half published is 176 pointless round trips and
+// a month that is fully published still pays a size lookup per shard. The answer
+// carries the sizes too, which is what a Parquet reader needs before it can open
+// a footer, so the shards that do exist start reading immediately.
 //
 // emit is called from one goroutine at a time.
 func SearchNewsIndex(ctx context.Context, h *HTTPClient, o NewsSearchOptions, emit func(NewsRow) error) (int64, error) {
@@ -94,6 +98,26 @@ func SearchNewsIndex(ctx context.Context, h *HTTPClient, o NewsSearchOptions, em
 	}
 	if len(files) == 0 {
 		return 0, fmt.Errorf("no CC-NEWS files published for %04d/%02d", o.Year, o.Month)
+	}
+	candidates := make([]string, 0, len(files))
+	for _, f := range files {
+		candidates = append(candidates, newsShardPath(f.Path))
+	}
+	// A public dataset answers this without a token, so a search never asks for
+	// one. It still picks up an ambient HF_TOKEN, which is what lets someone
+	// search an index they published privately.
+	sizes, err := NewHFClient("").PathsInfo(ctx, o.Repo, candidates)
+	if err != nil {
+		return 0, fmt.Errorf("list the published shards for %04d/%02d: %w", o.Year, o.Month, err)
+	}
+	shards := make([]string, 0, len(sizes))
+	for _, p := range candidates {
+		if sizes[p] > 0 {
+			shards = append(shards, p)
+		}
+	}
+	if len(shards) == 0 {
+		return 0, nil
 	}
 	workers := o.Workers
 	if workers <= 0 {
@@ -137,7 +161,7 @@ func SearchNewsIndex(ctx context.Context, h *HTTPClient, o NewsSearchOptions, em
 				if ctx.Err() != nil {
 					return
 				}
-				if err := searchNewsShard(ctx, h, o.Repo, p, host, keep); err != nil {
+				if err := searchNewsShard(ctx, h, o.Repo, p, sizes[p], host, keep); err != nil {
 					if errors.Is(err, errNewsSearchDone) || emitErr != nil {
 						cancel()
 						return
@@ -150,9 +174,9 @@ func SearchNewsIndex(ctx context.Context, h *HTTPClient, o NewsSearchOptions, em
 			}
 		}()
 	}
-	for _, f := range files {
+	for _, p := range shards {
 		select {
-		case jobs <- newsShardPath(f.Path):
+		case jobs <- p:
 		case <-ctx.Done():
 		}
 		if ctx.Err() != nil {
@@ -187,11 +211,15 @@ type newsHostProbe struct {
 }
 
 // searchNewsShard reads one published shard and passes matching rows to keep.
-func searchNewsShard(ctx context.Context, h *HTTPClient, repo, repoPath, host string, keep func(NewsRow) error) error {
+// size is what the hub reported for the shard; a caller that does not know it
+// passes zero and pays a round trip to ask.
+func searchNewsShard(ctx context.Context, h *HTTPClient, repo, repoPath string, size int64, host string, keep func(NewsRow) error) error {
 	url := hfResolveURL(repo, repoPath)
-	size, err := h.ContentLength(ctx, url)
-	if err != nil {
-		return err
+	if size <= 0 {
+		var err error
+		if size, err = h.ContentLength(ctx, url); err != nil {
+			return err
+		}
 	}
 	ra := newHTTPReaderAt(ctx, h, url, size, 4<<20, 4)
 	pf, err := parquet.OpenFile(ra, size)

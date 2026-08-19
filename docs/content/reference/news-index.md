@@ -107,6 +107,12 @@ A shard is Parquet, so a reader can pull one column without reading the rest of 
 A host query reads `url_host_name` out of each shard, and only opens the shards where that column matched.
 Most shards in a month hold nothing for a given publisher, so most of them cost a footer and a small column chunk rather than the whole file.
 
+The search asks the hub once which shards a month actually has, in a single batched request, rather than trying each of the 353 names the manifest allows.
+That answer carries the sizes too, so a shard starts reading on the request that would otherwise only have asked how big it was.
+
+Measured against the 12 shards published for 2026-07, which index 12.9 GB of WARC: an exhaustive query for one publisher returned 8836 articles in 7.9 seconds, and one that matched nothing finished in 9.8 seconds.
+Reading those same 12 source files to answer the same question takes about half an hour, and the whole month is about 16 hours.
+
 `news search` says on stderr which path it took.
 A month that is indexed but still building is searched from the part that is published, and the shortfall is reported rather than passed off as the whole month.
 `--no-index` forces the scan, which is the behaviour the command had before the index existed.
