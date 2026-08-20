@@ -980,7 +980,10 @@ That copy costs about 135 bytes a URL, so one server's third of a threefold recr
 It does not fit, it does not nearly fit, and the frontier's admit rate already falls fourfold between two million and five million rows on the way to not fitting.
 
 So `recrawl run` holds one part open and a fixed read buffer, and its memory is the same on the first row and the billionth.
-Parts are discovered by reading them, and the first part that is not published is the end of the dataset, so nobody has to keep a part count in step with the next release.
+The parts are listed once from the dataset and read in order, so nobody has to keep a part count in step with the next release and no part name has to be guessed at.
+That listing is not a nicety.
+The published corpora do not agree on how wide a part number is written, `part-000.parquet` in the domain ranks and `part-00000.parquet` in the URL index, and a run that built the name from a counter asked for a file that was not there and read the 404 as the end of the dataset.
+A part that is listed and then cannot be fetched is an error now, and so is a release with no parts, because both used to look exactly like a finished work list.
 Only the one column the work list needs is read, which is what makes streaming a part cheap: parquet fetches that column's chunks and leaves the rest of the file alone.
 
 The checkpoint in `--state` is a part number, a row offset and the identity of what they point into, and it is a few hundred bytes whether the work list has a thousand rows or six billion.
@@ -990,6 +993,8 @@ A WARC file is durable wherever it is fsynced, so a WARC run checkpoints at ever
 A Parquet file is not readable at all until its footer is written, so the only durable position in one is the end of a shard, and a Parquet run checkpoints at shard boundaries and a kill costs at most the shard that was open.
 That is the price of the publishing format and `--shard-size` is the flag that bounds it: at 250 pages a second and half a gigabyte of payload a shard closes about every forty seconds.
 Either way it replays rather than skips, which is the property that matters: a batch cut short is not checkpointed at all, because a checkpoint past rows that were never fetched would skip them silently and nobody would ever find out.
+A run that stops between batches is the other case, and there the shard is sealed and the checkpoint written before the run exits, whether it stopped at the end of the work list, at `--max-pages`, or on a signal that landed on the boundary.
+A stop is the last chance to make the open shard readable, so holding it back for a fuller shard means holding it back forever.
 A checkpoint written by a different dataset or a different shard is refused rather than resumed, since its row offset points at nothing here.
 
 `--shard` and `--shards` split the work list across machines that never talk to each other, on the same registered domain key `crawl run` uses and for the same reason.
