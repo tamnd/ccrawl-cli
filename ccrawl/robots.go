@@ -331,6 +331,11 @@ type RobotsCache struct {
 	ua       string // the crawler's user agent, matched against the groups
 }
 
+// DefaultRobotsTTL is how long a fetched robots.txt is believed. A day is what
+// every crawl in this repo has always used; it is named so the two run loops
+// cannot drift apart on it.
+const DefaultRobotsTTL = 24 * time.Hour
+
 // NewRobotsCache creates a cache with the given TTL and user agent string.
 func NewRobotsCache(ttl time.Duration, userAgent string) *RobotsCache {
 	return &RobotsCache{

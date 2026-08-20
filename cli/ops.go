@@ -28,6 +28,7 @@ func registerOps(app *kit.App) {
 	registerIndex(app)
 	registerSched(app)
 	registerCrawl(app)
+	registerRecrawl(app)
 	registerServe(app)
 }
 
