@@ -896,7 +896,8 @@ Hash the URL instead and a busy site's pages scatter across all three machines, 
 Keying on the registered domain keeps a site on one machine, and it keeps `a.example.co.uk` with `b.example.co.uk`, which usually are one server behind one budget.
 
 The split is stable across machines and across runs, so a restart on server 2 picks up the same third it had before, and it is even enough to be worth nothing further.
-Measured over the first ten million domains of the `open-index/ccrawl-domains` release, which is the head of the rank table and the clumpiest part of it, three shards land within 0.09 percent of even, seven within 0.11 percent and thirty two within 0.32 percent.
+Measured over all 121 091 933 domains in the `open-index/ccrawl-domains` release, three shards land within 0.005 percent of even, seven within 0.030 percent and thirty two within 0.159 percent.
+Three shards is 40 365 223, 40 361 867 and 40 364 843 domains, a spread of 3356 across forty million.
 
 ```sh
 ccrawl crawl run --seeds domains.txt --state crawl.db --shard 0 --shards 3   # server1

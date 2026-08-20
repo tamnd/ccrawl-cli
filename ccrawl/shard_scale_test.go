@@ -1,6 +1,7 @@
 package ccrawl
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,11 +34,13 @@ const domainPartsURL = "https://huggingface.co/datasets/open-index/ccrawl-domain
 //
 // Off by default because it pulls the release over the network.
 //
-//	CCRAWL_SHARD_PARTS=75 go test ./ccrawl -run TestShardEvenness -v -timeout 2h
+//	CCRAWL_SHARD_PARTS=100 go test ./ccrawl -run TestShardEvenness -v -timeout 2h
 //
-// Each part is about 105 MB and is deleted as soon as it is counted, so the
-// whole 75 part release costs one part of disk at a time. Set CCRAWL_SHARD_DIR
-// to choose where that part lands.
+// The count is a ceiling rather than the real number of parts, since the
+// harness stops at the first part the release does not have. Each part is about
+// 105 MB of five million domains and is deleted as soon as it is counted, so
+// the whole release costs one part of disk at a time however many there are.
+// Set CCRAWL_SHARD_DIR to choose where that part lands.
 func TestShardEvennessOnRealDomains(t *testing.T) {
 	raw := os.Getenv("CCRAWL_SHARD_PARTS")
 	if raw == "" {
@@ -60,7 +63,15 @@ func TestShardEvennessOnRealDomains(t *testing.T) {
 
 	for p := 0; p < parts; p++ {
 		path := filepath.Join(dir, fmt.Sprintf("part-%03d.parquet", p))
-		if err := download(fmt.Sprintf(domainPartsURL, p), path); err != nil {
+		err := download(fmt.Sprintf(domainPartsURL, p), path)
+		// A 404 is the end of the release rather than a failure, so the count is
+		// a ceiling and not something anyone has to keep in step with the next
+		// publish. Set it high and the harness reads whatever is there.
+		if errors.Is(err, errNoSuchPart) {
+			t.Logf("part %03d is not published, so the release ends at %d parts", p, p)
+			break
+		}
+		if err != nil {
 			t.Fatalf("part %d: %v", p, err)
 		}
 		rows, err := parquet.ReadFile[domainRow](path)
@@ -133,6 +144,10 @@ func TestShardEvennessOnRealDomains(t *testing.T) {
 	}
 }
 
+// errNoSuchPart says a part number is past the end of what is published, which
+// is how the harness finds the edge of the release without being told.
+var errNoSuchPart = errors.New("no such part")
+
 // download fetches one part to disk, streaming so the part never has to be held
 // in memory alongside the rows read out of it.
 func download(url, path string) error {
@@ -141,6 +156,9 @@ func download(url, path string) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNotFound {
+		return errNoSuchPart
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
