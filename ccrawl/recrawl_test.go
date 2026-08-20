@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -552,5 +553,234 @@ func TestRecrawlStateStaysBounded(t *testing.T) {
 	}
 	if len(ents) != 1 {
 		t.Fatalf("the run left %d files in its state directory, want just the checkpoint", len(ents))
+	}
+}
+
+// TestRecrawlWritesParquetCaptures is the end to end done-when for the
+// publishing format. What the site served has to come back out of the shard,
+// body and headers included, because that is the file the publish step uploads.
+func TestRecrawlWritesParquetCaptures(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(10)
+	parts := writeWorkList(t, srv.URL, want, 4)
+	out := t.TempDir()
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.OutDir = out
+	cfg.Format = FormatParquet
+	cfg.Prefix = "recrawl"
+	r := newTestRecrawler(t, cfg, parts)
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.OutFiles) == 0 {
+		t.Fatal("the run reported no output files")
+	}
+
+	byURL := map[string]Capture{}
+	for _, f := range stats.OutFiles {
+		if !strings.HasSuffix(f, ".parquet") {
+			t.Fatalf("a parquet run wrote %s", f)
+		}
+		rows, err := ReadCaptures(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for _, c := range rows {
+			byURL[c.URL] = c
+		}
+	}
+	if len(byURL) != len(want) {
+		t.Fatalf("the shards hold %d distinct URLs, want %d", len(byURL), len(want))
+	}
+	for _, p := range want {
+		c, ok := byURL[srv.URL+p]
+		if !ok {
+			t.Fatalf("%s is not in any shard", p)
+		}
+		body := fmt.Sprintf("<html><body><p>%s</p></body></html>", p)
+		if string(c.Body) != body {
+			t.Fatalf("%s came back as %q, want %q", p, c.Body, body)
+		}
+		if c.Status != 200 || c.BodyLength != int64(len(body)) {
+			t.Fatalf("%s came back status %d length %d", p, c.Status, c.BodyLength)
+		}
+		if !strings.Contains(c.RespHeaders, "200 OK") {
+			t.Fatalf("%s came back with response headers %q", p, c.RespHeaders)
+		}
+		if !strings.Contains(c.ReqHeaders, "GET ") {
+			t.Fatalf("%s came back with request headers %q", p, c.ReqHeaders)
+		}
+		if c.Host == "" || c.Digest == "" || c.FetchedAt == 0 {
+			t.Fatalf("%s came back host %q digest %q fetched_at %d", p, c.Host, c.Digest, c.FetchedAt)
+		}
+	}
+}
+
+// TestRecrawlParquetCheckpointHoldsAtAShardBoundary is the durability gate.
+// A Parquet file is unreadable until its footer is written, so a run whose open
+// shard is nowhere near full has nothing durable to point a checkpoint at, and
+// it must say so rather than record a position that reads back as an error.
+func TestRecrawlParquetCheckpointHoldsAtAShardBoundary(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(20)
+	parts := writeWorkList(t, srv.URL, want, 20)
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	cfg := testRecrawlConfig(state)
+	cfg.OutDir = t.TempDir()
+	cfg.Format = FormatParquet
+	cfg.ShardSize = 1 << 30 // far more than this run will ever write
+	cfg.Batch = 4
+
+	ctx, kill := context.WithCancel(context.Background())
+	r := newTestRecrawler(t, cfg, parts)
+	var n int
+	if _, err := r.Run(ctx, func(CrawlPage) error {
+		n++
+		if n == 9 {
+			kill()
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	kill()
+	if n >= len(want) {
+		t.Fatal("the kill did not interrupt anything, so the test proves nothing")
+	}
+
+	ck, err := LoadCheckpoint(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ck.Row != 0 || ck.Done {
+		t.Fatalf("no shard was sealed and the checkpoint reads %+v", ck)
+	}
+
+	// The cost of holding is refetching, and the point of holding is that the
+	// second run covers everything the first one wrote into a shard nobody sealed.
+	r2 := newTestRecrawler(t, cfg, parts)
+	defer func() { _ = r2.Close() }()
+	if _, err := r2.Run(context.Background(), func(CrawlPage) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := site.fetched(); len(got) != len(want) {
+		t.Fatalf("the two runs covered %d of %d URLs", len(got), len(want))
+	}
+}
+
+// TestRecrawlStillWritesWARC is the promise that adding a format did not take
+// one away.
+func TestRecrawlStillWritesWARC(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(6)
+	parts := writeWorkList(t, srv.URL, want, 6)
+	out := t.TempDir()
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.OutDir = out
+	cfg.Format = FormatWARC
+	cfg.Prefix = "recrawl"
+	r := newTestRecrawler(t, cfg, parts)
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.OutFiles) != 1 || !strings.HasSuffix(stats.OutFiles[0], ".warc.gz") {
+		t.Fatalf("a warc run wrote %v", stats.OutFiles)
+	}
+	st, err := os.Stat(stats.OutFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() == 0 {
+		t.Fatalf("%s is empty", stats.OutFiles[0])
+	}
+	if stats.Fetched != int64(len(want)) {
+		t.Fatalf("fetched %d, want %d", stats.Fetched, len(want))
+	}
+}
+
+// TestRecrawlParquetCheckpointAdvancesOnceShardsSeal is the regression for the
+// other way of getting this wrong. Holding the checkpoint until a shard is
+// sealed is only safe if shards actually seal, and if rotation happened inside a
+// batch rather than between two, a run would almost never find its writer at a
+// boundary and would checkpoint nothing across a hundred days.
+func TestRecrawlParquetCheckpointAdvancesOnceShardsSeal(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(20)
+	parts := writeWorkList(t, srv.URL, want, 20)
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	cfg := testRecrawlConfig(state)
+	cfg.OutDir = t.TempDir()
+	cfg.Format = FormatParquet
+	cfg.ShardSize = 256 // small enough that every batch fills one
+	cfg.Batch = 4
+
+	ctx, kill := context.WithCancel(context.Background())
+	r := newTestRecrawler(t, cfg, parts)
+	var n int
+	stats, err := r.Run(ctx, func(CrawlPage) error {
+		n++
+		if n == 13 {
+			kill()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	kill()
+
+	ck, err := LoadCheckpoint(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ck.Row == 0 {
+		t.Fatalf("shards were sealed on the way and the checkpoint still reads %+v", ck)
+	}
+	if ck.Row > int64(n) {
+		t.Fatalf("the checkpoint reads row %d after %d fetches, which claims work it did not do", ck.Row, n)
+	}
+
+	// Everything the checkpoint claims has to be readable, since that is the
+	// whole reason for holding it back.
+	var stored int
+	for _, f := range stats.OutFiles {
+		rows, err := ReadCaptures(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		stored += len(rows)
+	}
+	if int64(stored) < ck.Row {
+		t.Fatalf("the checkpoint reads row %d and only %d captures are readable", ck.Row, stored)
 	}
 }
