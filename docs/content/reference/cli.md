@@ -925,6 +925,7 @@ Recrawl a work list that is already published, streamed out of Parquet rather th
 | Subcommand | Does |
 |---|---|
 | `recrawl run` | Walk a published dataset and fetch every URL in it, resumable from a two number checkpoint |
+| `recrawl publish` | Commit closed capture shards to a HuggingFace dataset as they land, with the ledger and card |
 
 ### recrawl run
 
@@ -1003,6 +1004,59 @@ Rows a machine does not own are counted and dropped as they stream by, so the ro
 Like `crawl run`, the pages and robots.txt go through a client of their own rather than the one `--rate` and `--global-rate` configure.
 Those two are a budget for `data.commoncrawl.org`, one host serving bulk files to everybody, and applying a per process delay meant for one host to a million unrelated sites is not politeness, it is a queue five hosts a second long.
 The work list itself is read from HuggingFace, which is a bulk host, and that side does use the ordinary client and its budget.
+
+### recrawl publish
+
+Watches the directory `recrawl run` writes into and commits each shard to a dataset repo as it closes, refreshing the ledger and the dataset card in the same commit, then deleting the local file.
+It is meant to run alongside the crawl, not after it.
+
+```sh
+ccrawl recrawl publish --dir captures/ --kind domains --server server1 --shard 0 --shards 3 --watch 30s
+ccrawl recrawl publish --dir captures/ --kind urls --server server2 --shard 1 --shards 3 --state recrawl.json --watch 30s
+ccrawl recrawl publish --dir captures/ --no-push
+```
+
+| Flag | Meaning |
+|---|---|
+| `--dir` | Capture directory to publish from, the same one `recrawl run` writes into |
+| `--repo` | Dataset repo to publish to, default the open-index repo for `--kind` |
+| `--kind` | Which recrawl this is, `domains` or `urls`, default `domains` |
+| `--server` | Name of this machine, default the hostname |
+| `--shard` | Which partition of the work list this machine took, 0-based |
+| `--shards` | How many machines are splitting the work list, default `1` |
+| `--state` | The crawl's checkpoint file, read so the card can report progress |
+| `--commit-every` | Shards per HuggingFace commit, default 4 |
+| `--watch` | Keep watching the directory and publish shards as they close, `0` makes one pass |
+| `--keep` | Keep local shards after commit instead of deleting them |
+| `--private` | Create the dataset repo private |
+| `--no-push` | Stage and report but skip the upload |
+
+`--kind domains` and `--kind urls` publish to `open-index/ccrawl-recrawl-domains` and `open-index/ccrawl-recrawl-urls`.
+They are two repos rather than one because a domain recrawl and a URL recrawl finish on completely different schedules, and a card that averaged the two would describe neither.
+
+The reason this is a second process rather than a stage inside `recrawl run` is that a run measured in months has to survive the publisher being restarted, reconfigured or pointed somewhere else without stopping the fetch.
+The two share a directory and one rule: a `.parquet` in it is a whole shard and nothing else is.
+A shard being written is named `.parquet.tmp` and is renamed only once its footer is on the platter, so the publisher can never pick up a file whose footer is missing, and a crash leaves a `.parquet.tmp` that the checkpoint never advanced past.
+
+Each machine writes exactly one ledger file, `ledger/<server>-shard<i>of<n>.csv`, and never touches another machine's.
+That is not a tidiness preference.
+The hub has no compare-and-set on a path, so if the fleet shared one `stats.csv`, read it, added its rows and wrote it back, whoever committed second would write back a copy without the first one's numbers in it, nothing would error, and the counts would quietly go backwards.
+One writer per file makes two machines committing at the same instant touch different files, so there is nothing to lose.
+The card is generated from the union of whatever ledger files are on the hub at the time, which makes it derived rather than authoritative: a card written from a snapshot that missed a row someone else had just committed is corrected by the next commit from any machine, and until then it undercounts rather than overcounts.
+
+Shards are named `data/<server>-shard<i>of<n>-<hash>.parquet`, where the hash is the first twelve hex digits of the file's sha256.
+Naming by content rather than by a counter is what makes republishing idempotent.
+The crawl's own file numbering restarts at zero on every run and the files are deleted once they are committed, so a counter would either collide with a shard already on the hub or publish the same rows twice under two names.
+With a content hash the existence check catches a duplicate before any of its bytes are uploaded, which is what a publisher killed between the commit landing and the local delete needs.
+
+Resume asks the hub what is published rather than trusting local state, the same way the url and news publishers do.
+On start the publisher downloads its own ledger row and carries on from it, so a wiped staging directory or a move to a new disk does not restart the file count or the card's totals at zero halfway through a crawl.
+
+With `--watch`, the publisher stops on its own once the crawl's checkpoint says the work list is walked out and the directory it was draining is empty.
+Without that the fleet would need a second signal to shut the publisher down, and a forgotten publisher polling an empty directory for a week is exactly the kind of thing nobody notices.
+
+`HF_TOKEN` (or `HUGGINGFACE_TOKEN`) has to be set to push.
+`--no-push` runs everything except the upload, including the ledger and card generation, so the part most likely to be wrong is the part being rehearsed.
 
 ---
 ## sched

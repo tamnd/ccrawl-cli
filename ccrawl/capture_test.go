@@ -257,6 +257,70 @@ func TestCaptureWriterRotatesBySize(t *testing.T) {
 // over. A zero row Parquet file is a perfectly valid file that means nothing,
 // and a publish step walking the output directory would upload it. Shards are
 // opened by the row that goes into them, so there is never one to upload.
+// TestCaptureWriterHidesTheOpenShard is what lets the publisher run as its own
+// process against the directory a crawl is still writing into. A Parquet file
+// has no footer until it is closed, so an open shard and a truncated one look
+// the same from outside, and the only safe rule is that a .parquet is finished
+// and nothing else is.
+func TestCaptureWriterHidesTheOpenShard(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewCaptureWriter(dir, "captures", 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := w.WriteCapture(fakeResult()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Nothing is sealed yet, so a publisher looking for finished shards must find
+	// none, and what is on disk must not be named like one.
+	sealed, err := filepath.Glob(filepath.Join(dir, "*.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sealed) != 0 {
+		t.Fatalf("an unsealed shard is on disk as %v, which a publisher would commit half written", sealed)
+	}
+	tmps, err := filepath.Glob(filepath.Join(dir, "*.parquet.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tmps) != 1 {
+		t.Fatalf("the open shard is %v, want one .parquet.tmp", tmps)
+	}
+
+	if _, err := w.Sync(true); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err = filepath.Glob(filepath.Join(dir, "*.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sealed) != 1 {
+		t.Fatalf("after a forced sync the finished shards are %v, want one", sealed)
+	}
+	rows, err := ReadCaptures(sealed[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("the sealed shard holds %d rows, want 3", len(rows))
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Close after everything was already sealed leaves no second file and no
+	// leftover temp.
+	left, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 {
+		t.Fatalf("the directory holds %d entries after close, want the one sealed shard", len(left))
+	}
+}
+
 func TestCaptureWriterLeavesNoEmptyShard(t *testing.T) {
 	dir := t.TempDir()
 	// A target of one byte, so every row seals its shard and the next row is the

@@ -15,6 +15,7 @@ import (
 func registerRecrawl(app *kit.App) {
 	app.CommandGroup("recrawl", "Recrawl a published work list, streamed and resumable")
 	registerRecrawlRun(app)
+	registerRecrawlPublish(app)
 }
 
 // ── recrawl run ───────────────────────────────────────────────────────────────

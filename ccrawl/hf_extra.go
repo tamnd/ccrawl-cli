@@ -3,10 +3,12 @@ package ccrawl
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -19,7 +21,7 @@ func (c *HFClient) DeleteDatasetRepo(ctx context.Context, repoID string) error {
 		return fmt.Errorf("invalid HF repo ID %q (must be org/name)", repoID)
 	}
 	body := fmt.Sprintf(`{"type":"dataset","name":%q,"organization":%q}`, parts[1], parts[0])
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", "https://huggingface.co/api/repos/delete", bytes.NewReader([]byte(body)))
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", hfEndpoint+"/api/repos/delete", bytes.NewReader([]byte(body)))
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
@@ -34,12 +36,53 @@ func (c *HFClient) DeleteDatasetRepo(ctx context.Context, repoID string) error {
 	return fmt.Errorf("delete dataset repo HTTP %d", resp.StatusCode)
 }
 
+// ListRepoFiles returns every file path in a dataset repo's main branch.
+//
+// The hub answers this in one unpaginated response, so a repo with a few
+// hundred shards costs one request. A missing repo is an empty listing rather
+// than an error, because the first publisher to reach a fresh repo asks this
+// before anything has been committed to it.
+func (c *HFClient) ListRepoFiles(ctx context.Context, repoID string) ([]string, error) {
+	url := hfEndpoint + "/api/datasets/" + repoID
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", repoID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == 404 {
+		return nil, nil
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("list %s HTTP %d", repoID, resp.StatusCode)
+	}
+	var payload struct {
+		Siblings []struct {
+			Filename string `json:"rfilename"`
+		} `json:"siblings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("list %s: %w", repoID, err)
+	}
+	files := make([]string, 0, len(payload.Siblings))
+	for _, s := range payload.Siblings {
+		if s.Filename != "" {
+			files = append(files, s.Filename)
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
 // DownloadRepoFile fetches one file from a dataset repo's main branch into
 // localPath. It returns false without error when the file does not exist (404),
 // so a caller can seed a fresh local ledger from the hub when present and start
 // empty when not. A private repo uses the client token.
 func (c *HFClient) DownloadRepoFile(ctx context.Context, repoID, pathInRepo, localPath string) (bool, error) {
-	url := fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%s", repoID, pathInRepo)
+	url := fmt.Sprintf("%s/datasets/%s/resolve/main/%s", hfEndpoint, repoID, pathInRepo)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)

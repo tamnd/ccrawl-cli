@@ -202,6 +202,9 @@ type CaptureWriter struct {
 	shardRows   int   // rows in the open shard, buffered ones included
 	rows        int
 	files       []string
+	// open shard's paths. It is written under tmp and renamed to path when it is
+	// sealed, so the name says whether it is finished.
+	tmp, path string
 }
 
 // NewCaptureWriter builds a writer over dir. A non-positive target size means
@@ -236,10 +239,18 @@ func (w *CaptureWriter) Files() []string { return w.files }
 // open starts the next shard. Shards are opened on the first row that goes into
 // one rather than ahead of it, so sealing never leaves an empty file behind for
 // the publish step to find and a run that writes nothing writes nothing.
+//
+// The shard is written under a .parquet.tmp name and renamed when it is sealed.
+// The publisher is a separate process reading the same directory while the crawl
+// is still writing into it, and it has no other way to tell a finished shard from
+// the one being written: a Parquet file has no footer until it is closed, so an
+// open shard and a truncated one look alike. The rename is atomic, so a
+// .parquet in the output directory is a whole shard and nothing else is.
 func (w *CaptureWriter) open() error {
-	path := filepath.Join(w.dir, fmt.Sprintf("%s-%05d.parquet", w.prefix, w.seq))
+	w.path = filepath.Join(w.dir, fmt.Sprintf("%s-%05d.parquet", w.prefix, w.seq))
+	w.tmp = w.path + ".tmp"
 	w.seq++
-	f, err := os.Create(path)
+	f, err := os.Create(w.tmp)
 	if err != nil {
 		return err
 	}
@@ -249,7 +260,7 @@ func (w *CaptureWriter) open() error {
 		parquet.Compression(w.codec),
 		parquet.MaxRowsPerRowGroup(int64(w.batchRows)*64),
 	)
-	w.files = append(w.files, path)
+	w.files = append(w.files, w.path)
 	return nil
 }
 
@@ -330,7 +341,13 @@ func (w *CaptureWriter) seal() error {
 	if err != nil {
 		return err
 	}
-	return cerr
+	if cerr != nil {
+		return cerr
+	}
+	// The rename is the publish signal, so it goes last, after the footer is on
+	// the platter. A crash before it leaves a .parquet.tmp that sweepTemps
+	// removes and the checkpoint never advanced past.
+	return os.Rename(w.tmp, w.path)
 }
 
 // flushBatch hands the buffered rows to the encoder.
