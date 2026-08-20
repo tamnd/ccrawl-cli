@@ -58,6 +58,18 @@ type CrawlResult struct {
 	ResponseHeader []byte // status line and headers, ending in a blank line
 	RemoteAddr     string // IP of the server that answered, for WARC-IP-Address
 	Truncated      bool   // the body cap cut the response short
+
+	// The response validators, lifted out of the header so a capture can be read
+	// back as a seed for the next pass. A recrawl that has these can ask the
+	// server whether anything moved instead of downloading the page to find out.
+	ETag         string
+	LastModified string
+
+	// Timing, measured from the moment the request goes out. TTFB is the wait
+	// for the first response byte and Duration is the whole fetch including the
+	// body, so the difference between them is the transfer.
+	TTFB     time.Duration
+	Duration time.Duration
 }
 
 // CrawlConfig holds configuration for the crawler.
@@ -122,6 +134,12 @@ func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult
 	// the fact. On a redirect chain the last connection is the one the record
 	// describes, which is what a plain assignment leaves behind.
 	var remoteAddr string
+	// Timing is taken from the wire rather than from the call, because a request
+	// that waited on a connection or on a politeness clock did not take that long
+	// to serve and a dataset that says it did is telling a story about us rather
+	// than about the site. sent is stamped on every hop, so a redirect chain
+	// reports the last hop, which is the one the row describes.
+	var sent, firstByte time.Time
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			if info.Conn != nil {
@@ -129,10 +147,12 @@ func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult
 			}
 		},
 		WroteRequest: func(httptrace.WroteRequestInfo) {
+			sent = time.Now()
 			if cfg.OnRequestWritten != nil {
-				cfg.OnRequestWritten(time.Now())
+				cfg.OnRequestWritten(sent)
 			}
 		},
+		GotFirstResponseByte: func() { firstByte = time.Now() },
 	}))
 
 	resp, err := client.Do(req)
@@ -158,6 +178,14 @@ func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult
 		ResponseHeader: responseHeaderBlock(resp, len(body), decoded),
 		RemoteAddr:     hostOnly(remoteAddr),
 		Truncated:      truncated,
+		ETag:           resp.Header.Get("ETag"),
+		LastModified:   resp.Header.Get("Last-Modified"),
+	}
+	if !sent.IsZero() {
+		res.Duration = res.FetchedAt.Sub(sent)
+		if !firstByte.IsZero() {
+			res.TTFB = firstByte.Sub(sent)
+		}
 	}
 
 	// extract links from HTML

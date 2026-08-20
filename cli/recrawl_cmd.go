@@ -20,20 +20,21 @@ func registerRecrawl(app *kit.App) {
 // ── recrawl run ───────────────────────────────────────────────────────────────
 
 type recrawlRunIn struct {
-	App      *App          `kit:"inject"`
-	From     string        `kit:"flag" help:"published dataset to recrawl: domains, urls, or a repo ID"`
-	Dir      string        `kit:"flag" help:"directory of parts inside the dataset, e.g. data/cc-main-2026-apr-may-jun"`
-	Column   string        `kit:"flag" help:"string column holding the work: domain or url"`
-	Out      string        `kit:"flag" help:"directory to write WARC files into (empty fetches without archiving)"`
-	State    string        `kit:"flag" help:"checkpoint file, so a killed run resumes where it stopped"`
-	Delay    time.Duration `kit:"flag" default:"1s" help:"minimum spacing between two requests to the same host (0 for none)"`
-	MaxPages int64         `kit:"flag,name=max-pages" help:"stop after this many fetches (0 = no limit)"`
-	NoRobots bool          `kit:"flag,name=no-robots" help:"do not check robots.txt, which you had better have a reason for"`
-	WARCSize int64         `kit:"flag,name=warc-size" help:"rotate to a new WARC file past this many bytes"`
-	Prefix   string        `kit:"flag" help:"file name prefix for the WARC output"`
-	Batch    int           `kit:"flag" help:"work items fetched between checkpoints (default 2000)"`
-	Shard    int           `kit:"flag" help:"which partition of the work list this process takes, 0-based"`
-	Shards   int           `kit:"flag" default:"1" help:"how many machines are splitting the work list"`
+	App       *App          `kit:"inject"`
+	From      string        `kit:"flag" help:"published dataset to recrawl: domains, urls, or a repo ID"`
+	Dir       string        `kit:"flag" help:"directory of parts inside the dataset, e.g. data/cc-main-2026-apr-may-jun"`
+	Column    string        `kit:"flag" help:"string column holding the work: domain or url"`
+	Out       string        `kit:"flag" help:"directory to write WARC files into (empty fetches without archiving)"`
+	State     string        `kit:"flag" help:"checkpoint file, so a killed run resumes where it stopped"`
+	Delay     time.Duration `kit:"flag" default:"1s" help:"minimum spacing between two requests to the same host (0 for none)"`
+	MaxPages  int64         `kit:"flag,name=max-pages" help:"stop after this many fetches (0 = no limit)"`
+	NoRobots  bool          `kit:"flag,name=no-robots" help:"do not check robots.txt, which you had better have a reason for"`
+	Format    string        `kit:"flag" default:"parquet" help:"output format: parquet rows with the body inline, or warc"`
+	ShardSize int64         `kit:"flag,name=shard-size" help:"rotate to a new output shard past this much payload"`
+	Prefix    string        `kit:"flag" help:"file name prefix for the output files"`
+	Batch     int           `kit:"flag" help:"work items fetched between checkpoints (default 2000)"`
+	Shard     int           `kit:"flag" help:"which partition of the work list this process takes, 0-based"`
+	Shards    int           `kit:"flag" default:"1" help:"how many machines are splitting the work list"`
 }
 
 // datasetShorthand maps the two names anybody running the fleet will type onto
@@ -51,7 +52,7 @@ func registerRecrawlRun(app *kit.App) {
 		Long: `Walk a published dataset and fetch every URL in it, streaming the work list out
 of Parquet instead of loading it into a frontier. robots.txt is fetched once per
 host and enforced, each host gets one request per --delay, and every fetch is
-written to WARC.
+written out as a Parquet row with the body inline, or to WARC with --format warc.
 
 The run keeps its place in --state, which holds a part number and a row offset
 and nothing else. It is a few hundred bytes whether the work list has a thousand
@@ -63,8 +64,8 @@ key is the registered domain, so a site and its politeness clock stay on one
 machine.
 
 Examples:
-  ccrawl recrawl run --from domains --out warc/ --state recrawl.json
-  ccrawl recrawl run --from urls --dir data/CC-MAIN-2026-25 --out warc/ --state recrawl.json --shard 0 --shards 3
+  ccrawl recrawl run --from domains --out captures/ --state recrawl.json
+  ccrawl recrawl run --from urls --dir data/CC-MAIN-2026-25 --out captures/ --state recrawl.json --shard 0 --shards 3
   ccrawl recrawl run --from open-index/ccrawl-domains --column domain --max-pages 1000`,
 	}, func(ctx context.Context, in recrawlRunIn, emit func(ccrawl.CrawlPage) error) error {
 		src, err := resolveWorkSource(in.From, in.Dir, in.Column)
@@ -100,10 +101,14 @@ Examples:
 		cfg.MaxPages = in.MaxPages
 		cfg.Crawl = ccrawl.DefaultCrawlConfig
 		cfg.Info = crawlWARCInfo()
+		cfg.Format = ccrawl.CaptureFormat(strings.ToLower(strings.TrimSpace(in.Format)))
+		if err := cfg.Format.Validate(); err != nil {
+			return usageErr(err.Error())
+		}
 		// Taken as given, including zero, the same way crawl run takes it.
 		cfg.Delay = in.Delay
-		if in.WARCSize > 0 {
-			cfg.WARCSize = in.WARCSize
+		if in.ShardSize > 0 {
+			cfg.ShardSize = in.ShardSize
 		}
 		if in.Prefix != "" {
 			cfg.Prefix = in.Prefix
@@ -140,9 +145,9 @@ Examples:
 		})
 		ck := r.Checkpoint()
 		fmt.Fprintf(os.Stderr,
-			"recrawl run: %d fetched, %d failed, %d disallowed, %s, %d WARC files, at part %d row %d\n",
+			"recrawl run: %d fetched, %d failed, %d disallowed, %s, %d %s files, at part %d row %d\n",
 			stats.Fetched, stats.Failed, stats.Disallowed,
-			humanBytes(stats.Bytes), len(stats.WARCFiles), ck.Part, ck.Row)
+			humanBytes(stats.Bytes), len(stats.OutFiles), cfg.Format, ck.Part, ck.Row)
 		if stats.Failed > 0 {
 			fmt.Fprintf(os.Stderr, "recrawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)

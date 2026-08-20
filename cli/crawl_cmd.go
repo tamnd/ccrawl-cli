@@ -324,7 +324,7 @@ Examples:
 		fmt.Fprintf(os.Stderr,
 			"crawl run: %d fetched, %d failed, %d retried, %d disallowed, %d discovered, %s, %d WARC files\n",
 			stats.Fetched, stats.Failed, stats.Retried, stats.Disallowed, stats.Discovered,
-			humanBytes(stats.Bytes), len(stats.WARCFiles))
+			humanBytes(stats.Bytes), len(stats.OutFiles))
 		if stats.Failed > 0 {
 			fmt.Fprintf(os.Stderr, "crawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)

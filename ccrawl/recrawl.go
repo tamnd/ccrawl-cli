@@ -30,9 +30,17 @@ type RecrawlConfig struct {
 	// which is fine for a short run and wrong for a long one.
 	StatePath string
 
-	OutDir   string // where the WARC files go, empty fetches without archiving
-	Prefix   string
-	WARCSize int64
+	// OutDir is where the captures go, empty fetches without storing anything.
+	OutDir string
+	Prefix string
+	// Format is "warc" or "parquet". WARC is the archival format and Parquet is
+	// the publishing one, and a fleet feeding a dataset wants the second.
+	Format CaptureFormat
+	// ShardSize rotates the output once this much has gone into the open file.
+	// For WARC it is bytes on disk and for Parquet it is uncompressed payload,
+	// because a Parquet file's size is not known until its footer is written and
+	// the rotation decision has to be made before then.
+	ShardSize int64
 	Workers  int
 	// Delay is the minimum spacing between two requests to the same host. A
 	// robots.txt Crawl-delay longer than this wins for that host.
@@ -65,7 +73,8 @@ var DefaultRecrawlConfig = defaultRecrawlConfig()
 func defaultRecrawlConfig() RecrawlConfig {
 	cfg := RecrawlConfig{
 		Prefix:        "ccrawl-recrawl",
-		WARCSize:      DefaultCrawlWARCSize,
+		Format:        FormatParquet,
+		ShardSize:     DefaultCaptureShardSize,
 		Workers:       32,
 		Delay:         time.Second,
 		Robots:        true,
@@ -95,7 +104,7 @@ type Recrawler struct {
 	ck  Checkpoint
 
 	wmu sync.Mutex // one writer, so the WARC file is written by one goroutine
-	w   *WARCWriter
+	w   CaptureSink
 
 	emu   sync.Mutex // the emit callback is not asked to be concurrency safe
 	pages atomic.Int64
@@ -159,7 +168,11 @@ func NewRecrawler(cfg RecrawlConfig, bulk, web *HTTPClient) (*Recrawler, error) 
 		r.rc = NewRobotsCache(DefaultRobotsTTL, cfg.Crawl.UserAgent)
 	}
 	if cfg.OutDir != "" {
-		r.w = NewWARCWriter(cfg.OutDir, cfg.Prefix, cfg.WARCSize, cfg.Info)
+		w, err := NewCaptureSink(cfg.Format, cfg.OutDir, cfg.Prefix, cfg.ShardSize, cfg.Info)
+		if err != nil {
+			return nil, err
+		}
+		r.w = w
 	}
 	return r, nil
 }
@@ -204,6 +217,14 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 			// The work list is walked out. Record that, so a supervisor
 			// restarting the unit is told to stop rather than reading the
 			// dataset from the top again.
+			if r.w != nil {
+				r.wmu.Lock()
+				_, serr := r.w.Sync(true)
+				r.wmu.Unlock()
+				if serr != nil {
+					return r.snapshot(), serr
+				}
+			}
 			part, row, done := r.wl.Position()
 			r.ck.Part, r.ck.Row, r.ck.Done = part, row, done
 			if err := r.save(); err != nil {
@@ -225,10 +246,18 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 		// The bytes first, then the claim that they exist.
 		if r.w != nil {
 			r.wmu.Lock()
-			serr := r.w.Sync()
+			durable, serr := r.w.Sync(false)
 			r.wmu.Unlock()
 			if serr != nil {
 				return r.snapshot(), serr
+			}
+			if !durable {
+				// The sink cannot promise these rows are readable yet, which is
+				// what a Parquet shard says until its footer is written. Leaving
+				// the checkpoint where it is costs a replay of the open shard on
+				// a crash and never costs a gap, and the shard size is the knob
+				// that bounds it.
+				continue
 			}
 		}
 		part, row, done := r.wl.Position()
@@ -390,7 +419,7 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 
 	if r.w != nil {
 		r.wmu.Lock()
-		err = r.w.Write(NewWARCCapture(res))
+		err = r.w.WriteCapture(res)
 		r.wmu.Unlock()
 		if err != nil {
 			return fmt.Errorf("write WARC for %s: %w", it.URL, err)
@@ -433,7 +462,7 @@ func (r *Recrawler) snapshot() CrawlStats {
 		ErrOther:   r.stats.errOther.Load(),
 	}
 	if r.w != nil {
-		s.WARCFiles = r.w.Files()
+		s.OutFiles = r.w.Files()
 	}
 	return s
 }

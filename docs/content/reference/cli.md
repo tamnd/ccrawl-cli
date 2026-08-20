@@ -929,12 +929,12 @@ Recrawl a work list that is already published, streamed out of Parquet rather th
 ### recrawl run
 
 Reads a published dataset a part at a time, fetches every URL in it, and keeps its place in a checkpoint of a part number and a row offset.
-robots.txt is fetched once per host and enforced, each host gets one request per `--delay`, and every fetch is written to WARC.
+robots.txt is fetched once per host and enforced, each host gets one request per `--delay`, and every fetch is written out as a capture row or a WARC record.
 
 ```sh
-ccrawl recrawl run --from domains --out warc/ --state recrawl.json
-ccrawl recrawl run --from urls --dir data/CC-MAIN-2026-25 --out warc/ --state recrawl.json --shard 0 --shards 3
-ccrawl recrawl run --from open-index/ccrawl-domains --column domain --max-pages 1000
+ccrawl recrawl run --from domains --out captures/ --state recrawl.json
+ccrawl recrawl run --from urls --dir data/CC-MAIN-2026-25 --out captures/ --state recrawl.json --shard 0 --shards 3
+ccrawl recrawl run --from open-index/ccrawl-domains --column domain --format warc --max-pages 1000
 ```
 
 | Flag | Meaning |
@@ -942,13 +942,14 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --max-pages 
 | `--from` | Published dataset to recrawl: `domains`, `urls`, or a dataset repo ID |
 | `--dir` | Directory of parts inside the dataset, default the newest release published |
 | `--column` | String column holding the work, `domain` or `url` |
-| `--out` | Directory to write WARC files into (empty fetches without archiving) |
+| `--out` | Directory to write output files into (empty fetches without archiving) |
+| `--format` | Output format: `parquet` rows with the body inline, or `warc`, default `parquet` |
 | `--state` | Checkpoint file, so a killed run resumes where it stopped |
 | `--delay` | Minimum spacing between two requests to the same host, default `1s`, `0` for none |
 | `--max-pages` | Stop after this many fetches (0 = no limit) |
 | `--no-robots` | Do not check robots.txt |
-| `--warc-size` | Rotate to a new WARC file past this many bytes |
-| `--prefix` | File name prefix for the WARC output |
+| `--shard-size` | Rotate to a new output shard past this much payload |
+| `--prefix` | File name prefix for the output files |
 | `--batch` | Work items fetched between checkpoints, default 2000 |
 | `--shard` | Which partition of the work list this process takes, 0-based |
 | `--shards` | How many machines are splitting the work list, default `1` |
@@ -957,6 +958,20 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --max-pages 
 A full repo ID works too, and then `--column` has to name the column, because there is no guessing what an arbitrary dataset calls its URLs.
 Leave `--dir` off and the newest release in the repo is used, which is worked out by asking the dataset what it holds rather than by keeping a list in the binary.
 A domain is turned into its homepage, since a domain is not a URL and the homepage is what a domain level recrawl means.
+
+`--format parquet` is the default because the output of a recrawl is meant to be published, and a dataset is rows.
+Each fetch becomes one row with the body, the request head and the response head inline, in ami's captures schema column for column, so a query written against an ami capture file reads one of these and the other way round.
+The columns are compressed with zstd columnar rather than one page at a time, and on a real sample of 398 homepages, 139 MB of bodies and heads, that is 22.8 MB against the 25.5 MB the same bytes take gzipped a record at a time the way a WARC stores them.
+Eleven percent is not the reason to do it and it is worth saying so plainly: the reason is that a reader can count status codes or pull one column without touching the bodies at all, and the compression is a small bonus on top.
+A 304 is stored as a row with `unchanged` set and no body, which over a corpus where most pages do not move between crawls is the difference between a dataset and a second copy of one.
+`--format warc` writes ISO 28500 the way it always did, and it is still the right answer when the output is going into an archive somebody will read with archive tools.
+
+`--shard-size` is how much uncompressed payload goes into one output file before the writer starts the next one, and it defaults to half a gigabyte.
+Every shard is finished with its own footer, so it is readable on its own and can be uploaded and deleted while the run is still going, which is what lets a hundred day run publish from day one instead of at the end.
+Shards are opened by the first row that goes into them, so a run that stops cleanly leaves no empty file behind for the publish step to find and upload.
+A run that is killed leaves the shard that was open unsealed, and an unsealed shard has no footer and does not open, which is exactly why the checkpoint did not advance past it and why the next run refetches it.
+A shard is sealed between batches rather than in the middle of one, so it overshoots the size by up to a batch of pages, and that is deliberate: it is what makes the end of a shard and the end of a batch the same place, which is the only place a checkpoint can sit.
+Setting it very small is a false economy, since columnar compression is paid for by having many similar pages in the same file and a shard holding a handful of rows gets almost none of it.
 
 The reason this is a separate command rather than `crawl run` with a different seed file is the frontier.
 A frontier earns its keep on a discovery crawl: the queue is not known ahead of time, outlinks arrive as the crawl goes, and a crash has to leave something resumable behind.
@@ -969,8 +984,12 @@ Parts are discovered by reading them, and the first part that is not published i
 Only the one column the work list needs is read, which is what makes streaming a part cheap: parquet fetches that column's chunks and leaves the rest of the file alone.
 
 The checkpoint in `--state` is a part number, a row offset and the identity of what they point into, and it is a few hundred bytes whether the work list has a thousand rows or six billion.
-It is written after the WARC bytes it accounts for are flushed to the platter, and it is written to a temporary file and renamed over the old one, so a kill at any moment leaves either the old checkpoint or the new one and never half of either.
-A run that is killed loses at most `--batch` pages and replays them, and it skips nothing: a batch cut short is not checkpointed at all, because a checkpoint past rows that were never fetched would skip them silently and nobody would ever find out.
+It is written only after the bytes it accounts for are readable again, and it is written to a temporary file and renamed over the old one, so a kill at any moment leaves either the old checkpoint or the new one and never half of either.
+What readable again means depends on the format, and the difference is worth stating.
+A WARC file is durable wherever it is fsynced, so a WARC run checkpoints at every batch and a kill costs at most `--batch` pages.
+A Parquet file is not readable at all until its footer is written, so the only durable position in one is the end of a shard, and a Parquet run checkpoints at shard boundaries and a kill costs at most the shard that was open.
+That is the price of the publishing format and `--shard-size` is the flag that bounds it: at 250 pages a second and half a gigabyte of payload a shard closes about every forty seconds.
+Either way it replays rather than skips, which is the property that matters: a batch cut short is not checkpointed at all, because a checkpoint past rows that were never fetched would skip them silently and nobody would ever find out.
 A checkpoint written by a different dataset or a different shard is refused rather than resumed, since its row offset points at nothing here.
 
 `--shard` and `--shards` split the work list across machines that never talk to each other, on the same registered domain key `crawl run` uses and for the same reason.

@@ -137,11 +137,11 @@ func TestCrawlRunFetchesTheSeedsAndWritesWARC(t *testing.T) {
 			t.Errorf("page %s came back status %d digest %q", p.URL, p.Status, p.Digest)
 		}
 	}
-	if len(stats.WARCFiles) != 1 {
-		t.Fatalf("wrote %d WARC files, want 1", len(stats.WARCFiles))
+	if len(stats.OutFiles) != 1 {
+		t.Fatalf("wrote %d WARC files, want 1", len(stats.OutFiles))
 	}
 	var responses int
-	f, err := os.Open(stats.WARCFiles[0])
+	f, err := os.Open(stats.OutFiles[0])
 	if err != nil {
 		t.Fatal(err)
 	}

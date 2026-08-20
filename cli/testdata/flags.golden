@@ -175,7 +175,7 @@ ccrawl rank top
 ccrawl recrawl
 	
 ccrawl recrawl run
-	--batch --column --delay --dir --from --max-pages --no-robots --out --prefix --shard --shards --state --warc-size
+	--batch --column --delay --dir --format --from --max-pages --no-robots --out --prefix --shard --shard-size --shards --state
 ccrawl sched
 	
 ccrawl sched assign

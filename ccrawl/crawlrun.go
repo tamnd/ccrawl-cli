@@ -80,7 +80,9 @@ type CrawlStats struct {
 	ErrSkip    int64
 	ErrOther   int64
 
-	WARCFiles []string
+	// OutFiles is what the run wrote, whichever format it wrote. It was called
+	// WARCFiles when WARC was the only thing a run could write.
+	OutFiles []string
 }
 
 // CrawlPage is one fetched page, emitted as the run goes.
@@ -459,7 +461,7 @@ func (c *Crawler) snapshot() CrawlStats {
 	}
 	c.wmu.Lock()
 	if c.w != nil {
-		s.WARCFiles = c.w.Files()
+		s.OutFiles = c.w.Files()
 	}
 	c.wmu.Unlock()
 	return s
