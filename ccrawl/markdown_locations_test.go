@@ -38,7 +38,7 @@ func TestPackLocationsConvertsOnlyWhatWasAskedFor(t *testing.T) {
 		bodies[i] = articlePage(fmt.Sprintf("Page number %d is about harbours and the boats moored there.", i))
 	}
 	data, locs := htmlWARCFile(t, "part.warc.gz", bodies)
-	h, base, reqs := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
+	h, base, reqs, _ := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
 	locs = rebase(locs, base)
 
 	out := filepath.Join(t.TempDir(), "part.parquet")
@@ -98,7 +98,7 @@ func TestPackLocationsAppliesLangAndDedup(t *testing.T) {
 		articlePage("A third page about mountains and rivers and the valleys between them."),
 	}
 	data, locs := htmlWARCFile(t, "part.warc.gz", bodies)
-	h, base, _ := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
+	h, base, _, _ := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
 	locs = rebase(locs, base)
 
 	run := func(name string, cfg MarkdownPackConfig) ([]MarkdownRow, MarkdownStats) {
@@ -152,7 +152,7 @@ func TestPackLocationsSurvivesABadLocation(t *testing.T) {
 		articlePage("A page about bakeries and the bread they sell each morning."),
 	}
 	data, locs := htmlWARCFile(t, "part.warc.gz", bodies)
-	h, base, _ := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
+	h, base, _, _ := serveWARCs(t, map[string][]byte{"part.warc.gz": data})
 	locs = rebase(locs, base)
 	locs = append(locs, Location{Filename: base + "missing.warc.gz", Offset: 0, Length: 100, URL: "https://gone.example/"})
 

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,11 +63,25 @@ func warcFile(t *testing.T, name, host string, n int, filler int) ([]byte, []Loc
 
 // serveWARCs puts a set of files behind a range-honouring server and counts the
 // requests, which is the number the whole feature is judged on.
-func serveWARCs(t *testing.T, files map[string][]byte) (*HTTPClient, string, *int64) {
+//
+// It also records what each request asked for, as path and Range header. A test
+// that reads the count across two runs cannot use the raw total: a cancelled
+// fetch is abandoned by the client and the handler it already reached goes on
+// running, and nothing connects the server's goroutine to the client's, so a
+// request belonging to a run that has already returned can land on the counter
+// after the next run has reset it. Counting distinct spans instead is immune to
+// that, because a straggler asks for a span the next run asks for anyway, and a
+// run that really did refetch finished work asks for spans nobody else does.
+func serveWARCs(t *testing.T, files map[string][]byte) (*HTTPClient, string, *int64, func() []string) {
 	t.Helper()
 	var reqs int64
+	var mu sync.Mutex
+	var spans []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&reqs, 1)
+		mu.Lock()
+		spans = append(spans, r.URL.Path+" "+r.Header.Get("Range"))
+		mu.Unlock()
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		data, ok := files[name]
 		if !ok {
@@ -76,7 +91,23 @@ func serveWARCs(t *testing.T, files map[string][]byte) (*HTTPClient, string, *in
 		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
 	}))
 	t.Cleanup(srv.Close)
-	return NewHTTPClient(Config{}), srv.URL + "/", &reqs
+	// takeSpans returns the distinct spans asked for since the last call and
+	// starts a fresh window.
+	takeSpans := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		seen := make(map[string]bool, len(spans))
+		out := make([]string, 0, len(spans))
+		for _, s := range spans {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+		spans = nil
+		return out
+	}
+	return NewHTTPClient(Config{}), srv.URL + "/", &reqs, takeSpans
 }
 
 // rebase points a fixture's locations at the test server. The filename is a URL
@@ -186,7 +217,7 @@ func TestGroupLocations(t *testing.T) {
 // record for record, and the request count against the location count.
 func TestBatchFetchMatchesOneAtATimeWithFewerRequests(t *testing.T) {
 	data, locs := warcFile(t, "a.example.warc.gz", "a.example", 12, 200)
-	h, base, reqs := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
+	h, base, reqs, _ := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
 	locs = rebase(locs, base)
 
 	var want []string
@@ -240,7 +271,7 @@ func TestBatchFetchMatchesOneAtATimeWithFewerRequests(t *testing.T) {
 func TestBatchFetchOrder(t *testing.T) {
 	a, alocs := warcFile(t, "a.example.warc.gz", "a.example", 3, 0)
 	b, blocs := warcFile(t, "b.example.warc.gz", "b.example", 3, 0)
-	h, base, _ := serveWARCs(t, map[string][]byte{"a.example.warc.gz": a, "b.example.warc.gz": b})
+	h, base, _, _ := serveWARCs(t, map[string][]byte{"a.example.warc.gz": a, "b.example.warc.gz": b})
 	alocs, blocs = rebase(alocs, base), rebase(blocs, base)
 
 	// Interleaved and backwards, so neither order is the order given.
@@ -279,12 +310,12 @@ func TestBatchFetchOrder(t *testing.T) {
 
 // A run that dies partway through has to pick up where it stopped. The second
 // run is given the same locations and must fetch only what the first one did
-// not, which is checked on the request count rather than on the ledger, since
-// the ledger being right and the run still refetching is the failure worth
-// catching.
+// not, which is checked on what it asked the server for rather than on the
+// ledger, since the ledger being right and the run still refetching is the
+// failure worth catching.
 func TestBatchFetchResumes(t *testing.T) {
 	data, locs := warcFile(t, "a.example.warc.gz", "a.example", 6, 1<<20) // filler past the gap, so one request each
-	h, base, reqs := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
+	h, base, _, takeSpans := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
 	locs = rebase(locs, base)
 	path := filepath.Join(t.TempDir(), "fetched.txt")
 
@@ -316,8 +347,11 @@ func TestBatchFetchResumes(t *testing.T) {
 		t.Fatalf("ledger holds %d keys after 2 emitted records, want 2", got)
 	}
 
-	// Second run: same input, and it must only fetch what is left.
-	atomic.StoreInt64(reqs, 0)
+	// Second run: same input, and it must only fetch what is left. The window
+	// opens here, and it is measured in distinct spans rather than in requests
+	// because the first run left a cancelled fetch in flight whose handler can
+	// still be running. See serveWARCs.
+	takeSpans()
 	ledger2, err := OpenKeyLedger(path)
 	if err != nil {
 		t.Fatal(err)
@@ -340,8 +374,8 @@ func TestBatchFetchResumes(t *testing.T) {
 	if len(got) != 4 {
 		t.Errorf("second run emitted %d records, want the remaining 4: %v", len(got), got)
 	}
-	if r := atomic.LoadInt64(reqs); r != 4 {
-		t.Errorf("second run made %d requests, want 4; the finished records were refetched", r)
+	if spans := takeSpans(); len(spans) != 4 {
+		t.Errorf("second run asked for %d distinct spans, want the 4 records it had left; the finished records were refetched: %v", len(spans), spans)
 	}
 	for _, u := range got {
 		if u == "https://a.example/0" || u == "https://a.example/1" {
@@ -354,7 +388,7 @@ func TestBatchFetchResumes(t *testing.T) {
 // record in a coalesced range would lose every record beside it.
 func TestBatchFetchOneBadLocation(t *testing.T) {
 	data, locs := warcFile(t, "a.example.warc.gz", "a.example", 3, 0)
-	h, base, _ := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
+	h, base, _, _ := serveWARCs(t, map[string][]byte{"a.example.warc.gz": data})
 	locs = rebase(locs, base)
 	// Point the middle location at bytes that are not the start of a member.
 	locs[1].Offset += 3
@@ -379,7 +413,7 @@ func TestBatchFetchOneBadLocation(t *testing.T) {
 // With no OnError a failure is fatal, so a caller that did not opt into
 // tolerating losses does not get a short answer that looks complete.
 func TestBatchFetchFailsWithoutOnError(t *testing.T) {
-	h, base, _ := serveWARCs(t, map[string][]byte{})
+	h, base, _, _ := serveWARCs(t, map[string][]byte{})
 	_, err := RunBatchFetch(context.Background(), h, BatchFetchConfig{
 		Locations: []Location{{Filename: base + "absent.warc.gz", Offset: 0, Length: 10}},
 		Workers:   1, Window: 1,
