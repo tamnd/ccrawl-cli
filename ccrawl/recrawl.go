@@ -41,7 +41,7 @@ type RecrawlConfig struct {
 	// because a Parquet file's size is not known until its footer is written and
 	// the rotation decision has to be made before then.
 	ShardSize int64
-	Workers  int
+	Workers   int
 	// Delay is the minimum spacing between two requests to the same host. A
 	// robots.txt Crawl-delay longer than this wins for that host.
 	Delay time.Duration

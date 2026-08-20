@@ -295,7 +295,8 @@ func (w *CaptureWriter) Sync(force bool) (bool, error) {
 		// sealed one behind it.
 		return true, nil
 	}
-	if !force && !(w.target > 0 && w.accumulated >= w.target) {
+	full := w.target > 0 && w.accumulated >= w.target
+	if !force && !full {
 		return false, nil
 	}
 	if err := w.seal(); err != nil {
