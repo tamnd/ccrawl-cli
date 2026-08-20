@@ -225,7 +225,7 @@ type crawlRunIn struct {
 	Seeds    string        `kit:"flag" help:"seed file: crawl seed JSONL or one URL per line, - for stdin"`
 	Out      string        `kit:"flag" help:"directory to write WARC files into (empty fetches without archiving)"`
 	State    string        `kit:"flag" help:"frontier state file, so a run resumes after a restart"`
-	Delay    time.Duration `kit:"flag" help:"minimum spacing between two requests to the same host"`
+	Delay    time.Duration `kit:"flag" default:"1s" help:"minimum spacing between two requests to the same host (0 for none)"`
 	MaxDepth int           `kit:"flag,name=max-depth" help:"how far from a seed to follow links (default 0, the seeds only)"`
 	MaxPages int64         `kit:"flag,name=max-pages" help:"stop after this many fetches (0 = no limit)"`
 	SameHost bool          `kit:"flag,name=same-host" help:"stay on the hosts the seeds named"`
@@ -267,9 +267,11 @@ Examples:
 		cfg.MaxPages = in.MaxPages
 		cfg.Crawl = ccrawl.DefaultCrawlConfig
 		cfg.Info = crawlWARCInfo()
-		if in.Delay > 0 {
-			cfg.Delay = in.Delay
-		}
+		// Taken as given, including zero. The flag carries its own default of one
+		// second, so an unset --delay arrives here as a second and an explicit
+		// --delay 0 arrives as zero. Assigning only when positive is what used to
+		// make those two the same input and left no way to say no delay at all.
+		cfg.Delay = in.Delay
 		// Depth is taken as given rather than defaulted, because the safe reading
 		// of an unset depth is the seeds and nothing else. Following links is
 		// something you ask for.
@@ -281,7 +283,10 @@ Examples:
 			cfg.Prefix = in.Prefix
 		}
 
-		c, err := ccrawl.NewCrawler(cfg, in.App.HTTP)
+		// A crawl of the open web gets its own client. in.App.HTTP is the Common
+		// Crawl client, and its delay and host-wide budget exist to be polite to
+		// data.commoncrawl.org, not to the sites we are about to visit.
+		c, err := ccrawl.NewCrawler(cfg, ccrawl.NewCrawlClient(in.App.Cfg))
 		if err != nil {
 			return err
 		}
