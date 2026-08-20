@@ -132,8 +132,15 @@ func NewCrawler(cfg RunConfig, h *HTTPClient) (*Crawler, error) {
 	if cfg.Workers <= 0 {
 		cfg.Workers = DefaultRunConfig.Workers
 	}
-	if cfg.Delay <= 0 {
-		cfg.Delay = DefaultRunConfig.Delay
+	// Delay is not re-defaulted the way Workers and RetryDelay are, because zero
+	// is a value someone can mean. A caller that wants no spacing between two
+	// requests to the same host has to be able to ask for it, for a benchmark
+	// against a server they own or for a host whose robots.txt sets Crawl-delay
+	// to nothing. Zero workers is not a request anybody can have meant, so that
+	// one still gets the default. Build a RunConfig from DefaultRunConfig, as
+	// every caller here does, and the polite one second arrives with it.
+	if cfg.Delay < 0 {
+		cfg.Delay = 0
 	}
 	if cfg.RetryDelay <= 0 {
 		cfg.RetryDelay = DefaultRunConfig.RetryDelay

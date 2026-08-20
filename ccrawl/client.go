@@ -77,6 +77,54 @@ func NewHTTPClient(cfg Config) *HTTPClient {
 // the startup line that tells an operator what rate is actually in force.
 func (h *HTTPClient) GlobalRate() string { return h.global.Describe() }
 
+// NewCrawlClient builds the client a live crawl uses to fetch robots.txt from
+// arbitrary sites. It is deliberately not the Common Crawl client.
+//
+// The ordinary client spaces every request by cfg.Delay, 200ms by default, and
+// draws on a host-wide budget shared with every other ccrawl process. Both exist
+// to be a good citizen towards data.commoncrawl.org, which is one host serving
+// bulk files to everyone. Neither has anything to say about fetching robots.txt
+// from a million unrelated sites, and applying them there is not politeness, it
+// is a queue.
+//
+// It is also the difference between a crawl that runs and one that does not. The
+// delay is per process, not per host, so robots.txt is fetched at five hosts a
+// second no matter how many workers there are. Measured against 200 local hosts,
+// a 2000 page crawl took 40.3 seconds with robots on and finished in under a
+// second with robots off, and 200 hosts times 200ms is exactly the 40 seconds.
+// Scaled to the 121 million domains in the recrawl corpus that is 280 days of
+// waiting to read robots.txt before counting a single page.
+//
+// A crawl is polite per host, in the frontier and in waitForHost, which is where
+// politeness belongs when the hosts are unrelated to each other.
+func NewCrawlClient(cfg Config) *HTTPClient {
+	cfg.Delay = 0
+	cfg.GlobalRate = 0
+	h := NewHTTPClient(cfg)
+	tr := crawlTransport()
+	h.c = &http.Client{Timeout: cfg.Timeout, Transport: tr}
+	h.download = &http.Client{Transport: tr}
+	return h
+}
+
+// crawlTransport returns a transport shaped for talking to many hosts once each,
+// which is the opposite of what pooledTransport is for.
+//
+// pooledTransport keeps 64 idle connections per host because every bulk command
+// talks to one host and wants them all kept warm. A crawl visits a host once, so
+// per-host pooling buys nothing and the connections it holds open are pure cost:
+// at 64 per host across thousands of hosts a run would sit on more sockets than
+// the machine has file descriptors. The total goes up, the per-host figure comes
+// down, and idle connections are reaped sooner because a host we have finished
+// with is not coming back.
+func crawlTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 4096
+	tr.MaxIdleConnsPerHost = 4
+	tr.IdleConnTimeout = 30 * time.Second
+	return tr
+}
+
 // pooledTransport returns a transport that keeps enough idle connections for a
 // worker pool. Go's default is two per host, which is fine for a browser and
 // wrong here: every command that fans out talks to one host, so past two
