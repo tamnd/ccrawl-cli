@@ -14,7 +14,7 @@ import (
 // and the pipeline fills in the dynamic parts (totals, breakdown bars, coverage
 // table, timestamps) at publish time.
 //
-//go:embed templates/urls_card.md templates/domains_card.md templates/news_card.md
+//go:embed templates/urls_card.md templates/domains_card.md templates/news_card.md templates/recrawl_card.md
 var cardTemplates embed.FS
 
 var cards = template.Must(template.ParseFS(cardTemplates, "templates/*.md"))
