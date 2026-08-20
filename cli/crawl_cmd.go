@@ -233,6 +233,8 @@ type crawlRunIn struct {
 	Robots   bool          `kit:"flag" help:"check robots.txt, which is already the default"`
 	WARCSize int64         `kit:"flag,name=warc-size" help:"rotate to a new WARC file past this many bytes"`
 	Prefix   string        `kit:"flag" help:"file name prefix for the WARC output"`
+	Shard    int           `kit:"flag" help:"which partition of the seed list this process takes, 0-based"`
+	Shards   int           `kit:"flag" default:"1" help:"how many machines are splitting the seed list"`
 }
 
 func registerCrawlRun(app *kit.App) {
@@ -257,6 +259,10 @@ Examples:
 	}, func(ctx context.Context, in crawlRunIn, emit func(ccrawl.CrawlPage) error) error {
 		if in.Seeds == "" {
 			return usageErr("provide a seed file with --seeds, or - to read seeds on stdin")
+		}
+		shard := ccrawl.Shard{Index: in.Shard, Count: in.Shards}
+		if err := shard.Validate(); err != nil {
+			return usageErr(err.Error())
 		}
 		cfg := ccrawl.DefaultRunConfig
 		cfg.StatePath = in.State
@@ -292,11 +298,14 @@ Examples:
 		}
 		defer func() { _ = c.Close() }()
 
-		seeded, err := loadSeeds(in.Seeds, c)
+		seeded, err := loadSeeds(in.Seeds, c, shard)
 		if err != nil {
 			return err
 		}
 		if seeded == 0 && c.Frontier().Len() == 0 {
+			if !shard.Single() {
+				return fmt.Errorf("no seeds in %s fell in shard %d of %d and nothing left in the frontier", in.Seeds, shard.Index, shard.Count)
+			}
 			return fmt.Errorf("no seeds in %s and nothing left in the frontier", in.Seeds)
 		}
 
@@ -327,7 +336,13 @@ Examples:
 // loadSeeds reads a seed file into the crawler. It takes crawl seed JSONL and
 // it takes a plain list of URLs, because the second is what anyone typing this
 // by hand will reach for and telling them off for it would be silly.
-func loadSeeds(path string, c *ccrawl.Crawler) (int, error) {
+//
+// The shard filter is applied here rather than at fetch time so a URL this
+// machine does not own never reaches the frontier. Three servers reading the
+// same file then keep a third of the state each instead of three full copies of
+// it, which is the difference between a frontier that fits on server2 and one
+// that does not.
+func loadSeeds(path string, c *ccrawl.Crawler, shard ccrawl.Shard) (int, error) {
 	f := os.Stdin
 	if path != "-" {
 		var err error
@@ -355,6 +370,11 @@ func loadSeeds(path string, c *ccrawl.Crawler) (int, error) {
 		}
 		if !strings.HasPrefix(rec.URL, "http") {
 			rec.URL = "https://" + rec.URL
+		}
+		// After the scheme is filled in, because the key comes from the parsed
+		// host and a bare domain has no host until it has a scheme.
+		if !shard.Owns(rec.URL) {
+			continue
 		}
 		if c.Seed(rec.URL, rec.Priority) {
 			n++

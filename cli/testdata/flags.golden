@@ -49,7 +49,7 @@ ccrawl crawl
 ccrawl crawl fetch
 	--robots --warc-dir
 ccrawl crawl run
-	--delay --max-depth --max-pages --no-robots --out --prefix --robots --same-host --seeds --state --warc-size
+	--delay --max-depth --max-pages --no-robots --out --prefix --robots --same-host --seeds --shard --shards --state --warc-size
 ccrawl crawl seed
 	--graph --max-seeds --max-tier
 ccrawl crawl status
