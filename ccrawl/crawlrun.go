@@ -70,9 +70,20 @@ type CrawlStats struct {
 	Fetched    int64 // pages fetched and archived
 	Failed     int64 // pages given up on
 	Retried    int64 // fetches put back in the queue
-	Disallowed int64 // pages robots.txt refused
+	Disallowed int64 // pages a robots.txt rule refused
 	Discovered int64 // outlinks admitted to the frontier
 	Bytes      int64 // response body bytes fetched
+
+	// Unreachable is pages skipped because the host could not be asked, which is
+	// a disallow under RFC 9309 section 2.3.1.4 but is not the site refusing us.
+	// It is counted apart from Disallowed because the two mean different things:
+	// one is a corpus that does not want us and the other is a network that is
+	// not working, and a run that adds them together can tell you neither.
+	Unreachable int64
+
+	// Robots is what the robots cache did, so the extra request per host is
+	// reported rather than guessed at.
+	Robots RobotsStats
 
 	ErrDNS     int64
 	ErrTimeout int64
@@ -121,6 +132,7 @@ type Crawler struct {
 // being written by every worker.
 type crawlCounters struct {
 	fetched, failed, retried, disallowed, discovered, bytes atomic.Int64
+	unreachable                                             atomic.Int64
 	errDNS, errTimeout, errRefused, errSkip, errOther       atomic.Int64
 }
 
@@ -301,7 +313,11 @@ func (c *Crawler) process(ctx context.Context, e FrontierEntry, emit func(CrawlP
 	if c.cfg.Robots {
 		entry := c.rc.Fetch(ctx, c.h, u.Host, u.Scheme)
 		if !entry.IsAllowed(u.RequestURI()) {
-			c.stats.disallowed.Add(1)
+			if entry.Unreachable {
+				c.stats.unreachable.Add(1)
+			} else {
+				c.stats.disallowed.Add(1)
+			}
 			return c.f.Done(e.URL)
 		}
 		// A Crawl-delay is a promise about the next request, so it is applied
@@ -447,17 +463,21 @@ func classifyCrawlErr(err error, stats *crawlCounters) {
 
 func (c *Crawler) snapshot() CrawlStats {
 	s := CrawlStats{
-		Fetched:    c.stats.fetched.Load(),
-		Failed:     c.stats.failed.Load(),
-		Retried:    c.stats.retried.Load(),
-		Disallowed: c.stats.disallowed.Load(),
-		Discovered: c.stats.discovered.Load(),
-		Bytes:      c.stats.bytes.Load(),
-		ErrDNS:     c.stats.errDNS.Load(),
-		ErrTimeout: c.stats.errTimeout.Load(),
-		ErrRefused: c.stats.errRefused.Load(),
-		ErrSkip:    c.stats.errSkip.Load(),
-		ErrOther:   c.stats.errOther.Load(),
+		Fetched:     c.stats.fetched.Load(),
+		Failed:      c.stats.failed.Load(),
+		Retried:     c.stats.retried.Load(),
+		Disallowed:  c.stats.disallowed.Load(),
+		Unreachable: c.stats.unreachable.Load(),
+		Discovered:  c.stats.discovered.Load(),
+		Bytes:       c.stats.bytes.Load(),
+		ErrDNS:      c.stats.errDNS.Load(),
+		ErrTimeout:  c.stats.errTimeout.Load(),
+		ErrRefused:  c.stats.errRefused.Load(),
+		ErrSkip:     c.stats.errSkip.Load(),
+		ErrOther:    c.stats.errOther.Load(),
+	}
+	if c.rc != nil {
+		s.Robots = c.rc.Stats()
 	}
 	c.wmu.Lock()
 	if c.w != nil {

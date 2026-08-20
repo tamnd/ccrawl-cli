@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,12 @@ const (
 	// friendlier reading of the same rule: the host stays disallowed while it is
 	// down and gets crawled again as soon as it recovers.
 	robotsErrorTTL = 5 * time.Minute
+
+	// robotsMinTTL is the floor under a lifetime a host asks for. A host that
+	// says max-age=0 is asking us to refetch robots.txt before every page, which
+	// at fleet speed is a request per page on a host that has just told us to be
+	// careful with it.
+	robotsMinTTL = time.Minute
 )
 
 // RobotsRule is one allow or disallow rule. The pattern is a path prefix in
@@ -54,6 +61,34 @@ type RobotsEntry struct {
 	// disallow that came from a failed fetch gets retried in minutes while a
 	// robots.txt we actually read is kept for a day.
 	TTL time.Duration
+
+	// Unreachable marks an entry that came from a host that could not be asked
+	// rather than from a robots.txt that was read. The rules are the same either
+	// way, a complete disallow, but the two are not the same event and a run
+	// that reports them as one number cannot tell a corpus that does not want us
+	// from a network that is not working.
+	Unreachable bool
+}
+
+// size estimates what the entry costs to hold, which is what the cache bounds
+// itself by. Counting entries alone is not enough: a robots.txt is allowed to be
+// 500 kibibytes and some of them are, so a fixed number of entries is a memory
+// limit that varies by three orders of magnitude depending on who we crawl.
+func (e *RobotsEntry) size() int64 {
+	if e == nil {
+		return 0
+	}
+	// The fixed term is the map entry, the node, the pointers and the struct
+	// header. It is the part that dominates when the rule list is empty, which is
+	// the common case and so the one worth being about right on.
+	n := int64(96)
+	for _, r := range e.Rules {
+		n += int64(len(r.Pattern)) + 24
+	}
+	for _, s := range e.Sitemaps {
+		n += int64(len(s)) + 16
+	}
+	return n
 }
 
 // IsAllowed reports whether the crawler may fetch a path. The longest matching
@@ -318,10 +353,88 @@ func robotsToken(userAgent string) string {
 
 // ── fetching and caching ──────────────────────────────────────────────────────
 
-// RobotsCache caches parsed robots.txt per host with a TTL.
+// The cache, and why it is the whole of the robots story at fleet speed.
+//
+// A threefold recrawl of the domain corpus is 363M homepages across 121M
+// registered domains. Fetched naively that is 121M extra requests, one for every
+// three pages, which is a third of the fleet's capacity spent on a file that
+// rarely changes and a third more load on every site we visit. So robots is
+// fetched once per host and held.
+//
+// Held where, though. A map that never forgets is fine over a few thousand hosts
+// and fatal over a hundred million, and the servers this fleet runs on have 5,
+// 11 and 23 GB of RAM. So the cache is bounded, by entries and by bytes, and
+// evicts least recently used. That policy is not a guess: the work list is
+// published sorted, so a shard walks through hosts in bursts and leaves them
+// behind, which is the access pattern LRU is for.
+//
+// The bound is on both because either one alone is a bad limit. Entries alone
+// leaves memory at the mercy of how long the robots.txt files happen to be, and
+// RFC 9309 lets them be 500 kibibytes. Bytes alone lets a corpus of tiny files
+// fill the map with millions of entries whose real cost is the map, not the
+// contents.
+
+const (
+	// DefaultRobotsTTL is how long a fetched robots.txt is believed when it does
+	// not say. A day is what every crawl in this repo has always used and what
+	// RFC 9309 section 2.4 suggests as standard; it is named so the two run loops
+	// cannot drift apart on it.
+	DefaultRobotsTTL = 24 * time.Hour
+
+	// DefaultRobotsMaxEntries and DefaultRobotsMaxBytes bound the cache.
+	//
+	// 200 000 hosts at 64 MB is sized for the fleet: it is far more than the
+	// hosts a shard is working through at any moment, small enough to be a
+	// rounding error against the smallest server's 5 GB, and it holds a working
+	// set across the bursts a sorted work list arrives in.
+	DefaultRobotsMaxEntries = 200_000
+	DefaultRobotsMaxBytes   = 64 << 20
+)
+
+// RobotsLimits bounds what the cache holds. A non-positive field means that
+// bound is not applied, which is for a test or a small run and wrong for a
+// fleet.
+type RobotsLimits struct {
+	MaxEntries int
+	MaxBytes   int64
+}
+
+// DefaultRobotsLimits is what a run gets when it does not ask for anything else.
+func DefaultRobotsLimits() RobotsLimits {
+	return RobotsLimits{MaxEntries: DefaultRobotsMaxEntries, MaxBytes: DefaultRobotsMaxBytes}
+}
+
+// RobotsStats is what the cache did, so the extra request per host is reported
+// rather than guessed at.
+type RobotsStats struct {
+	Fetches     int64 // robots.txt requests actually sent
+	Hits        int64 // lookups a cached entry answered
+	Evictions   int64 // entries dropped to stay inside the limits
+	Expired     int64 // entries found past their lifetime and refetched
+	Unreachable int64 // fetches that failed, every one of them a disallow
+	Entries     int   // entries held right now
+	Bytes       int64 // what they are estimated to cost
+}
+
+// robotsNode is a cache entry and its place in the recency list.
+type robotsNode struct {
+	host       string
+	entry      *RobotsEntry
+	size       int64
+	prev, next *robotsNode
+}
+
+// RobotsCache caches parsed robots.txt per host, bounded and least recently
+// used.
 type RobotsCache struct {
-	mu      sync.RWMutex
-	entries map[string]*RobotsEntry
+	mu    sync.Mutex
+	nodes map[string]*robotsNode
+	// head is the most recently used and tail is the next to go. The list is
+	// intrusive and doubly linked so a hit is a constant time unlink and relink
+	// rather than a scan.
+	head, tail *robotsNode
+	bytes      int64
+	lim        RobotsLimits
 	// inflight holds one channel per host being fetched, closed when the fetch
 	// lands. Without it, sixty four workers arriving at a new host together ask
 	// that host for robots.txt sixty four times, which is a rude way to open a
@@ -329,33 +442,63 @@ type RobotsCache struct {
 	inflight map[string]chan struct{}
 	ttl      time.Duration
 	ua       string // the crawler's user agent, matched against the groups
+
+	fetches, hits, evictions, expired, unreachable atomic.Int64
 }
 
-// DefaultRobotsTTL is how long a fetched robots.txt is believed. A day is what
-// every crawl in this repo has always used; it is named so the two run loops
-// cannot drift apart on it.
-const DefaultRobotsTTL = 24 * time.Hour
-
-// NewRobotsCache creates a cache with the given TTL and user agent string.
+// NewRobotsCache creates a cache with the given TTL and user agent string,
+// bounded at the fleet defaults.
 func NewRobotsCache(ttl time.Duration, userAgent string) *RobotsCache {
+	return NewRobotsCacheWithLimits(ttl, userAgent, DefaultRobotsLimits())
+}
+
+// NewRobotsCacheWithLimits creates a cache bounded as asked.
+func NewRobotsCacheWithLimits(ttl time.Duration, userAgent string, lim RobotsLimits) *RobotsCache {
 	return &RobotsCache{
-		entries:  make(map[string]*RobotsEntry),
+		nodes:    make(map[string]*robotsNode),
 		inflight: make(map[string]chan struct{}),
 		ttl:      ttl,
 		ua:       userAgent,
+		lim:      lim,
+	}
+}
+
+// Stats reports what the cache has done and what it is holding.
+func (rc *RobotsCache) Stats() RobotsStats {
+	rc.mu.Lock()
+	entries, bytes := len(rc.nodes), rc.bytes
+	rc.mu.Unlock()
+	return RobotsStats{
+		Fetches:     rc.fetches.Load(),
+		Hits:        rc.hits.Load(),
+		Evictions:   rc.evictions.Load(),
+		Expired:     rc.expired.Load(),
+		Unreachable: rc.unreachable.Load(),
+		Entries:     entries,
+		Bytes:       bytes,
 	}
 }
 
 // Get returns the cached robots entry for host, or nil if it is missing or
-// expired.
+// expired. A hit is also a use, which is what moves the host to the front of the
+// recency list.
 func (rc *RobotsCache) Get(host string) *RobotsEntry {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	e, ok := rc.entries[host]
-	if !ok || time.Now().Unix() >= e.ExpiresAt {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	n, ok := rc.nodes[host]
+	if !ok {
 		return nil
 	}
-	return e
+	if time.Now().Unix() >= n.entry.ExpiresAt {
+		// Dropped rather than left to be evicted later, since an expired entry is
+		// dead weight against both bounds and the caller is about to replace it.
+		rc.remove(n)
+		rc.expired.Add(1)
+		return nil
+	}
+	rc.touch(n)
+	rc.hits.Add(1)
+	return n.entry
 }
 
 // Put stores a robots entry for host. An entry carrying its own TTL keeps it,
@@ -367,9 +510,76 @@ func (rc *RobotsCache) Put(host string, e *RobotsEntry) {
 		ttl = e.TTL
 	}
 	e.ExpiresAt = time.Now().Add(ttl).Unix()
+
 	rc.mu.Lock()
-	rc.entries[host] = e
-	rc.mu.Unlock()
+	defer rc.mu.Unlock()
+	if old, ok := rc.nodes[host]; ok {
+		rc.remove(old)
+	}
+	n := &robotsNode{host: host, entry: e, size: e.size() + int64(len(host))}
+	rc.nodes[host] = n
+	rc.bytes += n.size
+	rc.pushFront(n)
+	rc.evictLocked()
+}
+
+// evictLocked drops least recently used entries until the cache is inside both
+// bounds. The entry just added is never the one dropped, which matters when a
+// single robots.txt is larger than the whole byte budget: the caller is about to
+// use it, and dropping it would turn every page on that host into a refetch.
+func (rc *RobotsCache) evictLocked() {
+	for rc.tail != nil && rc.tail != rc.head {
+		overEntries := rc.lim.MaxEntries > 0 && len(rc.nodes) > rc.lim.MaxEntries
+		overBytes := rc.lim.MaxBytes > 0 && rc.bytes > rc.lim.MaxBytes
+		if !overEntries && !overBytes {
+			return
+		}
+		rc.remove(rc.tail)
+		rc.evictions.Add(1)
+	}
+}
+
+// pushFront puts a node at the most recently used end.
+func (rc *RobotsCache) pushFront(n *robotsNode) {
+	n.prev, n.next = nil, rc.head
+	if rc.head != nil {
+		rc.head.prev = n
+	}
+	rc.head = n
+	if rc.tail == nil {
+		rc.tail = n
+	}
+}
+
+// touch moves a node to the most recently used end.
+func (rc *RobotsCache) touch(n *robotsNode) {
+	if rc.head == n {
+		return
+	}
+	rc.unlink(n)
+	rc.pushFront(n)
+}
+
+// unlink takes a node out of the recency list without forgetting it.
+func (rc *RobotsCache) unlink(n *robotsNode) {
+	if n.prev != nil {
+		n.prev.next = n.next
+	} else if rc.head == n {
+		rc.head = n.next
+	}
+	if n.next != nil {
+		n.next.prev = n.prev
+	} else if rc.tail == n {
+		rc.tail = n.prev
+	}
+	n.prev, n.next = nil, nil
+}
+
+// remove forgets a node entirely.
+func (rc *RobotsCache) remove(n *robotsNode) {
+	rc.unlink(n)
+	delete(rc.nodes, n.host)
+	rc.bytes -= n.size
 }
 
 // Fetch returns the robots entry for a host, fetching and caching it on a miss.
@@ -394,7 +604,11 @@ func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme st
 		rc.inflight[host] = done
 		rc.mu.Unlock()
 
+		rc.fetches.Add(1)
 		e := FetchRobots(ctx, h, host, scheme, rc.ua)
+		if e.Unreachable {
+			rc.unreachable.Add(1)
+		}
 		rc.Put(host, e)
 		rc.mu.Lock()
 		delete(rc.inflight, host)
@@ -412,6 +626,10 @@ func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme st
 // unresolvable and section 2.3.1.2 treats it the same way. A 5xx or a network
 // failure means the site could not tell us anything, and section 2.3.1.4 is
 // explicit that this is a complete disallow rather than a shrug.
+// The lifetime comes from the response where the host states one, per section
+// 2.4, which asks crawlers to use standard cache control. A host that wants to
+// be asked again in an hour gets asked again in an hour, and one that asks for a
+// year gets a day, because a day is as long as the spec lets anybody hold this.
 func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent string) *RobotsEntry {
 	resp, err := h.getStatus(ctx, scheme+"://"+host+"/robots.txt")
 	if err != nil {
@@ -420,7 +638,9 @@ func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent str
 	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return parseRobots(resp.Body, userAgent)
+		e := parseRobots(resp.Body, userAgent)
+		e.TTL = robotsStatedTTL(resp.Header.Get("Cache-Control"))
+		return e
 	case resp.StatusCode >= 500:
 		return robotsUnreachable()
 	default:
@@ -428,11 +648,40 @@ func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent str
 	}
 }
 
+// robotsStatedTTL reads max-age out of a Cache-Control header, returning zero
+// when the host said nothing usable and the cache's own TTL should stand.
+//
+// no-store and no-cache are honoured as the shortest lifetime we are willing to
+// keep rather than as no caching at all. Refetching robots.txt before every page
+// would be one request per page on a host that asked us to be careful, which is
+// the opposite of what it asked for.
+func robotsStatedTTL(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	for _, part := range strings.Split(header, ",") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		switch {
+		case part == "no-store", part == "no-cache":
+			return robotsMinTTL
+		case strings.HasPrefix(part, "max-age="):
+			secs, err := strconv.Atoi(strings.TrimSpace(part[len("max-age="):]))
+			if err != nil || secs < 0 {
+				return 0
+			}
+			d := time.Duration(secs) * time.Second
+			return min(max(d, robotsMinTTL), DefaultRobotsTTL)
+		}
+	}
+	return 0
+}
+
 // robotsUnreachable is the entry for a host that could not be asked: everything
 // disallowed, and remembered only briefly so the host is retried soon.
 func robotsUnreachable() *RobotsEntry {
 	return &RobotsEntry{
-		Rules: []RobotsRule{{Pattern: "/"}},
-		TTL:   robotsErrorTTL,
+		Rules:       []RobotsRule{{Pattern: "/"}},
+		TTL:         robotsErrorTTL,
+		Unreachable: true,
 	}
 }

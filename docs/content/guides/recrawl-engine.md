@@ -126,9 +126,22 @@ Three things are worth knowing before you point it at the open web.
 Politeness is per host, and it is the longer of `--delay` and whatever the host's own `Crawl-delay` asks for.
 Workers share one frontier, and the frontier hands out at most one URL per host per delay, so `--workers 64` means 64 hosts in flight and never 64 requests at one host.
 
-robots.txt is fetched once per host, cached for a day, and enforced.
+robots.txt is fetched once per host, cached, and enforced.
+How long it is cached is the host's decision where it makes one: a `Cache-Control` header on the response sets the lifetime, floored at a minute so a `no-store` does not mean a fetch per page, and capped at a day so a host asking to be remembered for a year does not get it.
+A host that says nothing gets the day.
 A host that answers 5xx or does not answer at all is treated as fully disallowed for five minutes, which is what RFC 9309 asks for, so an outage is not read as an invitation.
 `--no-robots` turns the whole check off, and you should have a reason.
+
+The cache is bounded by both an entry count and a byte budget, and it evicts least recently used, because a fleet run walks more hosts than any machine can hold parsed rules for.
+The defaults are 200 000 entries and 64 MB, and a run that walks 50 000 hosts through a cache sized for 1000 holds 1000 and grows its heap by tens of megabytes rather than by the number of hosts.
+Every run prints what robots cost it, since the check is an extra request per host and on a domain corpus that is one request for every page:
+
+```
+recrawl run: robots: 258 hosts fetched, 0 saved by the cache, 16 refused, 39 unreachable
+```
+
+Refused and unreachable are counted apart on purpose.
+Both stop the page, but one is a site telling you no and the other is a site that could not be asked, and reading a log where those are the same number tells you nothing about which you are looking at.
 
 The frontier lives in `--state`, and it is the resume story.
 The queue, the seen set and the per-host clocks are all in that file, committed as the crawl goes, so a run that is killed halfway through 100 000 pages restarts on the remainder rather than on the whole list.

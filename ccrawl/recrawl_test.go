@@ -18,9 +18,10 @@ import (
 // recrawlSite serves a page per path and counts every request, so a test can
 // ask what was fetched and how often.
 type recrawlSite struct {
-	mu     sync.Mutex
-	hits   map[string]int
-	robots string
+	mu           sync.Mutex
+	hits         map[string]int
+	robots       string
+	robotsStatus int // non-zero to answer /robots.txt with a bare status
 }
 
 func newRecrawlSite() *recrawlSite {
@@ -34,6 +35,13 @@ func (s *recrawlSite) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if r.URL.Path == "/robots.txt" {
+		s.mu.Lock()
+		status := s.robotsStatus
+		s.mu.Unlock()
+		if status != 0 {
+			w.WriteHeader(status)
+			return
+		}
 		if robots == "" {
 			http.NotFound(w, r)
 			return
@@ -782,5 +790,117 @@ func TestRecrawlParquetCheckpointAdvancesOnceShardsSeal(t *testing.T) {
 	}
 	if int64(stored) < ck.Row {
 		t.Fatalf("the checkpoint reads row %d and only %d captures are readable", ck.Row, stored)
+	}
+}
+
+// TestRecrawlHonoursACrawlDelayLongerThanOurs is the Crawl-delay done-when on
+// the recrawl side. Our own delay is a floor and not a ceiling: a host that asks
+// for more gets more, or the politeness setting is the one we chose rather than
+// the one the site asked for.
+func TestRecrawlHonoursACrawlDelayLongerThanOurs(t *testing.T) {
+	site := newRecrawlSite()
+	site.robots = "User-agent: *\nCrawl-delay: 0.4\n"
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(3)
+	parts := writeWorkList(t, srv.URL, want, 3)
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.Robots = true
+	cfg.Delay = 0 // our own figure, which robots is about to beat
+	cfg.Workers = 3
+	r := newTestRecrawler(t, cfg, parts)
+	defer func() { _ = r.Close() }()
+
+	start := time.Now()
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	if stats.Fetched != 3 {
+		t.Fatalf("fetched %d of 3 pages", stats.Fetched)
+	}
+	// Three pages on one host at four hundred milliseconds apart is two gaps,
+	// so eight hundred milliseconds is the floor. Measured a little under, since
+	// the point is that the delay was applied and not that the clock is exact.
+	if took < 700*time.Millisecond {
+		t.Fatalf("three pages on a host asking for 0.4s apart took %s, so the Crawl-delay was ignored", took)
+	}
+}
+
+// TestRecrawlCountsUnreachableRobotsApartFromRefused is the reporting
+// done-when, end to end. Both stop the page and they are not the same event.
+func TestRecrawlCountsUnreachableRobotsApartFromRefused(t *testing.T) {
+	site := newRecrawlSite()
+	site.robotsStatus = 500 // the host cannot tell us anything
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(4)
+	parts := writeWorkList(t, srv.URL, want, 4)
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.Robots = true
+	r := newTestRecrawler(t, cfg, parts)
+	defer func() { _ = r.Close() }()
+
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Fetched != 0 {
+		t.Fatalf("a host whose robots.txt is failing was crawled %d times", stats.Fetched)
+	}
+	if stats.Unreachable != 4 {
+		t.Fatalf("%d pages counted unreachable, want 4", stats.Unreachable)
+	}
+	if stats.Disallowed != 0 {
+		t.Fatalf("%d pages counted refused, and nothing refused them", stats.Disallowed)
+	}
+	// And the cost of asking is reported: one host, one request, however many
+	// pages went through it.
+	if stats.Robots.Fetches != 1 {
+		t.Fatalf("robots.txt was fetched %d times for one host", stats.Robots.Fetches)
+	}
+	if stats.Robots.Unreachable != 1 {
+		t.Fatalf("the cache reports %d unreachable hosts", stats.Robots.Unreachable)
+	}
+}
+
+// TestRecrawlAsksEachHostForRobotsOnce is the cost half. On a domain corpus this
+// is one extra request for every three pages, so the run has to be able to say
+// what it spent.
+func TestRecrawlAsksEachHostForRobotsOnce(t *testing.T) {
+	site := newRecrawlSite()
+	site.robots = "User-agent: *\nDisallow: /p01\n"
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(8)
+	parts := writeWorkList(t, srv.URL, want, 8)
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.Robots = true
+	r := newTestRecrawler(t, cfg, parts)
+	defer func() { _ = r.Close() }()
+
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := site.count("/robots.txt"); got != 1 {
+		t.Fatalf("eight pages on one host asked for robots.txt %d times, want 1", got)
+	}
+	if stats.Robots.Fetches != 1 || stats.Robots.Hits != 7 {
+		t.Fatalf("the run reports %d fetches and %d cache hits over eight pages on one host",
+			stats.Robots.Fetches, stats.Robots.Hits)
+	}
+	if stats.Disallowed != 1 || stats.Unreachable != 0 {
+		t.Fatalf("%d refused and %d unreachable, want 1 and 0", stats.Disallowed, stats.Unreachable)
+	}
+	if stats.Fetched != 7 {
+		t.Fatalf("fetched %d of the 7 pages robots allowed", stats.Fetched)
 	}
 }
