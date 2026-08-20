@@ -204,44 +204,43 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 	buf := make([]WorkItem, r.cfg.Batch)
 	for {
 		if err := ctx.Err(); err != nil {
-			return r.snapshot(), nil
+			return r.snapshot(), r.finish()
 		}
 		if r.cfg.MaxPages > 0 && r.pages.Load() >= r.cfg.MaxPages {
-			return r.snapshot(), nil
+			return r.snapshot(), r.finish()
 		}
+		// Where the batch about to be read starts, which is the position a run
+		// cut off inside that batch has to fall back to.
+		startPart, startRow, _ := r.wl.Position()
 		n, err := r.wl.Next(ctx, buf)
 		if err != nil {
 			return r.snapshot(), err
 		}
 		if n == 0 {
-			// The work list is walked out. Record that, so a supervisor
+			// The work list is walked out. finish records that, so a supervisor
 			// restarting the unit is told to stop rather than reading the
 			// dataset from the top again.
-			if r.w != nil {
-				r.wmu.Lock()
-				_, serr := r.w.Sync(true)
-				r.wmu.Unlock()
-				if serr != nil {
-					return r.snapshot(), serr
-				}
-			}
-			part, row, done := r.wl.Position()
-			r.ck.Part, r.ck.Row, r.ck.Done = part, row, done
-			if err := r.save(); err != nil {
-				return r.snapshot(), err
-			}
-			return r.snapshot(), nil
+			return r.snapshot(), r.finish()
 		}
 		whole, err := r.fetchBatch(ctx, buf[:n], emit)
 		if err != nil {
 			return r.snapshot(), err
 		}
 		if !whole {
-			// The batch was cut short by the page limit or by a cancel, so most
+			// The batch was cut short by the page limit or by a cancel, so part
 			// of it was never fetched. Advancing the checkpoint past it would
-			// claim work that was not done, and the next run would skip it
-			// without a word. The batch is replayed instead.
-			return r.snapshot(), nil
+			// claim work that was not done and the next run would skip it without
+			// a word, so the checkpoint falls back to where this batch began and
+			// the batch is replayed whole.
+			//
+			// It falls back rather than staying put. Every batch before this one
+			// was finished, and on a Parquet run those batches are usually sitting
+			// in a shard that has not filled yet, so their checkpoint was held
+			// back too. Sealing here and recording the batch boundary turns a
+			// replay of the whole open shard into a replay of one batch, which is
+			// the difference between --max-pages being usable and being a way to
+			// throw away everything the run just did.
+			return r.snapshot(), r.finishAt(startPart, startRow, false)
 		}
 		// The bytes first, then the claim that they exist.
 		if r.w != nil {
@@ -267,6 +266,48 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 			return r.snapshot(), err
 		}
 	}
+}
+
+// finish closes out a run that stopped between batches, which is the one place
+// a stop is clean: nothing is in flight, every fetched page is written, and the
+// work list is sitting on a row nobody has read.
+//
+// The three ways to get here are the end of the work list, the page limit, and a
+// cancel that landed on the boundary. All three used to be handled differently
+// and only the first one sealed the output and moved the checkpoint, so a run
+// with --max-pages fetched its pages, wrote them, and left a checkpoint saying
+// it had done nothing. Restarting it refetched every page and wrote a second
+// copy of all of them, which on a fleet run is the difference between a hundred
+// days and never finishing.
+//
+// The sync is forced because a stop is the last chance to make the open shard
+// readable. Holding it back for a fuller shard means holding it back forever.
+func (r *Recrawler) finish() error {
+	part, row, done := r.wl.Position()
+	return r.finishAt(part, row, done)
+}
+
+// finishAt is finish with the position given rather than read off the work list,
+// for the one caller that has to record a row the work list has already gone
+// past.
+//
+// Recording a position behind where the reader sits means the rows in between
+// are fetched again on the next run and written again, so a shard can hold two
+// copies of a page. That is the deliberate half of the trade: replaying costs
+// duplicate rows and skipping costs missing ones, and only one of those can be
+// noticed after the fact.
+func (r *Recrawler) finishAt(part int, row int64, done bool) error {
+	if r.w != nil {
+		r.wmu.Lock()
+		_, err := r.w.Sync(true)
+		r.wmu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	r.ck.Part, r.ck.Row, r.ck.Done = part, row, done
+	r.ck.Fetched = r.stats.fetched.Load()
+	return r.save()
 }
 
 // save writes the checkpoint, filling in the identity it has to match on the

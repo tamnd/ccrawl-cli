@@ -69,21 +69,18 @@ func (s WorkSource) Validate() error {
 	return nil
 }
 
-// PartURL is where part p of the source lives.
-func (s WorkSource) PartURL(p int) string {
-	dir := strings.Trim(s.Dir, "/")
-	if dir != "" {
-		dir += "/"
-	}
-	return fmt.Sprintf("https://huggingface.co/datasets/%s/resolve/main/%spart-%03d.parquet", s.Repo, dir, p)
+// FileURL is where a file inside the dataset lives.
+func (s WorkSource) FileURL(file string) string {
+	return "https://huggingface.co/datasets/" + s.Repo + "/resolve/main/" + strings.TrimPrefix(file, "/")
 }
 
-// DatasetDirs lists the directories of parts inside a published dataset,
-// newest first.
+// datasetFiles lists every parquet file in a published dataset.
 //
 // The repo API answers without a token for a public dataset, which is what the
 // fleet reads, and it is one request against a list that changes once a month.
-func DatasetDirs(ctx context.Context, h *HTTPClient, repo string) ([]string, error) {
+// It returns every file in the repo in one response, so both the release
+// directories and the parts inside one come out of the same call.
+func datasetFiles(ctx context.Context, h *HTTPClient, repo string) ([]string, error) {
 	url := "https://huggingface.co/api/datasets/" + repo
 	resp, err := h.Get(ctx, url)
 	if err != nil {
@@ -98,17 +95,30 @@ func DatasetDirs(ctx context.Context, h *HTTPClient, repo string) ([]string, err
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("reading the file list of %s: %w", repo, err)
 	}
+	var files []string
+	for _, s := range payload.Siblings {
+		if strings.HasSuffix(s.Path, ".parquet") {
+			files = append(files, s.Path)
+		}
+	}
+	return files, nil
+}
+
+// DatasetDirs lists the directories of parts inside a published dataset,
+// newest first.
+func DatasetDirs(ctx context.Context, h *HTTPClient, repo string) ([]string, error) {
+	files, err := datasetFiles(ctx, h, repo)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	var dirs []string
-	for _, s := range payload.Siblings {
-		if !strings.HasSuffix(s.Path, ".parquet") {
-			continue
-		}
-		i := strings.LastIndex(s.Path, "/")
+	for _, f := range files {
+		i := strings.LastIndex(f, "/")
 		if i < 0 {
 			continue
 		}
-		d := s.Path[:i]
+		d := f[:i]
 		if !seen[d] {
 			seen[d] = true
 			dirs = append(dirs, d)
@@ -116,6 +126,75 @@ func DatasetDirs(ctx context.Context, h *HTTPClient, repo string) ([]string, err
 	}
 	sortDatasetDirs(dirs)
 	return dirs, nil
+}
+
+// DatasetParts lists the parts of one release, in the order a run reads them.
+//
+// Parts used to be discovered by asking for part-000.parquet and treating the
+// first 404 as the end of the dataset, which read the part number straight off
+// a counter and formatted it three digits wide. open-index/ccrawl-domains
+// happens to name its parts that way and open-index/ccrawl-urls names them
+// part-00000.parquet, so a run pointed at the URL corpus asked for a file that
+// is not there, read the 404 as the end of the work list, and reported that it
+// had finished after fetching nothing. It exited zero while doing it.
+//
+// Listing the files says what is actually published instead of guessing at the
+// name, it costs the one request the release directory already costs, and it
+// still leaves nobody having to keep a part count in step with the next
+// publish.
+func DatasetParts(ctx context.Context, h *HTTPClient, repo, dir string) ([]string, error) {
+	files, err := datasetFiles(ctx, h, repo)
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.Trim(dir, "/")
+	if prefix != "" {
+		prefix += "/"
+	}
+	var parts []string
+	for _, f := range files {
+		rest, ok := strings.CutPrefix(f, prefix)
+		if !ok || strings.Contains(rest, "/") {
+			continue
+		}
+		parts = append(parts, f)
+	}
+	sortParts(parts)
+	return parts, nil
+}
+
+// sortParts orders parts by the number in the name rather than by the name.
+//
+// Zero padded names sort the same either way as long as every part in a release
+// is padded to the same width, which every published one is. Sorting on the
+// number means a release that is not padded, or one that outgrows its padding,
+// is still read in the order it was written.
+func sortParts(parts []string) {
+	sort.Slice(parts, func(i, j int) bool {
+		ni, nj := partNumber(parts[i]), partNumber(parts[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return parts[i] < parts[j]
+	})
+}
+
+// partNumber pulls the digits out of a part name, or -1 if there are none, so
+// an unnumbered file sorts ahead of the numbered ones rather than among them.
+func partNumber(p string) int {
+	base := path.Base(p)
+	start := strings.IndexFunc(base, func(r rune) bool { return r >= '0' && r <= '9' })
+	if start < 0 {
+		return -1
+	}
+	n := 0
+	for _, r := range base[start:] {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // sortDatasetDirs puts the newest release first.
@@ -218,9 +297,9 @@ func (c Checkpoint) Save(path string) error {
 // WorkList streams a published dataset as URLs to recrawl.
 //
 // It holds one part open at a time and a read buffer, so its memory is the same
-// on the first row and the billionth. Parts are discovered by reading them: the
-// first one that is not published is the end of the dataset, which means nobody
-// has to keep a part count in step with the next publish.
+// on the first row and the billionth. The parts themselves are listed once from
+// the dataset and read in order, so the end of the work list is the end of the
+// list of parts rather than the first name that happens to 404.
 type WorkList struct {
 	src   WorkSource
 	shard Shard
@@ -228,6 +307,9 @@ type WorkList struct {
 	// open resolves a part to something parquet can read. It is a field so the
 	// tests can hand it local files instead of standing up a dataset.
 	open func(ctx context.Context, p int) (io.ReaderAt, int64, error)
+	// parts is the published part list, resolved on first use so that
+	// constructing a work list stays free of the network.
+	parts []string
 
 	part int
 	row  int64
@@ -279,15 +361,28 @@ func NewWorkList(src WorkSource, shard Shard, h *HTTPClient, at Checkpoint) (*Wo
 
 // openRemotePart resolves a part to a ranged reader over the published file.
 func (w *WorkList) openRemotePart(ctx context.Context, p int) (io.ReaderAt, int64, error) {
-	url := w.src.PartURL(p)
+	if w.parts == nil {
+		parts, err := DatasetParts(ctx, w.h, w.src.Repo, w.src.Dir)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(parts) == 0 {
+			return nil, 0, fmt.Errorf("the dataset %s publishes no parts under %s, so there is nothing to recrawl", w.src.Repo, w.src.Dir)
+		}
+		w.parts = parts
+	}
+	if p >= len(w.parts) {
+		return nil, 0, errPartNotPublished
+	}
+	url := w.src.FileURL(w.parts[p])
 	size, err := w.h.ContentLength(ctx, url)
 	if err != nil {
-		// A 404 is the end of the dataset rather than a failure, which is how
-		// the parts are discovered at all. Nothing publishes a part count and
-		// nobody has to keep one in step with the next release.
+		// A part that is listed but cannot be fetched is a failure, not the end
+		// of the work list. Reading it as the end is how a run reports that it
+		// finished a hundred day job in half a second.
 		var se *httpStatusError
 		if errors.As(err, &se) && se.Status == http.StatusNotFound {
-			return nil, 0, errPartNotPublished
+			return nil, 0, fmt.Errorf("the part %s is listed in %s but is not there", w.parts[p], w.src.Repo)
 		}
 		return nil, 0, err
 	}

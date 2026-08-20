@@ -5,14 +5,82 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
 )
+
+// rewriteHost sends every request to one test server whatever host it names, so
+// a code path with huggingface.co written into it can be exercised offline.
+type rewriteHost struct {
+	to string
+	rt http.RoundTripper
+}
+
+func (r rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
+	u := *req.URL
+	to, err := url.Parse(r.to)
+	if err != nil {
+		return nil, err
+	}
+	u.Scheme, u.Host = to.Scheme, to.Host
+	clone := req.Clone(req.Context())
+	clone.URL = &u
+	clone.Host = ""
+	return r.rt.RoundTrip(clone)
+}
+
+// stubDataset is a test server answering the repo API with a file list, and a
+// client pointed at it.
+type stubDataset struct {
+	*httptest.Server
+	client *HTTPClient
+	repo   string
+	// hits counts requests, so a test can assert the file list is read once
+	// rather than once per part.
+	hits atomic.Int64
+}
+
+// datasetAPI stands up a repo API answering with the given files. Files are
+// served out of root where one is given, so a work list can be read end to end
+// over the same path the fleet takes.
+func datasetAPI(t *testing.T, files []string, root ...string) *stubDataset {
+	t.Helper()
+	d := &stubDataset{repo: "open-index/test"}
+	d.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/datasets/"+d.repo+"/resolve/main/"); ok && len(root) == 1 {
+			http.ServeFile(w, r, filepath.Join(root[0], filepath.FromSlash(rest)))
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/api/datasets/") {
+			http.NotFound(w, r)
+			return
+		}
+		d.hits.Add(1)
+		var payload struct {
+			Siblings []struct {
+				Path string `json:"rfilename"`
+			} `json:"siblings"`
+		}
+		for _, f := range files {
+			payload.Siblings = append(payload.Siblings, struct {
+				Path string `json:"rfilename"`
+			}{f})
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	d.client = NewHTTPClient(Config{})
+	d.client.c = &http.Client{Transport: rewriteHost{to: d.URL, rt: http.DefaultTransport}}
+	return d
+}
 
 // writeDomainPart writes a part file with one domain column, the shape the
 // published domain ranks have.
@@ -406,16 +474,172 @@ func TestCheckpointRejectsGarbage(t *testing.T) {
 	}
 }
 
-func TestWorkSourcePartURL(t *testing.T) {
+func TestWorkSourceFileURL(t *testing.T) {
 	src := WorkSource{Repo: "open-index/ccrawl-urls", Dir: "data/CC-MAIN-2026-25", Column: "url"}
-	got := src.PartURL(7)
-	want := "https://huggingface.co/datasets/open-index/ccrawl-urls/resolve/main/data/CC-MAIN-2026-25/part-007.parquet"
+	got := src.FileURL("data/CC-MAIN-2026-25/part-00007.parquet")
+	want := "https://huggingface.co/datasets/open-index/ccrawl-urls/resolve/main/data/CC-MAIN-2026-25/part-00007.parquet"
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
 	bare := WorkSource{Repo: "open-index/ccrawl-domains", Column: "domain"}
-	if got := bare.PartURL(0); !strings.HasSuffix(got, "/resolve/main/part-000.parquet") {
-		t.Fatalf("a source with no directory built %s", got)
+	if got := bare.FileURL("part-000.parquet"); !strings.HasSuffix(got, "/resolve/main/part-000.parquet") {
+		t.Fatalf("a file at the repo root built %s", got)
+	}
+}
+
+// The two published corpora do not agree on how wide a part number is written.
+// open-index/ccrawl-domains writes part-000.parquet and open-index/ccrawl-urls
+// writes part-00000.parquet, and a run that built the name itself picked one and
+// silently finished with nothing on the other.
+func TestDatasetPartsTakesTheNamesFromTheDataset(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		dir   string
+		want  []string
+	}{
+		{
+			name:  "three digits, as the domain ranks are published",
+			files: []string{"data/cc-main-2026-apr-may-jun/part-001.parquet", "data/cc-main-2026-apr-may-jun/part-000.parquet"},
+			dir:   "data/cc-main-2026-apr-may-jun",
+			want:  []string{"data/cc-main-2026-apr-may-jun/part-000.parquet", "data/cc-main-2026-apr-may-jun/part-001.parquet"},
+		},
+		{
+			name:  "five digits, as the url index is published",
+			files: []string{"data/CC-MAIN-2026-25/part-00010.parquet", "data/CC-MAIN-2026-25/part-00002.parquet"},
+			dir:   "data/CC-MAIN-2026-25",
+			want:  []string{"data/CC-MAIN-2026-25/part-00002.parquet", "data/CC-MAIN-2026-25/part-00010.parquet"},
+		},
+		{
+			name:  "another release in the same repo is not this one",
+			files: []string{"data/old/part-000.parquet", "data/new/part-000.parquet"},
+			dir:   "data/new",
+			want:  []string{"data/new/part-000.parquet"},
+		},
+		{
+			name:  "a nested file is not a part of this directory",
+			files: []string{"data/new/part-000.parquet", "data/new/sub/part-000.parquet"},
+			dir:   "data/new",
+			want:  []string{"data/new/part-000.parquet"},
+		},
+		{
+			name:  "unpadded names still read in written order",
+			files: []string{"data/new/part-10.parquet", "data/new/part-9.parquet"},
+			dir:   "data/new",
+			want:  []string{"data/new/part-9.parquet", "data/new/part-10.parquet"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := datasetAPI(t, c.files)
+			defer srv.Close()
+			got, err := DatasetParts(t.Context(), srv.client, srv.repo, c.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("got %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestWorkListReadsAPublishedDatasetEndToEnd goes through the remote path the
+// fleet takes, which is the path the part naming bug lived in. Every other work
+// list test hands the reader local files, so all of them passed while a run
+// against the URL corpus fetched nothing and called itself finished.
+func TestWorkListReadsAPublishedDatasetEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	dir := "data/CC-MAIN-2026-25"
+	if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Five digits wide, the way the URL corpus is actually published.
+	want := []string{"https://a.test/", "https://b.test/", "https://c.test/", "https://d.test/"}
+	names := []string{"part-00000.parquet", "part-00001.parquet"}
+	var files []string
+	for i, name := range names {
+		rel := dir + "/" + name
+		writeURLPart(t, filepath.Join(root, filepath.FromSlash(rel)), want[i*2:i*2+2])
+		files = append(files, rel)
+	}
+	srv := datasetAPI(t, files, root)
+	defer srv.Close()
+
+	src := WorkSource{Repo: srv.repo, Dir: dir, Column: "url"}
+	wl, err := NewWorkList(src, Shard{Index: 0, Count: 1}, srv.client, Checkpoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wl.Close()
+
+	var got []string
+	buf := make([]WorkItem, 2)
+	for {
+		n, err := wl.Next(t.Context(), buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			break
+		}
+		for _, it := range buf[:n] {
+			got = append(got, it.URL)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("read %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("read %v, want %v", got, want)
+		}
+	}
+	if _, _, done := wl.Position(); !done {
+		t.Fatal("the work list read every part but does not consider itself finished")
+	}
+	// The file list is one request for the whole run, not one per part.
+	if n := srv.hits.Load(); n != 1 {
+		t.Fatalf("the dataset was listed %d times, want 1", n)
+	}
+}
+
+// A part that is listed and then cannot be fetched is a failure. Reading it as
+// the end of the work list is how a hundred day job reports success in half a
+// second, so it has to be an error the operator sees.
+func TestWorkListFailsOnAListedPartThatIsMissing(t *testing.T) {
+	srv := datasetAPI(t, []string{"data/x/part-000.parquet"}, t.TempDir())
+	defer srv.Close()
+	src := WorkSource{Repo: srv.repo, Dir: "data/x", Column: "url"}
+	wl, err := NewWorkList(src, Shard{Index: 0, Count: 1}, srv.client, Checkpoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wl.Close()
+	if _, err := wl.Next(t.Context(), make([]WorkItem, 1)); err == nil {
+		t.Fatal("a listed part that is not there was read as the end of the work list")
+	}
+}
+
+// An empty release is worth saying out loud rather than finishing instantly,
+// for the same reason.
+func TestWorkListFailsOnAReleaseWithNoParts(t *testing.T) {
+	srv := datasetAPI(t, []string{"data/other/part-000.parquet"}, t.TempDir())
+	defer srv.Close()
+	src := WorkSource{Repo: srv.repo, Dir: "data/empty", Column: "url"}
+	wl, err := NewWorkList(src, Shard{Index: 0, Count: 1}, srv.client, Checkpoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wl.Close()
+	_, err = wl.Next(t.Context(), make([]WorkItem, 1))
+	if err == nil || !strings.Contains(err.Error(), "publishes no parts") {
+		t.Fatalf("an empty release gave %v", err)
 	}
 }
 
