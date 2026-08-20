@@ -6,6 +6,8 @@ import (
 	"hash/fnv"
 	"strconv"
 	"strings"
+
+	"github.com/tamnd/ccrawl-cli/ccrawl"
 )
 
 // errStop is a sentinel returned from callbacks to halt streaming early.
@@ -150,4 +152,22 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// robotsLine reports what robots.txt cost the run and what it bought.
+//
+// The cost is the extra request per host, which on a domain corpus is one
+// request for every three pages and is therefore worth seeing rather than
+// guessing at. The saved figure is the requests the cache did not have to make,
+// which is the whole reason for holding one. Unreachable is kept apart from
+// refused because a host that could not be asked and a host that said no are the
+// same outcome for the page and two very different things to read in a log.
+func robotsLine(stats ccrawl.CrawlStats) string {
+	r := stats.Robots
+	line := fmt.Sprintf("robots: %s fetched, %d saved by the cache, %d refused, %d unreachable",
+		plural(int(r.Fetches), "host"), r.Hits, stats.Disallowed, stats.Unreachable)
+	if r.Evictions > 0 {
+		line += fmt.Sprintf(", %d evicted from %s held", r.Evictions, humanBytes(r.Bytes))
+	}
+	return line
 }

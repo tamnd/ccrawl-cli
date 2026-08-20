@@ -329,6 +329,7 @@ Examples:
 			fmt.Fprintf(os.Stderr, "crawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
 		}
+		fmt.Fprintln(os.Stderr, "crawl run: "+robotsLine(stats))
 		return runErr
 	})
 }

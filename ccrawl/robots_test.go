@@ -2,9 +2,12 @@ package ccrawl
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -463,5 +466,234 @@ func TestCrawlDelayHoldsTheHostInTheFrontier(t *testing.T) {
 		t.Fatalf("Pop: %v", err)
 	} else if !ok {
 		t.Error("the second URL should be available once the crawl delay has passed")
+	}
+}
+
+// ── the cache at fleet speed ─────────────────────────────────────────────────
+
+// TestRobotsCacheIsBoundedByEntries is the memory done-when. A threefold recrawl
+// of the domain corpus touches 121M registered domains, and a map that never
+// forgets one of them does not fit on a 5 GB server. The cache has to hold a
+// working set and let the rest go.
+func TestRobotsCacheIsBoundedByEntries(t *testing.T) {
+	const limit = 1000
+	const hosts = 50000
+	rc := NewRobotsCacheWithLimits(time.Hour, "ccrawl", RobotsLimits{MaxEntries: limit})
+
+	var m runtime.MemStats
+	var baseline uint64
+	for i := range hosts {
+		rc.Put(fmt.Sprintf("host%06d.example", i), &RobotsEntry{
+			Rules: []RobotsRule{{Pattern: "/admin/"}, {Pattern: "/private/"}},
+		})
+		if i == limit*2 {
+			// Taken after the cache is already full, so it is one steady state
+			// against another rather than against an empty map.
+			runtime.GC()
+			runtime.ReadMemStats(&m)
+			baseline = m.HeapAlloc
+		}
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&m)
+
+	st := rc.Stats()
+	if st.Entries > limit {
+		t.Fatalf("the cache holds %d entries against a limit of %d", st.Entries, limit)
+	}
+	if st.Evictions == 0 {
+		t.Fatal("fifty thousand hosts went through a cache of a thousand and nothing was evicted")
+	}
+	if grew := int64(m.HeapAlloc) - int64(baseline); grew > 4<<20 {
+		t.Fatalf("the heap grew %.1f MB over %d hosts, so the cache is not bounded in practice",
+			float64(grew)/(1<<20), hosts)
+	}
+	t.Logf("%d hosts through a cache of %d: %d entries, %d evictions, %d bytes held, heap %.1f MB",
+		hosts, limit, st.Entries, st.Evictions, st.Bytes, float64(m.HeapAlloc)/(1<<20))
+}
+
+// TestRobotsCacheIsBoundedByBytes is the other bound, and the reason there are
+// two. RFC 9309 lets a robots.txt be 500 kibibytes, so a limit counted in
+// entries is a memory limit that moves by three orders of magnitude depending on
+// who we happen to crawl.
+func TestRobotsCacheIsBoundedByBytes(t *testing.T) {
+	const budget = 256 << 10
+	rc := NewRobotsCacheWithLimits(time.Hour, "ccrawl", RobotsLimits{MaxBytes: budget})
+
+	big := make([]RobotsRule, 200)
+	for i := range big {
+		big[i] = RobotsRule{Pattern: "/section/" + strings.Repeat("x", 100) + fmt.Sprint(i)}
+	}
+	for i := range 500 {
+		rc.Put(fmt.Sprintf("host%03d.example", i), &RobotsEntry{Rules: big})
+	}
+	st := rc.Stats()
+	if st.Bytes > budget {
+		t.Fatalf("the cache holds %d bytes against a budget of %d", st.Bytes, budget)
+	}
+	if st.Entries >= 500 {
+		t.Fatalf("nothing was evicted, and 500 entries of this size do not fit in %d bytes", budget)
+	}
+}
+
+// TestRobotsCacheEvictsLeastRecentlyUsed pins the policy rather than just the
+// bound. The work list is published sorted, so a shard walks through hosts in
+// bursts and leaves them behind, and a host still being worked on has to survive
+// hosts that were finished with long ago.
+func TestRobotsCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	rc := NewRobotsCacheWithLimits(time.Hour, "ccrawl", RobotsLimits{MaxEntries: 3})
+	for _, h := range []string{"a", "b", "c"} {
+		rc.Put(h, &RobotsEntry{})
+	}
+	// a is used again, so b is now the oldest.
+	if rc.Get("a") == nil {
+		t.Fatal("a should still be cached")
+	}
+	rc.Put("d", &RobotsEntry{})
+
+	if rc.Get("b") != nil {
+		t.Error("b was the least recently used and should have gone")
+	}
+	for _, h := range []string{"a", "c", "d"} {
+		if rc.Get(h) == nil {
+			t.Errorf("%s should still be cached", h)
+		}
+	}
+}
+
+// TestRobotsCacheKeepsAnEntryTooBigForItsOwnBudget is the corner the eviction
+// loop has to get right. A single robots.txt larger than the whole byte budget
+// must not be evicted the moment it is stored, because the caller is about to
+// use it and dropping it turns every page on that host into another fetch.
+func TestRobotsCacheKeepsAnEntryTooBigForItsOwnBudget(t *testing.T) {
+	rc := NewRobotsCacheWithLimits(time.Hour, "ccrawl", RobotsLimits{MaxBytes: 128})
+	rc.Put("huge.example", &RobotsEntry{Rules: []RobotsRule{{Pattern: strings.Repeat("/x", 500)}}})
+	if rc.Get("huge.example") == nil {
+		t.Fatal("the entry was evicted before anybody could use it")
+	}
+}
+
+// TestRobotsUnreachableIsCountedApartFromRefused is the done-when about telling
+// the two apart. Both stop the page, and they mean opposite things: one is a
+// corpus that does not want us and the other is a network that is not working.
+func TestRobotsUnreachableIsCountedApartFromRefused(t *testing.T) {
+	refused := &RobotsEntry{Rules: []RobotsRule{{Pattern: "/"}}}
+	if refused.Unreachable {
+		t.Fatal("a robots.txt we read and that refused us is not unreachable")
+	}
+	un := robotsUnreachable()
+	if !un.Unreachable {
+		t.Fatal("a host that could not be asked has to be marked as such")
+	}
+	if un.IsAllowed("/anything") {
+		t.Fatal("an unreachable host is a complete disallow, per RFC 9309 section 2.3.1.4")
+	}
+}
+
+// TestRobotsCacheCountsWhatItCost is the reporting done-when. The extra request
+// per host is a third of the fleet's capacity on a domain corpus, so it is
+// reported rather than guessed at.
+func TestRobotsCacheCountsWhatItCost(t *testing.T) {
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /secret/\n"))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	rc := NewRobotsCache(time.Hour, "ccrawl")
+	h := robotsClient()
+	for range 5 {
+		rc.Fetch(context.Background(), h, host, "http")
+	}
+	st := rc.Stats()
+	if st.Fetches != 1 {
+		t.Errorf("the cache reports %d fetches for one host, want 1", st.Fetches)
+	}
+	if st.Hits != 4 {
+		t.Errorf("the cache reports %d hits over five lookups of one host, want 4", st.Hits)
+	}
+	if st.Entries != 1 {
+		t.Errorf("the cache holds %d entries for one host", st.Entries)
+	}
+	if hits != 1 {
+		t.Errorf("the host was asked %d times, want 1", hits)
+	}
+}
+
+func TestRobotsCacheCountsAnUnreachableHost(t *testing.T) {
+	_, host := robotsServer(t, 500, "")
+	rc := NewRobotsCache(time.Hour, "ccrawl")
+	e := rc.Fetch(context.Background(), robotsClient(), host, "http")
+	if !e.Unreachable {
+		t.Fatal("a 500 on robots.txt leaves the host unreachable")
+	}
+	if st := rc.Stats(); st.Unreachable != 1 {
+		t.Errorf("the cache reports %d unreachable hosts, want 1", st.Unreachable)
+	}
+}
+
+// TestRobotsCacheHonoursAStatedLifetime is the "cached for its stated lifetime"
+// half of the first done-when. A host that says how long to hold its robots.txt
+// gets held for that long rather than for our default day.
+func TestRobotsCacheHonoursAStatedLifetime(t *testing.T) {
+	cases := []struct {
+		header string
+		want   time.Duration
+	}{
+		{"", 0},
+		{"max-age=3600", time.Hour},
+		{"public, max-age=1800", 30 * time.Minute},
+		{"max-age=0", robotsMinTTL},            // not before every page
+		{"max-age=99999999", DefaultRobotsTTL}, // and not for a year either
+		{"no-store", robotsMinTTL},
+		{"max-age=nonsense", 0},
+		{"private", 0},
+	}
+	for _, c := range cases {
+		if got := robotsStatedTTL(c.header); got != c.want {
+			t.Errorf("Cache-Control %q gave a lifetime of %s, want %s", c.header, got, c.want)
+		}
+	}
+}
+
+func TestFetchRobotsTakesTheLifetimeFromTheResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=600")
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /x/\n"))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	rc := NewRobotsCache(DefaultRobotsTTL, "ccrawl")
+	e := rc.Fetch(context.Background(), robotsClient(), host, "http")
+	if e.TTL != 10*time.Minute {
+		t.Fatalf("the entry carries a lifetime of %s, want the 10 minutes the host asked for", e.TTL)
+	}
+	if wait := time.Until(time.Unix(e.ExpiresAt, 0)); wait > 11*time.Minute {
+		t.Fatalf("the cache holds it for %s, so the stated lifetime was ignored", wait)
+	}
+}
+
+// TestRobotsCacheRefetchesAnExpiredEntry is the rest of the lifetime story. The
+// entry has to go when its time is up, and the cache has to say so, or a run
+// reports a hit rate it did not have.
+func TestRobotsCacheRefetchesAnExpiredEntry(t *testing.T) {
+	rc := NewRobotsCacheWithLimits(time.Millisecond, "ccrawl", RobotsLimits{MaxEntries: 10})
+	rc.Put("example.com", &RobotsEntry{})
+	time.Sleep(1100 * time.Millisecond) // ExpiresAt has a one second resolution
+	if rc.Get("example.com") != nil {
+		t.Fatal("an expired entry came back out of the cache")
+	}
+	st := rc.Stats()
+	if st.Expired != 1 {
+		t.Errorf("the cache reports %d expired entries, want 1", st.Expired)
+	}
+	if st.Entries != 0 {
+		t.Errorf("the expired entry is still held, %d entries", st.Entries)
 	}
 }

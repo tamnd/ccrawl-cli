@@ -152,6 +152,7 @@ Examples:
 			fmt.Fprintf(os.Stderr, "recrawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
 		}
+		fmt.Fprintln(os.Stderr, "recrawl run: "+robotsLine(stats))
 		if ck.Done {
 			fmt.Fprintln(os.Stderr, "recrawl run: the work list is finished")
 		}

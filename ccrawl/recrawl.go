@@ -391,7 +391,11 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 		entry := r.rc.Fetch(rctx, r.rh, u.Host, u.Scheme)
 		cancel()
 		if !entry.IsAllowed(u.RequestURI()) {
-			r.stats.disallowed.Add(1)
+			if entry.Unreachable {
+				r.stats.unreachable.Add(1)
+			} else {
+				r.stats.disallowed.Add(1)
+			}
 			return nil
 		}
 		if entry.CrawlDelay > delay {
@@ -451,15 +455,19 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 // snapshot reads the counters into a CrawlStats.
 func (r *Recrawler) snapshot() CrawlStats {
 	s := CrawlStats{
-		Fetched:    r.stats.fetched.Load(),
-		Failed:     r.stats.failed.Load(),
-		Disallowed: r.stats.disallowed.Load(),
-		Bytes:      r.stats.bytes.Load(),
-		ErrDNS:     r.stats.errDNS.Load(),
-		ErrTimeout: r.stats.errTimeout.Load(),
-		ErrRefused: r.stats.errRefused.Load(),
-		ErrSkip:    r.stats.errSkip.Load(),
-		ErrOther:   r.stats.errOther.Load(),
+		Fetched:     r.stats.fetched.Load(),
+		Failed:      r.stats.failed.Load(),
+		Disallowed:  r.stats.disallowed.Load(),
+		Unreachable: r.stats.unreachable.Load(),
+		Bytes:       r.stats.bytes.Load(),
+		ErrDNS:      r.stats.errDNS.Load(),
+		ErrTimeout:  r.stats.errTimeout.Load(),
+		ErrRefused:  r.stats.errRefused.Load(),
+		ErrSkip:     r.stats.errSkip.Load(),
+		ErrOther:    r.stats.errOther.Load(),
+	}
+	if r.rc != nil {
+		s.Robots = r.rc.Stats()
 	}
 	if r.w != nil {
 		s.OutFiles = r.w.Files()
