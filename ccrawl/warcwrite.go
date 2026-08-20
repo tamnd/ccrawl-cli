@@ -184,6 +184,19 @@ func (w *WARCWriter) Write(c WARCCapture) error {
 	return nil
 }
 
+// Sync flushes the current file to the platter. It is safe to call when nothing
+// was written.
+//
+// A recrawl calls it before saving a checkpoint, because a checkpoint that
+// outlives the bytes it claims are on disk is worse than no checkpoint at all:
+// the run resumes past work that a power cut took away, and the gap is silent.
+func (w *WARCWriter) Sync() error {
+	if w.w == nil {
+		return nil
+	}
+	return w.w.Sync()
+}
+
 // Close closes the current file. It is safe to call when nothing was written.
 func (w *WARCWriter) Close() error {
 	if w.w == nil {

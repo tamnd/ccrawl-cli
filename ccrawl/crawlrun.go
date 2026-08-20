@@ -112,13 +112,8 @@ type Crawler struct {
 
 	hosts map[string]bool // seed hosts, for SameHost
 
-	lastMu sync.Mutex           // guards last
-	last   map[string]time.Time // when each host may next be asked for something
+	clock *hostClock // when each host may next be asked for something
 }
-
-// hostClockCap is how many host request times are kept before the stale ones
-// are swept out.
-const hostClockCap = 1 << 16
 
 // crawlCounters is CrawlStats while a run is happening, when every counter is
 // being written by every worker.
@@ -156,9 +151,9 @@ func NewCrawler(cfg RunConfig, h *HTTPClient) (*Crawler, error) {
 		cfg:   cfg,
 		h:     h,
 		f:     f,
-		rc:    NewRobotsCache(24*time.Hour, cfg.Crawl.UserAgent),
+		rc:    NewRobotsCache(DefaultRobotsTTL, cfg.Crawl.UserAgent),
 		hosts: make(map[string]bool),
-		last:  make(map[string]time.Time),
+		clock: newHostClock(),
 	}
 	if cfg.OutDir != "" {
 		c.w = NewWARCWriter(cfg.OutDir, cfg.Prefix, cfg.WARCSize, cfg.Info)
@@ -327,7 +322,7 @@ func (c *Crawler) process(ctx context.Context, e FrontierEntry, emit func(CrawlP
 	// closer together than the delay even though the queue did everything right.
 	// This is the last gate before the fetch, and it is measured where it
 	// matters, at the request rather than at the pop.
-	if err := c.waitForHost(ctx, u.Host, delay); err != nil {
+	if err := c.clock.wait(ctx, u.Host, delay); err != nil {
 		// Cancelled while waiting: the URL was never fetched, so it goes back.
 		return c.f.Retry(e, time.Now().UnixMilli())
 	}
@@ -338,7 +333,7 @@ func (c *Crawler) process(ctx context.Context, e FrontierEntry, emit func(CrawlP
 	// a request that had to open a connection arrives later than one that
 	// reused it, which shows up at the host as a gap under the delay.
 	crawlCfg := c.cfg.Crawl
-	crawlCfg.OnRequestWritten = func(t time.Time) { c.stampHost(u.Host, t) }
+	crawlCfg.OnRequestWritten = func(t time.Time) { c.clock.stamp(u.Host, t) }
 	res, err := CrawlURL(ctx, e.URL, crawlCfg)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -418,82 +413,33 @@ func (c *Crawler) expand(res *CrawlResult, from FrontierEntry) {
 	}
 }
 
-// waitForHost holds a worker until its host's turn on the wire comes round.
-//
-// The clock is stamped at the moment the request is about to go out rather than
-// when the worker was handed the URL, because the two are not the same instant
-// under load and the host only sees the first one. Stamping happens under the
-// lock, so two workers aiming at one host cannot both read a free slot and take
-// it, and the one that loses recomputes its wait rather than sleeping through
-// the slot it did not get.
-func (c *Crawler) waitForHost(ctx context.Context, host string, delay time.Duration) error {
-	if delay <= 0 {
-		return nil
-	}
-	for {
-		c.lastMu.Lock()
-		now := time.Now()
-		earliest := now
-		if prev, ok := c.last[host]; ok {
-			earliest = prev.Add(delay)
-		}
-		if !earliest.After(now) {
-			c.last[host] = now
-			if len(c.last) > hostClockCap {
-				// A crawl of the open web sees millions of hosts and needs the
-				// timings of none of them past the delay, so the map is swept
-				// rather than grown.
-				for h, t := range c.last {
-					if t.Add(delay).Before(now) {
-						delete(c.last, h)
-					}
-				}
-			}
-			c.lastMu.Unlock()
-			return nil
-		}
-		c.lastMu.Unlock()
-
-		t := time.NewTimer(time.Until(earliest))
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return ctx.Err()
-		case <-t.C:
-		}
-	}
-}
-
-// stampHost records when a request to a host actually went out.
-func (c *Crawler) stampHost(host string, t time.Time) {
-	c.lastMu.Lock()
-	if prev, ok := c.last[host]; !ok || t.After(prev) {
-		c.last[host] = t
-	}
-	c.lastMu.Unlock()
-}
-
 // classify buckets a fetch error the way refetch does.
-func (c *Crawler) classify(err error) {
+func (c *Crawler) classify(err error) { classifyCrawlErr(err, &c.stats) }
+
+// classifyCrawlErr puts a fetch error in one of the buckets a run reports, so
+// a low yield run can be diagnosed without a second one. It is shared by the
+// crawl and the recrawl, because a failure breakdown that means two different
+// things depending on which loop produced it is not a breakdown.
+func classifyCrawlErr(err error, stats *crawlCounters) {
 	e := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(e, "no such host"),
 		strings.Contains(e, "server misbehaving"),
 		strings.Contains(e, "name resolution"):
-		c.stats.errDNS.Add(1)
+		stats.errDNS.Add(1)
 	case strings.Contains(e, "timeout"),
 		strings.Contains(e, "deadline exceeded"),
 		strings.Contains(e, "timed out"):
-		c.stats.errTimeout.Add(1)
+		stats.errTimeout.Add(1)
 	case strings.Contains(e, "connection refused"),
 		strings.Contains(e, "connection reset"),
 		strings.Contains(e, "no route to host"),
 		strings.Contains(e, "network is unreachable"):
-		c.stats.errRefused.Add(1)
+		stats.errRefused.Add(1)
 	case strings.Contains(e, "skip"), strings.Contains(e, "congested"):
-		c.stats.errSkip.Add(1)
+		stats.errSkip.Add(1)
 	default:
-		c.stats.errOther.Add(1)
+		stats.errOther.Add(1)
 	}
 }
 

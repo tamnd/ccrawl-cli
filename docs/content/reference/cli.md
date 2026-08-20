@@ -33,6 +33,7 @@ Run `ccrawl <command> --help` for the full flag list on any command.
 | `domains` | Mirror the Common Crawl domain ranks to a HuggingFace dataset |
 | `publish` | Maintenance for the published Common Crawl datasets |
 | `crawl` | Recrawl engine: seed, fetch, and write WARC output |
+| `recrawl` | Recrawl a published dataset, streaming the work list rather than queueing it |
 | `sched` | Recrawl scheduling: tier assignment and differential CDX analysis |
 | `index` | Build and query a local BM25 full-text search index |
 | `api` | Start the v2 REST API server |
@@ -917,6 +918,69 @@ ccrawl crawl status -o table
 
 ---
 
+## recrawl
+
+Recrawl a work list that is already published, streamed out of Parquet rather than loaded into a frontier.
+
+| Subcommand | Does |
+|---|---|
+| `recrawl run` | Walk a published dataset and fetch every URL in it, resumable from a two number checkpoint |
+
+### recrawl run
+
+Reads a published dataset a part at a time, fetches every URL in it, and keeps its place in a checkpoint of a part number and a row offset.
+robots.txt is fetched once per host and enforced, each host gets one request per `--delay`, and every fetch is written to WARC.
+
+```sh
+ccrawl recrawl run --from domains --out warc/ --state recrawl.json
+ccrawl recrawl run --from urls --dir data/CC-MAIN-2026-25 --out warc/ --state recrawl.json --shard 0 --shards 3
+ccrawl recrawl run --from open-index/ccrawl-domains --column domain --max-pages 1000
+```
+
+| Flag | Meaning |
+|---|---|
+| `--from` | Published dataset to recrawl: `domains`, `urls`, or a dataset repo ID |
+| `--dir` | Directory of parts inside the dataset, default the newest release published |
+| `--column` | String column holding the work, `domain` or `url` |
+| `--out` | Directory to write WARC files into (empty fetches without archiving) |
+| `--state` | Checkpoint file, so a killed run resumes where it stopped |
+| `--delay` | Minimum spacing between two requests to the same host, default `1s`, `0` for none |
+| `--max-pages` | Stop after this many fetches (0 = no limit) |
+| `--no-robots` | Do not check robots.txt |
+| `--warc-size` | Rotate to a new WARC file past this many bytes |
+| `--prefix` | File name prefix for the WARC output |
+| `--batch` | Work items fetched between checkpoints, default 2000 |
+| `--shard` | Which partition of the work list this process takes, 0-based |
+| `--shards` | How many machines are splitting the work list, default `1` |
+
+`--from domains` and `--from urls` are shorthands for `open-index/ccrawl-domains` and `open-index/ccrawl-urls` with the right column already chosen.
+A full repo ID works too, and then `--column` has to name the column, because there is no guessing what an arbitrary dataset calls its URLs.
+Leave `--dir` off and the newest release in the repo is used, which is worked out by asking the dataset what it holds rather than by keeping a list in the binary.
+A domain is turned into its homepage, since a domain is not a URL and the homepage is what a domain level recrawl means.
+
+The reason this is a separate command rather than `crawl run` with a different seed file is the frontier.
+A frontier earns its keep on a discovery crawl: the queue is not known ahead of time, outlinks arrive as the crawl goes, and a crash has to leave something resumable behind.
+A recrawl has none of those properties, because the list is already published, deduplicated and sorted, and writing it into SQLite in order to read it back is copying a list in order to walk it.
+That copy costs about 135 bytes a URL, so one server's third of a threefold recrawl of a monthly crawl is roughly 283 GB of database before a single page is fetched, on machines with 2.8 GB and 6.6 GB free.
+It does not fit, it does not nearly fit, and the frontier's admit rate already falls fourfold between two million and five million rows on the way to not fitting.
+
+So `recrawl run` holds one part open and a fixed read buffer, and its memory is the same on the first row and the billionth.
+Parts are discovered by reading them, and the first part that is not published is the end of the dataset, so nobody has to keep a part count in step with the next release.
+Only the one column the work list needs is read, which is what makes streaming a part cheap: parquet fetches that column's chunks and leaves the rest of the file alone.
+
+The checkpoint in `--state` is a part number, a row offset and the identity of what they point into, and it is a few hundred bytes whether the work list has a thousand rows or six billion.
+It is written after the WARC bytes it accounts for are flushed to the platter, and it is written to a temporary file and renamed over the old one, so a kill at any moment leaves either the old checkpoint or the new one and never half of either.
+A run that is killed loses at most `--batch` pages and replays them, and it skips nothing: a batch cut short is not checkpointed at all, because a checkpoint past rows that were never fetched would skip them silently and nobody would ever find out.
+A checkpoint written by a different dataset or a different shard is refused rather than resumed, since its row offset points at nothing here.
+
+`--shard` and `--shards` split the work list across machines that never talk to each other, on the same registered domain key `crawl run` uses and for the same reason.
+Rows a machine does not own are counted and dropped as they stream by, so the row offset means the same thing on every machine in the fleet and the checkpoints are comparable across them.
+
+Like `crawl run`, the pages and robots.txt go through a client of their own rather than the one `--rate` and `--global-rate` configure.
+Those two are a budget for `data.commoncrawl.org`, one host serving bulk files to everybody, and applying a per process delay meant for one host to a million unrelated sites is not politeness, it is a queue five hosts a second long.
+The work list itself is read from HuggingFace, which is a bulk host, and that side does use the ordinary client and its budget.
+
+---
 ## sched
 
 Recrawl scheduling commands.

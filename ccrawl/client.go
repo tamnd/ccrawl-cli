@@ -307,7 +307,11 @@ func (h *HTTPClient) ContentLength(ctx context.Context, url string) (int64, erro
 	if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
 		return resp.ContentLength, nil
 	}
-	return 0, fmt.Errorf("cannot determine size of %s (status %d)", url, resp.StatusCode)
+	// Wrapped rather than formatted flat, so a caller can ask which status came
+	// back. A recrawl walking a dataset part by part has to tell "this part is
+	// not published, which is the end of the list" from "this host is having a
+	// bad afternoon", and those two arrive here as a 404 and a 500.
+	return 0, fmt.Errorf("cannot determine size of %s: %w", url, &httpStatusError{URL: url, Status: resp.StatusCode})
 }
 
 // httpStatusError is a response the caller cannot use. It carries the status

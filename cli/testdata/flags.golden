@@ -172,6 +172,10 @@ ccrawl rank host
 	--graph --table
 ccrawl rank top
 	--graph --table --tld
+ccrawl recrawl
+	
+ccrawl recrawl run
+	--batch --column --delay --dir --from --max-pages --no-robots --out --prefix --shard --shards --state --warc-size
 ccrawl sched
 	
 ccrawl sched assign
