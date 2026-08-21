@@ -67,8 +67,9 @@ with --extractor.
 
 The run keeps its place in --state, which holds a part number and a row offset
 and nothing else. It is a few hundred bytes whether the work list has a thousand
-rows or a billion. A killed run resumes from the last checkpoint, refetching at
-most --batch pages and skipping none.
+rows or a billion. A killed run resumes from the last checkpoint and skips none,
+refetching the batch it was working through plus whatever the pool had in the
+air behind it, which is a few hundred rows at the default width.
 
 Use --shard and --shards to split the work list across machines. The partition
 key is the registered domain, so a site and its politeness clock stay on one

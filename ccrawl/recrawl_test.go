@@ -283,10 +283,13 @@ func TestRecrawlResumesAfterAKill(t *testing.T) {
 		}
 	}
 
-	// Refetching is allowed, up to the batch the kill threw away. Much more than
-	// that means the checkpoint is not holding the place it claims to.
-	if over := site.total() - len(want); over > cfg.Batch {
-		t.Fatalf("the resume refetched %d pages, and a batch is %d", over, cfg.Batch)
+	// Refetching is allowed, up to what the pool had in the air when it was cut
+	// off. Much more than that means the checkpoint is not holding the place it
+	// claims to. It is not just the batch: the feeder runs a buffer ahead of the
+	// pool, every worker is holding one, and the writer has a queue of rows that
+	// are fetched but not yet retired. See replayBound.
+	if over, bound := site.total()-len(want), cfg.replayBound(); over > bound {
+		t.Fatalf("the resume refetched %d pages, and the pool can only have had %d in the air", over, bound)
 	}
 }
 

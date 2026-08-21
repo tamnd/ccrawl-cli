@@ -1008,7 +1008,9 @@ Only the one column the work list needs is read, which is what makes streaming a
 The checkpoint in `--state` is a part number, a row offset and the identity of what they point into, and it is a few hundred bytes whether the work list has a thousand rows or six billion.
 It is written only after the bytes it accounts for are readable again, and it is written to a temporary file and renamed over the old one, so a kill at any moment leaves either the old checkpoint or the new one and never half of either.
 What readable again means depends on the format, and the difference is worth stating.
-A WARC file is durable wherever it is fsynced, so a WARC run checkpoints at every batch and a kill costs at most `--batch` pages.
+A WARC file is durable wherever it is fsynced, so a WARC run checkpoints at every batch.
+A kill costs the batch that was being worked through plus whatever the pool had in the air behind it: the buffer between the reader and the workers, the item each worker is holding, and the rows already fetched and queued for the writer.
+At `--batch 2000 --workers 256` that is around 2800 rows, and replaying them costs duplicate rows rather than missing ones, which is the direction the checkpoint is built to fail in.
 A Parquet file is not readable at all until its footer is written, so the only durable position in one is the end of a shard, and a Parquet run checkpoints at shard boundaries and a kill costs at most the shard that was open.
 That is the price of the publishing format and `--shard-size` is the flag that bounds it: at 250 pages a second and half a gigabyte of payload a shard closes about every forty seconds.
 Either way it replays rather than skips, which is the property that matters: a batch cut short is not checkpointed at all, because a checkpoint past rows that were never fetched would skip them silently and nobody would ever find out.

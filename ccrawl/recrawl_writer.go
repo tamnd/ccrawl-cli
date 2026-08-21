@@ -52,12 +52,11 @@ func (r *Recrawler) startWriter(fl *flight, errs chan<- error, stop func()) {
 		return
 	}
 	r.rows, _ = r.w.(captureRowSink)
-	// One item per worker of slack, capped, because the buffer is bodies in
-	// memory and a page averages 300 KB. Slack absorbs a burst of small pages
+	// One item per worker of slack, capped. Slack absorbs a burst of small pages
 	// arriving together; it is not meant to absorb a sink that cannot keep up,
 	// and a run where it is permanently full wants a faster sink and not a
-	// longer queue.
-	r.wq = make(chan writeJob, min(r.cfg.Workers, 256))
+	// longer queue. It is also part of what a kill replays, see replayBound.
+	r.wq = make(chan writeJob, min(r.cfg.Workers, writeQueueDepth))
 	r.wdone = make(chan struct{})
 	go func() {
 		defer close(r.wdone)
@@ -103,4 +102,27 @@ func (r *Recrawler) stopWriter() {
 	close(r.wq)
 	<-r.wdone
 	r.wq = nil
+}
+
+// writeQueueDepth is how many finished captures may wait for the sink, capped
+// because the queue is bodies in memory and a page averages 300 KB.
+const writeQueueDepth = 256
+
+// replayBound is the most work items a kill can cost, which is not --batch.
+//
+// A checkpoint sits at the oldest item still in the air, so what a kill replays
+// is everything the pool had got through behind that one: the batch the feeder
+// was handing out, the items waiting in the buffer between the feeder and the
+// pool, the one each worker is holding, and the rows already fetched and sitting
+// in the writer's queue. The last of those is new, and it is why this is written
+// down rather than assumed: taking the sink off the worker path let the pool run
+// further ahead of the position the checkpoint can safely name.
+//
+// The difference matters at a small batch and rounds to nothing at a large one.
+// At --batch 4 --workers 4 the pool is three quarters of the bound, and at
+// --batch 2000 --workers 256 it is a fifth. Replaying is the safe direction,
+// costing duplicate rows rather than missing ones, which is the trade the
+// checkpoint is built around.
+func (c RecrawlConfig) replayBound() int {
+	return c.Batch + 2*c.Workers + min(c.Workers, writeQueueDepth)
 }
