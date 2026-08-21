@@ -143,6 +143,36 @@ recrawl run: robots: 258 hosts fetched, 0 saved by the cache, 16 refused, 39 unr
 Refused and unreachable are counted apart on purpose.
 Both stop the page, but one is a site telling you no and the other is a site that could not be asked, and reading a log where those are the same number tells you nothing about which you are looking at.
 
+## DNS is a per page cost
+
+On a link crawl the frontier keeps coming back to hosts it already knows, so DNS is paid once and amortised over everything after it.
+On a recrawl of a domain corpus every row is a different host, so every page is a fresh name, and the resolver is in the hot path for the whole run.
+Handing 256 concurrent lookups to the system stub does not work: it drops about a third of them without saying so, and a dropped lookup arrives at the crawl as a host that would not talk to us, which is indistinguishable in a log from a host that is genuinely gone.
+
+The run therefore does its own resolution, bounded and cached, and it says what it did:
+
+```
+recrawl run: dns: 1607 hosts looked up, 141 answered from the cache, 56 unresolved of which 37 do not exist, 32 open at the busiest
+```
+
+Four things are going on in that line.
+
+Lookups are bounded, and the bound is what does the work rather than anything clever layered on top of it.
+The default is one eighth of the worker count, floored at 16 and capped at 128, so `--workers 256` asks at most 32 questions at once no matter how many workers want an answer.
+
+Each lookup that misses the cache is raced across the Go resolver and three public resolvers, and the first usable answer wins.
+Racing on its own does not help, and measured on its own it is no better than the stub; racing under the bound is what turns a five second pass with a third of the names lost into a one and a half second pass with none of them lost.
+
+Answers are cached for the run, which is what makes robots.txt and the page one lookup rather than two.
+Failures are cached only when every resolver in the pool agreed the name does not exist, because negative caching a lookup that was merely dropped writes a live host off for the rest of the run.
+
+The last number is the one to read when a run is slower than it should be.
+It is the most lookups that were ever open at once, and against the bound it says whether DNS has become a queue.
+A peak that sits exactly on the bound for a whole run means workers are waiting for a lookup slot rather than for the web, and the fix is a resolver with more headroom, which in a fleet means a caching resolver on the machine rather than three public ones over the internet.
+
+One connection layer is shared by robots.txt and the page, sharded by host so both requests land on the same pool.
+They used to go through different transports, so every page paid a fresh TCP and TLS handshake to a host the run had finished talking to a second earlier.
+
 The frontier lives in `--state`, and it is the resume story.
 The queue, the seen set and the per-host clocks are all in that file, committed as the crawl goes, so a run that is killed halfway through 100 000 pages restarts on the remainder rather than on the whole list.
 Point a second run at the same state file with the same seeds and it crawls what is left.

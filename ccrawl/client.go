@@ -107,6 +107,23 @@ func NewCrawlClient(cfg Config) *HTTPClient {
 	return h
 }
 
+// useTransport points the client's fetches at rt.
+//
+// It mutates rather than returning a copy, because an HTTPClient holds a mutex,
+// a rate budget and a set of counters, and a shallow copy of those is a race
+// waiting to be reported as a heisenbug. The caller is expected to own the
+// client outright and to call this before any fetch, which is what a recrawl
+// does: the CLI builds it a crawl client of its own and nothing else touches it.
+func (h *HTTPClient) useTransport(rt http.RoundTripper) {
+	h.c = &http.Client{Timeout: h.c.Timeout, Transport: rt}
+	h.download = &http.Client{Transport: rt}
+}
+
+// useRetries sets how many times a failed fetch is tried again. Same ownership
+// rule as useTransport: the caller owns the client and calls this before any
+// fetch.
+func (h *HTTPClient) useRetries(n int) { h.retries = max(n, 0) }
+
 // crawlTransport returns a transport shaped for talking to many hosts once each,
 // which is the opposite of what pooledTransport is for.
 //

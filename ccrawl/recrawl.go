@@ -57,6 +57,13 @@ type RecrawlConfig struct {
 	// the default is a good place to leave it.
 	Batch int
 
+	// Conns shapes the connection layer the run fetches through: how many
+	// transport shards, how many DNS lookups may be open at once, and the
+	// deadlines that price a host which accepts a connection and then says
+	// nothing. Every zero value is derived from Workers, so a caller with no
+	// opinion is not required to have one. See webpool.go.
+	Conns WebPoolConfig
+
 	// Extract renders every captured page into the text and Markdown columns as
 	// it is fetched. On by default, because a corpus of bodies nobody has
 	// extracted is a corpus somebody has to read twice. See recrawl_extract.go.
@@ -127,7 +134,14 @@ type Recrawler struct {
 	timers  recrawlTimers
 
 	clock *hostClock
+	// pool is the connection layer robots.txt and the pages both go through.
+	pool *webPool
 }
+
+// DNS reports what the run's resolver did. A crawl that cannot resolve a host
+// reports it as a host that refused to talk, which is the same thing from the
+// outside and a completely different thing to fix, so the run says which.
+func (r *Recrawler) DNS() ResolverStats { return r.pool.stats() }
 
 // ErrRecrawlDone is returned by Resume when the checkpoint says the work list
 // was walked to its end. It is not a failure and a supervisor should stop
@@ -173,7 +187,16 @@ func NewRecrawler(cfg RecrawlConfig, bulk, web *HTTPClient) (*Recrawler, error) 
 	if err != nil {
 		return nil, err
 	}
-	r := &Recrawler{cfg: cfg, h: h, wl: wl, ck: ck, clock: newHostClock()}
+	// One connection layer for everything the run fetches off the open web, so
+	// robots.txt and the page land on the same transport and the page reuses the
+	// connection instead of handshaking again with a host we just spoke to. It
+	// also owns the DNS cache and the bound on lookups, which is the difference
+	// between asking about a host and finding out about it. See webpool.go.
+	cfg.Conns.Workers = cfg.Workers
+	pool := newWebPool(cfg.Conns)
+	cfg.Crawl.Transport = pool
+
+	r := &Recrawler{cfg: cfg, h: h, wl: wl, ck: ck, clock: newHostClock(), pool: pool}
 	if cfg.Extract {
 		// The source key is what stamps the extractor version, the same way a
 		// crawl ID does in the conversion pipeline: it names the work list this
@@ -191,6 +214,19 @@ func NewRecrawler(cfg RecrawlConfig, bulk, web *HTTPClient) (*Recrawler, error) 
 		// to everybody, and applying it to a million unrelated sites is not
 		// politeness, it is a queue five hosts a second long.
 		r.rh = web
+		// The crawl client is built for this run and nothing else holds it, so
+		// pointing it at the pool is safe and is the whole reason the page fetch
+		// gets a warm connection.
+		r.rh.useTransport(pool)
+		// Five retries is the bulk client's number and it is wrong for robots.txt
+		// twice over. It cannot fit: the robots fetch has a ten second budget and
+		// a dial timeout of five, so six attempts means the budget is always spent
+		// in full on a host that is not going to answer, and a dead host is a
+		// third of this work list. And it is not polite: a 403 counts as
+		// retryable, which on the open web is a site telling us to go away and
+		// getting asked six times. One retry covers the transient reset, which is
+		// the only failure a second attempt inside the same ten seconds fixes.
+		r.rh.useRetries(1)
 		r.rc = NewRobotsCache(DefaultRobotsTTL, cfg.Crawl.UserAgent)
 	}
 	if cfg.OutDir != "" {
@@ -209,6 +245,11 @@ func (r *Recrawler) Checkpoint() Checkpoint { return r.ck }
 // Close releases the work list and the WARC file.
 func (r *Recrawler) Close() error {
 	r.wl.Close()
+	if r.pool != nil {
+		// Sockets held open against hosts the run is finished with, which after
+		// the last page is all of them.
+		r.pool.CloseIdleConnections()
+	}
 	if r.w != nil {
 		err := r.w.Close()
 		r.w = nil

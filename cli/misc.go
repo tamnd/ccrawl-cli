@@ -171,3 +171,20 @@ func robotsLine(stats ccrawl.CrawlStats) string {
 	}
 	return line
 }
+
+// dnsLine reports what the resolver did.
+//
+// It is printed next to the robots line because the two used to be impossible to
+// tell apart. A name the resolver dropped under load and a host that is genuinely
+// gone both arrive at the crawl as a host that would not answer, and the run
+// counted both as unreachable. One is the web and the other is us, and only one
+// of them is worth doing anything about.
+func dnsLine(d ccrawl.ResolverStats) string {
+	line := fmt.Sprintf("dns: %s looked up, %d answered from the cache, %d unresolved",
+		plural(int(d.Lookups), "host"), d.Hits, d.Failed)
+	if d.Failed > 0 {
+		line += fmt.Sprintf(" of which %d do not exist", d.NXDomain)
+	}
+	line += fmt.Sprintf(", %d open at the busiest", d.Peak)
+	return line
+}
