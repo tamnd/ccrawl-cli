@@ -3,7 +3,6 @@ package ccrawl
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -119,9 +118,17 @@ type Recrawler struct {
 	wl  *WorkList
 	ck  Checkpoint
 
-	wmu sync.Mutex // one writer, so the WARC file is written by one goroutine
+	wmu sync.Mutex // held by the writer goroutine and by the checkpoint's Sync
 	w   CaptureSink
-	ex  *pageExtractor // nil when the run was asked not to extract
+	// rows is w again when the sink takes a built row rather than a raw result,
+	// which is how the text columns the worker filled survive the write.
+	rows captureRowSink
+	// wq carries finished captures to the writer goroutine and wdone closes when
+	// that goroutine has drained. See recrawl_writer.go for why the sink is not
+	// on the worker path any more.
+	wq    chan writeJob
+	wdone chan struct{}
+	ex    *pageExtractor // nil when the run was asked not to extract
 
 	emu   sync.Mutex // the emit callback is not asked to be concurrency safe
 	pages atomic.Int64
@@ -282,6 +289,10 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 	defer stop()
 
 	fl := newFlight()
+	// The sink runs in its own goroutine for the whole run, so a worker's part
+	// in writing a page is a channel send. See recrawl_writer.go.
+	errs := make(chan error, r.cfg.Workers)
+	r.startWriter(fl, errs, stop)
 	// The buffer is what keeps the pool fed while this goroutine is reading the
 	// next window out of Parquet over the network, which is the other way a pool
 	// goes idle with work left to do. One item per worker covers that and no more
@@ -290,7 +301,6 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 	// row it started from, which is a checkpoint that never moves and a kill that
 	// replays two thousand rows.
 	work := make(chan flightItem, r.cfg.Workers)
-	errs := make(chan error, r.cfg.Workers)
 	var wg sync.WaitGroup
 
 	// full says the page limit has been reached, which stops work being handed
@@ -320,7 +330,7 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 					continue
 				default:
 				}
-				err := r.process(ctx, fi.item, emit)
+				err := r.process(ctx, fi, emit)
 				if errors.Is(err, errBatchStopped) {
 					// Refused rather than done, so it stays in the flight set and
 					// the run comes back to exactly this row.
@@ -328,6 +338,10 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 					continue
 				}
 				if errors.Is(err, errItemAbandoned) {
+					continue
+				}
+				if errors.Is(err, errItemQueued) {
+					// Fetched and handed over. The writer retires it.
 					continue
 				}
 				if err != nil {
@@ -343,6 +357,9 @@ func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlS
 	feedErr := r.feed(ctx, fl, work, full)
 	close(work)
 	wg.Wait()
+	// The pool has stopped, so nothing more can be queued, and the rows already
+	// queued reach the sink before the run seals its output.
+	r.stopWriter()
 	close(errs)
 
 	if err := <-errs; err != nil {
@@ -507,6 +524,11 @@ var errBatchStopped = errors.New("the page limit was reached")
 // with, and retiring it would move the checkpoint past a page nobody has.
 var errItemAbandoned = errors.New("the run stopped before this item was fetched")
 
+// errItemQueued is a worker saying it fetched the page and handed it to the
+// writer, so the writer will retire it once the row is durable and the worker
+// must not. It is not a failure and it never reaches the caller.
+var errItemQueued = errors.New("the page is with the writer")
+
 // claimPage takes one of the MaxPages slots and says whether it got one.
 //
 // The slot is claimed rather than checked because thirty two workers reading a
@@ -526,7 +548,8 @@ func (r *Recrawler) claimPage() bool {
 // retried: the work list is a hundred days long and a site that is down now
 // will be back in the next pass, so blocking on it buys a page and costs a
 // queue.
-func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPage) error) error {
+func (r *Recrawler) process(ctx context.Context, fi flightItem, emit func(CrawlPage) error) error {
+	it := fi.item
 	if ctx.Err() != nil {
 		return errItemAbandoned
 	}
@@ -599,14 +622,13 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 		return nil
 	}
 
-	if r.w != nil {
-		// writeCapture keeps its own two timers, because rendering the page and
-		// writing it are different costs with different fixes and one number
-		// covering both would hide whichever is the problem.
-		err = r.writeCapture(res)
-		if err != nil {
-			return fmt.Errorf("write WARC for %s: %w", it.URL, err)
-		}
+	queued := false
+	if r.wq != nil {
+		// Rendered here and written elsewhere. The two used to happen together
+		// under one lock and they are different costs with different fixes, so
+		// they keep their own timers.
+		r.writeCapture(res, fi.seq)
+		queued = true
 	}
 	r.stats.fetched.Add(1)
 	r.stats.bytes.Add(int64(len(res.Body)))
@@ -627,6 +649,12 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 		if err != nil {
 			return err
 		}
+	}
+	if queued {
+		// The writer retires this one, once the row is with the sink. Retiring
+		// it here would let the checkpoint step over a row that is still in the
+		// channel, and a kill at that moment loses the page silently.
+		return errItemQueued
 	}
 	return nil
 }

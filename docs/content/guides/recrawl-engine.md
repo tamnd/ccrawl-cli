@@ -184,6 +184,32 @@ A peak that sits exactly on the bound for a whole run means workers are waiting 
 One connection layer is shared by robots.txt and the page, sharded by host so both requests land on the same pool.
 They used to go through different transports, so every page paid a fresh TCP and TLS handshake to a host the run had finished talking to a second earlier.
 
+## The sink is not on the worker path
+
+Every worker used to write its own row: take the mutex, hand the capture over, let go.
+That is correct and it is also the shape that stops a wide pool getting any wider.
+Measured on the live domain list at 256 workers, writing was 47 percent of the pool, and the run reported that 100 percent of that was time spent waiting for the mutex rather than time the sink was doing anything.
+At 512 workers it was 56 percent, again all of it queueing, and the run held fewer pages a second than the narrower one did.
+
+So the sink has its own goroutine and the workers have a channel.
+A worker renders the page, hands the finished row over, and goes back to the network, which is the only thing it is any good at.
+The timing line splits the two costs, because they have different fixes:
+
+```
+worker time: robots 0%, host clock 0%, fetching 61%, extracting 3%, queueing to write 1%, idle 6% of 256 workers, with the writer busy 8% of the run
+```
+
+Queueing to write is what the pool paid to hand rows over, and it is normally near zero.
+When it is not, the sink has fallen behind the pool and the queue between them has backed up, and that is the moment to make the sink faster.
+The writer figure is the sink's own time as a share of the run, and it answers the other half of the question: a pool queueing to reach a sink that is idle wants a wider writer, and a pool queueing to reach a sink that is busy every second of the run wants a faster one.
+
+Rendering stays in the worker rather than travelling with the row.
+It is the one phase that is CPU rather than network, so 256 workers doing it in the gaps their fetches leave is parallel, and one writer doing it is a queue with a hundred milliseconds of HTML parsing in it.
+
+The resume promise moved along with the write.
+A row is retired from the flight set when it is safely with the sink, and the checkpoint never steps past an unretired row, so retiring happens in the writer and not in the worker.
+Retiring in the worker and writing later would let a checkpoint step over a row that is still sitting in the channel, and a kill at that moment loses the page with nothing anywhere saying so.
+
 The frontier lives in `--state`, and it is the resume story.
 The queue, the seen set and the per-host clocks are all in that file, committed as the crawl goes, so a run that is killed halfway through 100 000 pages restarts on the remainder rather than on the whole list.
 Point a second run at the same state file with the same seeds and it crawls what is left.

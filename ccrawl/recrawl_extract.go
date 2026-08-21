@@ -113,32 +113,36 @@ type captureRowSink interface {
 	Write(Capture) error
 }
 
-// writeCapture writes one fetch, rendering it first when the run was asked to
-// and the sink has somewhere to put the result.
+// writeCapture renders one fetch and hands it to the writer goroutine.
 //
-// The rendering happens before the lock is taken. That is the whole point of
-// doing it here: the write mutex serialises every worker in the pool, and
-// putting a hundred milliseconds of HTML parsing inside it would turn a
-// network bound run into a queue behind one goroutine.
-func (r *Recrawler) writeCapture(res *CrawlResult) error {
-	rows, ok := r.w.(captureRowSink)
-	if !ok || r.ex == nil {
+// The rendering stays here, in the worker, and does not travel with the job.
+// That is the whole point of doing it on this side: rendering is the one phase
+// that is CPU rather than network, so 256 workers doing it in the gaps their
+// fetches leave is parallel, and one writer doing it is a queue with a hundred
+// milliseconds of HTML parsing in it. What goes over the channel is a finished
+// row.
+//
+// The write timer now covers the handoff rather than the sink. Usually that is
+// nothing at all, and when it is not, it is the sink falling behind the pool and
+// the queue backing up into the workers, which is exactly the moment worth
+// seeing. The sink's own time is counted separately, on the timing line, because
+// it belongs to one goroutine and not to the pool.
+func (r *Recrawler) writeCapture(res *CrawlResult, seq int64) {
+	j := writeJob{seq: seq}
+	if r.rows != nil && r.ex != nil {
 		start := time.Now()
-		r.wmu.Lock()
-		err := r.w.WriteCapture(res)
-		r.wmu.Unlock()
-		r.timers.add(&r.timers.write, start)
-		return err
+		c := NewCapture(res)
+		r.ex.fill(&c)
+		r.timers.add(&r.timers.extract, start)
+		j.row, j.rows = c, true
+	} else {
+		j.res = res
 	}
-	start := time.Now()
-	c := NewCapture(res)
-	r.ex.fill(&c)
-	r.timers.add(&r.timers.extract, start)
 
-	start = time.Now()
-	r.wmu.Lock()
-	err := rows.Write(c)
-	r.wmu.Unlock()
+	// A plain send, with no escape. The writer drains the queue even after a
+	// write has failed, and the queue is closed only once the pool has stopped,
+	// so there is no arrangement in which this blocks forever.
+	start := time.Now()
+	r.wq <- j
 	r.timers.add(&r.timers.write, start)
-	return err
 }
