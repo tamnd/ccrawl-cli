@@ -3,6 +3,7 @@ package ccrawl
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -68,6 +69,15 @@ type RobotsEntry struct {
 	// that reports them as one number cannot tell a corpus that does not want us
 	// from a network that is not working.
 	Unreachable bool
+
+	// Err is why the host could not be asked, and it is nil on every entry that
+	// came from a robots.txt we actually read. At 256 workers a tenth of the
+	// hosts on a domain corpus are unreachable and at 1024 it is two thirds of
+	// them, and without this the only thing a run could say about that jump was
+	// that it happened. A name that does not resolve, a connection the kernel
+	// would not open and a host that timed out are three different problems with
+	// three different fixes, and only one of them is ours.
+	Err error
 }
 
 // size estimates what the entry costs to hold, which is what the cache bounds
@@ -414,6 +424,13 @@ type RobotsStats struct {
 	Unreachable int64 // fetches that failed, every one of them a disallow
 	Entries     int   // entries held right now
 	Bytes       int64 // what they are estimated to cost
+
+	// The unreachable ones, split by reason. They sum to Unreachable.
+	ErrDNS     int64 // the name did not resolve
+	ErrTimeout int64 // the host did not answer in time
+	ErrRefused int64 // the connection was refused, reset, or had nowhere to go
+	ErrStatus  int64 // the host answered 5xx, which RFC 9309 makes a disallow
+	ErrOther   int64 // everything else, which is where a new failure shows up first
 }
 
 // robotsNode is a cache entry and its place in the recency list.
@@ -444,6 +461,11 @@ type RobotsCache struct {
 	ua       string // the crawler's user agent, matched against the groups
 
 	fetches, hits, evictions, expired, unreachable atomic.Int64
+	// errs buckets the unreachable ones by reason, in the same buckets the page
+	// fetches use. errStatus is the one the page loop has no equivalent for,
+	// because a page that answers 5xx is a page we fetched and a robots.txt that
+	// answers 5xx is a site we are not allowed to touch.
+	errDNS, errTimeout, errRefused, errStatus, errOther atomic.Int64
 }
 
 // NewRobotsCache creates a cache with the given TTL and user agent string,
@@ -476,6 +498,35 @@ func (rc *RobotsCache) Stats() RobotsStats {
 		Unreachable: rc.unreachable.Load(),
 		Entries:     entries,
 		Bytes:       bytes,
+		ErrDNS:      rc.errDNS.Load(),
+		ErrTimeout:  rc.errTimeout.Load(),
+		ErrRefused:  rc.errRefused.Load(),
+		ErrStatus:   rc.errStatus.Load(),
+		ErrOther:    rc.errOther.Load(),
+	}
+}
+
+// classify buckets the reason a host could not be asked. A nil error counts as
+// other rather than as nothing, because an unreachable entry with no reason on
+// it is a path that forgot to say why and should show up somewhere.
+func (rc *RobotsCache) classify(err error) {
+	if err == nil {
+		rc.errOther.Add(1)
+		return
+	}
+	if errors.Is(err, errRobotsStatus) {
+		rc.errStatus.Add(1)
+		return
+	}
+	switch crawlErrClass(err) {
+	case errClassDNS:
+		rc.errDNS.Add(1)
+	case errClassTimeout:
+		rc.errTimeout.Add(1)
+	case errClassRefused:
+		rc.errRefused.Add(1)
+	case errClassSkip, errClassOther:
+		rc.errOther.Add(1)
 	}
 }
 
@@ -596,7 +647,7 @@ func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme st
 			select {
 			case <-wait:
 			case <-ctx.Done():
-				return robotsUnreachable()
+				return robotsUnreachable(ctx.Err())
 			}
 			continue
 		}
@@ -608,6 +659,7 @@ func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme st
 		e := FetchRobots(ctx, h, host, scheme, rc.ua)
 		if e.Unreachable {
 			rc.unreachable.Add(1)
+			rc.classify(e.Err)
 		}
 		rc.Put(host, e)
 		rc.mu.Lock()
@@ -633,7 +685,7 @@ func (rc *RobotsCache) Fetch(ctx context.Context, h *HTTPClient, host, scheme st
 func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent string) *RobotsEntry {
 	resp, err := h.getStatus(ctx, scheme+"://"+host+"/robots.txt")
 	if err != nil {
-		return robotsUnreachable()
+		return robotsUnreachable(err)
 	}
 	defer func() {
 		// Drained, not just closed. A connection only goes back in the pool if
@@ -652,7 +704,7 @@ func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent str
 		e.TTL = robotsStatedTTL(resp.Header.Get("Cache-Control"))
 		return e
 	case resp.StatusCode >= 500:
-		return robotsUnreachable()
+		return robotsUnreachable(errRobotsStatus)
 	default:
 		return &RobotsEntry{}
 	}
@@ -687,11 +739,19 @@ func robotsStatedTTL(header string) time.Duration {
 }
 
 // robotsUnreachable is the entry for a host that could not be asked: everything
-// disallowed, and remembered only briefly so the host is retried soon.
-func robotsUnreachable() *RobotsEntry {
+// disallowed, and remembered only briefly so the host is retried soon. The
+// reason travels with it so the cache can bucket it.
+func robotsUnreachable(err error) *RobotsEntry {
 	return &RobotsEntry{
 		Rules:       []RobotsRule{{Pattern: "/"}},
 		TTL:         robotsErrorTTL,
 		Unreachable: true,
+		Err:         err,
 	}
 }
+
+// errRobotsStatus stands for a host that answered robots.txt with a 5xx. RFC
+// 9309 section 2.3.1.4 makes that a complete disallow, so it lands in the same
+// counter as a network failure, and it is a very different thing to read in a
+// log: the host is up and talking, it just has nothing good to say.
+var errRobotsStatus = errors.New("robots.txt answered 5xx")

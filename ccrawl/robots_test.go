@@ -401,7 +401,7 @@ func TestRobotsCache(t *testing.T) {
 
 func TestRobotsCacheKeepsFailuresBriefly(t *testing.T) {
 	rc := NewRobotsCache(24*time.Hour, "ccrawl")
-	rc.Put("example.com", robotsUnreachable())
+	rc.Put("example.com", robotsUnreachable(errRobotsStatus))
 	// The failure expires on its own short clock rather than the cache's day, so
 	// a host that comes back up is crawled again in minutes.
 	e := rc.Get("example.com")
@@ -581,7 +581,7 @@ func TestRobotsUnreachableIsCountedApartFromRefused(t *testing.T) {
 	if refused.Unreachable {
 		t.Fatal("a robots.txt we read and that refused us is not unreachable")
 	}
-	un := robotsUnreachable()
+	un := robotsUnreachable(errRobotsStatus)
 	if !un.Unreachable {
 		t.Fatal("a host that could not be asked has to be marked as such")
 	}
@@ -695,5 +695,64 @@ func TestRobotsCacheRefetchesAnExpiredEntry(t *testing.T) {
 	}
 	if st.Entries != 0 {
 		t.Errorf("the expired entry is still held, %d entries", st.Entries)
+	}
+}
+
+// TestRobotsCacheSaysWhyAHostCouldNotBeAsked is the diagnostic the fleet work
+// needed. At 256 workers a tenth of the hosts on a domain corpus come back
+// unreachable and at 1024 it is two thirds of them, and one number for all of it
+// says only that the jump happened, not which of four different problems it was.
+func TestRobotsCacheSaysWhyAHostCouldNotBeAsked(t *testing.T) {
+	// A host that answers 5xx. It is up and talking, so this is not a network
+	// failure however much the disallow looks like one.
+	_, up := robotsServer(t, 503, "")
+	// A host with nothing listening, which is what a refused connection is.
+	down, _ := robotsServer(t, 200, "")
+	downHost := strings.TrimPrefix(down.URL, "http://")
+	down.Close()
+
+	rc := NewRobotsCache(time.Hour, "ccrawl")
+	for _, host := range []string{up, downHost} {
+		rc.Fetch(context.Background(), robotsClient(), host, "http")
+	}
+	s := rc.Stats()
+	if s.Unreachable != 2 {
+		t.Fatalf("%d hosts counted unreachable, want 2", s.Unreachable)
+	}
+	if s.ErrStatus != 1 {
+		t.Errorf("a 5xx was bucketed as %d status failures, want 1", s.ErrStatus)
+	}
+	if s.ErrRefused != 1 {
+		t.Errorf("a closed port was bucketed as %d refused, want 1 (dns %d, timeout %d, other %d)",
+			s.ErrRefused, s.ErrDNS, s.ErrTimeout, s.ErrOther)
+	}
+	if got := s.ErrDNS + s.ErrTimeout + s.ErrRefused + s.ErrStatus + s.ErrOther; got != s.Unreachable {
+		t.Errorf("the buckets sum to %d against %d unreachable", got, s.Unreachable)
+	}
+}
+
+// TestRobotsCacheBucketsANameThatDoesNotResolve keeps the bucket that matters
+// most apart from the rest. A run whose unreachable hosts are all DNS is a run
+// with a resolver problem, which is ours, and every other bucket is the web's.
+func TestRobotsCacheBucketsANameThatDoesNotResolve(t *testing.T) {
+	rc := NewRobotsCache(time.Hour, "ccrawl")
+	e := rc.Fetch(context.Background(), robotsClient(), "this-name-does-not-exist-ccrawl-test.invalid", "http")
+	if !e.Unreachable {
+		t.Skip("something answered for a .invalid name, so this network is not one to test resolution failure on")
+	}
+	if s := rc.Stats(); s.ErrDNS != 1 {
+		t.Fatalf("an unresolvable name was bucketed as %d dns failures, want 1 (timeout %d, refused %d, other %d)",
+			s.ErrDNS, s.ErrTimeout, s.ErrRefused, s.ErrOther)
+	}
+}
+
+// TestRobotsEntryFromARealFileCarriesNoError is the other half of it: only an
+// entry that failed has a reason on it, so a non nil Err is enough to know the
+// host was never asked.
+func TestRobotsEntryFromARealFileCarriesNoError(t *testing.T) {
+	_, host := robotsServer(t, 200, "User-agent: *\nDisallow: /x/\n")
+	e := FetchRobots(context.Background(), robotsClient(), host, "http", "ccrawl")
+	if e.Err != nil {
+		t.Fatalf("a robots.txt we read carries the error %v", e.Err)
 	}
 }

@@ -172,6 +172,20 @@ func robotsLine(stats ccrawl.CrawlStats) string {
 	return line
 }
 
+// robotsFailLine breaks the unreachable hosts down by reason.
+//
+// It is a second line rather than a longer first one because it only matters
+// when the first line looks wrong. A run where a tenth of the hosts could not be
+// asked and a run where two thirds of them could not be asked print the same
+// shape of summary, and the difference between them is entirely in here: a name
+// that did not resolve is ours to fix, a connection the kernel would not open is
+// the machine, a timeout is the host or the link to it, and a 5xx is a site that
+// is up and telling us nothing.
+func robotsFailLine(r ccrawl.RobotsStats) string {
+	return fmt.Sprintf("robots failures: dns %d, timeout %d, refused %d, 5xx %d, other %d of %d unreachable",
+		r.ErrDNS, r.ErrTimeout, r.ErrRefused, r.ErrStatus, r.ErrOther, r.Unreachable)
+}
+
 // dnsLine reports what the resolver did.
 //
 // It is printed next to the robots line because the two used to be impossible to

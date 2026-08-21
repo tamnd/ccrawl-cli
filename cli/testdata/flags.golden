@@ -177,7 +177,7 @@ ccrawl recrawl
 ccrawl recrawl publish
 	--commit-every --dir --keep --kind --no-push --private --repo --server --shard --shards --state --watch
 ccrawl recrawl run
-	--batch --column --delay --dir --extractor --format --from --max-pages --no-extract --no-robots --out --prefix --shard --shard-size --shards --state
+	--batch --column --delay --dir --dns-lookups --extractor --format --from --max-pages --no-extract --out --prefix --robots --robots-timeout --shard --shard-size --shards --state
 ccrawl sched
 	
 ccrawl sched assign

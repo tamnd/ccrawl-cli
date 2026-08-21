@@ -130,7 +130,8 @@ robots.txt is fetched once per host, cached, and enforced.
 How long it is cached is the host's decision where it makes one: a `Cache-Control` header on the response sets the lifetime, floored at a minute so a `no-store` does not mean a fetch per page, and capped at a day so a host asking to be remembered for a year does not get it.
 A host that says nothing gets the day.
 A host that answers 5xx or does not answer at all is treated as fully disallowed for five minutes, which is what RFC 9309 asks for, so an outage is not read as an invitation.
-`--no-robots` turns the whole check off, and you should have a reason.
+`--no-robots` turns the whole check off on `crawl run`, and you should have a reason.
+`recrawl run` is the other way round: the check is off there unless you pass `--robots`, because a recrawl of a domain corpus pays it on every page rather than once per host, and a third of those hosts never answer it.
 
 The cache is bounded by both an entry count and a byte budget, and it evicts least recently used, because a fleet run walks more hosts than any machine can hold parsed rules for.
 The defaults are 200 000 entries and 64 MB, and a run that walks 50 000 hosts through a cache sized for 1000 holds 1000 and grows its heap by tens of megabytes rather than by the number of hosts.
@@ -142,6 +143,16 @@ recrawl run: robots: 258 hosts fetched, 0 saved by the cache, 16 refused, 39 unr
 
 Refused and unreachable are counted apart on purpose.
 Both stop the page, but one is a site telling you no and the other is a site that could not be asked, and reading a log where those are the same number tells you nothing about which you are looking at.
+
+When anything was unreachable, a second line says why:
+
+```
+recrawl run: robots failures: dns 12, timeout 61, refused 18, 5xx 2, other 0 of 93 unreachable
+```
+
+That line only matters when the first one looks wrong, and then it is the whole diagnosis.
+A run where a tenth of the hosts could not be asked and a run where two thirds of them could not be asked print the same shape of summary, and the difference between them is entirely in this breakdown.
+A name that did not resolve is ours to fix, a connection the kernel would not open is the machine, a timeout is the host or the link to it, and a 5xx is a site that is up and telling us nothing.
 
 ## DNS is a per page cost
 

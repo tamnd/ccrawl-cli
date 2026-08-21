@@ -948,7 +948,7 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --format war
 | `--state` | Checkpoint file, so a killed run resumes where it stopped |
 | `--delay` | Minimum spacing between two requests to the same host, default `1s`, `0` for none |
 | `--max-pages` | Stop after this many fetches (0 = no limit) |
-| `--no-robots` | Do not check robots.txt |
+| `--robots` | Check robots.txt before fetching, off by default on a recrawl |
 | `--no-extract` | Store the body without rendering it to text and Markdown |
 | `--extractor` | Engine that renders a page to Markdown: `h2m`, `readability`, or `raw`, default `h2m` |
 | `--shard-size` | Rotate to a new output shard past this much payload |
@@ -956,6 +956,14 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --format war
 | `--batch` | Work items fetched between checkpoints, default 2000 |
 | `--shard` | Which partition of the work list this process takes, 0-based |
 | `--shards` | How many machines are splitting the work list, default `1` |
+| `--dns-lookups` | How many DNS lookups may be in flight at once, default an eighth of `--workers`, floored at 16 and capped at 128 |
+| `--robots-timeout` | Budget for one host's robots.txt fetch, retries included, default `10s` |
+
+robots.txt is not checked on a recrawl unless `--robots` is given, and this is the one default in the tool that is worth reading twice.
+On a link crawl the frontier keeps coming back to hosts it already knows, so the check is paid once per host and amortised over every page that host gives up.
+On a recrawl of a domain corpus every row is a different host, so it is a second request for every single page, and measured on the live domain list at 256 workers it was 45 percent of the worker time.
+Worse than the cost is what it was buying: about a third of those hosts never answered at all, so the run sat out the whole ten second budget and then threw the row away, and RFC 9309 reads a host that cannot be asked as a host that said no.
+Turning it on with `--robots` gets the full RFC 9309 behaviour back, unchanged, and a run with it off says so on its own summary line rather than leaving a reader to guess from a command line somebody typed a week ago.
 
 `--from domains` and `--from urls` are shorthands for `open-index/ccrawl-domains` and `open-index/ccrawl-urls` with the right column already chosen.
 A full repo ID works too, and then `--column` has to name the column, because there is no guessing what an arbitrary dataset calls its URLs.

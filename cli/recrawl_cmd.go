@@ -29,7 +29,7 @@ type recrawlRunIn struct {
 	State     string        `kit:"flag" help:"checkpoint file, so a killed run resumes where it stopped"`
 	Delay     time.Duration `kit:"flag" default:"1s" help:"minimum spacing between two requests to the same host (0 for none)"`
 	MaxPages  int64         `kit:"flag,name=max-pages" help:"stop after this many fetches (0 = no limit)"`
-	NoRobots  bool          `kit:"flag,name=no-robots" help:"do not check robots.txt, which you had better have a reason for"`
+	Robots    bool          `kit:"flag" help:"check robots.txt before fetching, off by default on a recrawl"`
 	NoExtract bool          `kit:"flag,name=no-extract" help:"store the body without rendering it to text and Markdown"`
 	Extractor string        `kit:"flag" help:"engine that renders a page to Markdown: h2m, readability, or raw"`
 	Format    string        `kit:"flag" default:"parquet" help:"output format: parquet rows with the body inline, or warc"`
@@ -38,6 +38,8 @@ type recrawlRunIn struct {
 	Batch     int           `kit:"flag" help:"work items fetched between checkpoints (default 2000)"`
 	Shard     int           `kit:"flag" help:"which partition of the work list this process takes, 0-based"`
 	Shards    int           `kit:"flag" default:"1" help:"how many machines are splitting the work list"`
+	DNS       int           `kit:"flag,name=dns-lookups" help:"how many DNS lookups may be in flight at once (default: an eighth of --workers, 16 to 128)"`
+	RobotsTO  time.Duration `kit:"flag,name=robots-timeout" help:"budget for one host's robots.txt fetch (default 10s)"`
 }
 
 // datasetShorthand maps the two names anybody running the fleet will type onto
@@ -106,7 +108,15 @@ Examples:
 		cfg.StatePath = in.State
 		cfg.OutDir = in.Out
 		cfg.Workers = in.App.Workers
-		cfg.Robots = !in.NoRobots
+		// Off unless asked for. On a link crawl robots.txt is amortised over
+		// every page a host gives up, and on a recrawl of a domain corpus it is
+		// an extra request for every single page, because every row is a
+		// different host. Measured on the live domain list at 256 workers it was
+		// 45 percent of the worker time, and a third of the hosts never answered
+		// it at all, so the run sat out the whole budget on them and then threw
+		// the row away. The rules a crawler is asked to follow are still in the
+		// binary and still enforced when this is on.
+		cfg.Robots = in.Robots
 		cfg.Extract = !in.NoExtract
 		cfg.Extractor = in.Extractor
 		cfg.MaxPages = in.MaxPages
@@ -126,6 +136,27 @@ Examples:
 		if err := cfg.Format.Validate(); err != nil {
 			return usageErr(err.Error())
 		}
+		// The bound on lookups in flight. The default is derived from the worker
+		// count and capped, because the machine's own resolver is the thing that
+		// falls over first and 128 questions at once is already more than most
+		// stubs will take. A machine running a caching resolver of its own has no
+		// such ceiling and wants this raised, and past a few hundred workers the
+		// default cap becomes the queue: workers wait for a lookup slot, the wait
+		// is inside the request's own budget, and the request times out having
+		// never been sent. The dns line at the end of a run says when that is
+		// happening, by printing the peak next to the bound.
+		cfg.Conns.DNSLookups = in.DNS
+
+		// The budget for one robots.txt. It is worth having on the command line
+		// because on a domain corpus robots is the single biggest thing a worker
+		// does, and a third of the hosts never answer it, so the run pays the
+		// whole budget on every one of them. It is not free to shorten: the
+		// budget is what a slow but willing host is given, and cutting it turns
+		// some of those into a disallow they did not ask for.
+		if in.RobotsTO > 0 {
+			cfg.RobotsTimeout = in.RobotsTO
+		}
+
 		// Taken as given, including zero, the same way crawl run takes it.
 		cfg.Delay = in.Delay
 		if in.ShardSize > 0 {
@@ -173,7 +204,18 @@ Examples:
 			fmt.Fprintf(os.Stderr, "recrawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
 		}
-		fmt.Fprintln(os.Stderr, "recrawl run: "+robotsLine(stats))
+		// A run with the check off says so in its own summary rather than only in
+		// whatever command line somebody typed a week ago. This is the one line
+		// that tells a reader of a log which of two quite different things they
+		// are looking at.
+		if !cfg.Robots {
+			fmt.Fprintln(os.Stderr, "recrawl run: robots.txt was not checked, so nothing here was refused on its say so")
+		} else {
+			fmt.Fprintln(os.Stderr, "recrawl run: "+robotsLine(stats))
+			if stats.Robots.Unreachable > 0 {
+				fmt.Fprintln(os.Stderr, "recrawl run: "+robotsFailLine(stats.Robots))
+			}
+		}
 		fmt.Fprintln(os.Stderr, "recrawl run: "+dnsLine(r.DNS()))
 		t := r.Timing()
 		fmt.Fprintf(os.Stderr, "recrawl run: %.1f pages a second, %s an item, %s\n",
