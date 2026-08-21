@@ -26,8 +26,15 @@ import (
 // recrawlTimers accumulates worker time per phase while a run is happening.
 type recrawlTimers struct {
 	robots, clock, fetch, extract, write atomic.Int64
-	items                                atomic.Int64
-	wall                                 atomic.Int64
+	// sink is the writer goroutine's own time, which is not worker time and does
+	// not belong in the pool's budget. It is kept because it is the other half of
+	// the answer when the write phase grows: a pool queueing to reach a sink that
+	// is idle wants a wider writer, and a pool queueing to reach a sink that is
+	// busy every second of the run wants a faster one, and the two look identical
+	// from the workers' side.
+	sink  atomic.Int64
+	items atomic.Int64
+	wall  atomic.Int64
 }
 
 // add records one phase's duration. It is called once per phase per item, so it
@@ -50,9 +57,15 @@ type RecrawlTiming struct {
 	// with the machine rather than with the far end, and the one to watch when a
 	// run stops scaling with workers.
 	Extract time.Duration
-	// Write is time in the capture sink, which is one writer under a lock and
-	// therefore the one phase where workers queue behind each other.
+	// Write is time the workers spent handing captures to the writer. It is
+	// normally close to nothing, and when it is not, the sink has fallen behind
+	// the pool and the queue between them has backed up.
 	Write time.Duration
+	// Sink is the writer goroutine's own time. It is not part of Busy and not
+	// part of the pool, because it is one goroutine, and it is reported as a
+	// share of the run rather than of the workers. A run where this approaches
+	// the wall clock has a sink that is the ceiling.
+	Sink time.Duration
 
 	// Items is how many work items went through the pool, which is fetches plus
 	// everything robots refused.
@@ -103,8 +116,17 @@ func (t RecrawlTiming) Line() string {
 	}
 	pct := func(d time.Duration) float64 { return 100 * float64(d) / float64(cap) }
 	return fmt.Sprintf(
-		"worker time: robots %.0f%%, host clock %.0f%%, fetching %.0f%%, extracting %.0f%%, writing %.0f%%, idle %.0f%% of %d workers",
-		pct(t.Robots), pct(t.Clock), pct(t.Fetch), pct(t.Extract), pct(t.Write), pct(t.Idle()), t.Workers)
+		"worker time: robots %.0f%%, host clock %.0f%%, fetching %.0f%%, extracting %.0f%%, queueing to write %.0f%%, idle %.0f%% of %d workers, with the writer busy %.0f%% of the run",
+		pct(t.Robots), pct(t.Clock), pct(t.Fetch), pct(t.Extract), pct(t.Write), pct(t.Idle()), t.Workers, share(t.Sink, t.Wall))
+}
+
+// share is one duration as a percentage of another, and zero when there is
+// nothing to take a share of.
+func share(part, whole time.Duration) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return 100 * float64(part) / float64(whole)
 }
 
 // PerItem is the average time one work item held a worker, which is the number
@@ -125,6 +147,7 @@ func (r *Recrawler) Timing() RecrawlTiming {
 		Fetch:   time.Duration(r.timers.fetch.Load()),
 		Extract: time.Duration(r.timers.extract.Load()),
 		Write:   time.Duration(r.timers.write.Load()),
+		Sink:    time.Duration(r.timers.sink.Load()),
 		Items:   r.timers.items.Load(),
 		Workers: r.cfg.Workers,
 	}
