@@ -142,7 +142,13 @@ func (r *Recrawler) writeCapture(res *CrawlResult, seq int64) {
 	// A plain send, with no escape. The writer drains the queue even after a
 	// write has failed, and the queue is closed only once the pool has stopped,
 	// so there is no arrangement in which this blocks forever.
+	//
+	// The queue is picked by sequence rather than by whichever is emptiest. A
+	// blocked send on a full queue while another sits idle is the cost of that,
+	// and it is the right trade: choosing the emptiest means a shared counter on
+	// the worker path, which is the contention this whole file exists to remove,
+	// and the parts write rows of the same shape and drain at the same rate.
 	start := time.Now()
-	r.wq <- j
+	r.wq[int(seq%int64(len(r.wq)))] <- j
 	r.timers.add(&r.timers.write, start)
 }

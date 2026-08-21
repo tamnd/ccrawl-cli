@@ -953,6 +953,7 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --format war
 | `--extractor` | Engine that renders a page to Markdown: `h2m`, `readability`, or `raw`, default `h2m` |
 | `--shard-size` | Rotate to a new output shard past this much payload |
 | `--prefix` | File name prefix for the output files |
+| `--writers` | Output files open at once, each with its own encoder, default `1` |
 | `--batch` | Work items fetched between checkpoints, default 2000 |
 | `--shard` | Which partition of the work list this process takes, 0-based |
 | `--shards` | How many machines are splitting the work list, default `1` |
@@ -991,6 +992,16 @@ Shards are opened by the first row that goes into them, so a run that stops clea
 A run that is killed leaves the shard that was open unsealed, and an unsealed shard has no footer and does not open, which is exactly why the checkpoint did not advance past it and why the next run refetches it.
 A shard is sealed between batches rather than in the middle of one, so it overshoots the size by up to a batch of pages, and that is deliberate: it is what makes the end of a shard and the end of a batch the same place, which is the only place a checkpoint can sit.
 Setting it very small is a false economy, since columnar compression is paid for by having many similar pages in the same file and a shard holding a handful of rows gets almost none of it.
+
+`--writers` is how many shards are open at once, each with its own encoder, its own buffer and its own goroutine.
+The default of one is right for any run where the network is the slowest thing, which is most of them, and the timing line at the end of a run is what says otherwise: it prints how much of the wall clock the writer was busy for, and a figure in the nineties means the pool is waiting on the sink and more workers will not help.
+That is what a wide pool on a fast link ends up looking like once the fetches are cheap, and it is the case this flag is for.
+Rows go round the writers as they arrive, so the parts fill at the same rate, and when one of them reaches `--shard-size` all of them seal together.
+Sealing together is not tidiness, it is what keeps the checkpoint moving: a checkpoint may only advance when everything behind it is readable, so parts that rotated on their own would have to be caught empty at the same instant for that to ever be true, and at fleet speed it never would be.
+The cost is more files of slightly uneven size and more memory held in encoder buffers, about two gigabytes of resident memory going from one writer to four on a run at 256 workers, so this is a knob to raise one step at a time against the timing line rather than a number to set high and forget.
+Measured on the live domain list on a loaded box, where the writer was busy 88 percent of the run, going from one writer to four took it from 10.6 pages a second to 29.0 and dropped the share of the pool queueing to write from 36 percent to 13.
+Measured on the same box two hours later, where the writer was busy 65 percent, the same change was worth six percent, which is noise.
+That is the flag working correctly in both cases: it buys back time the writer was spending waiting, and a writer that was not waiting has none to give back.
 
 The reason this is a separate command rather than `crawl run` with a different seed file is the frontier.
 A frontier earns its keep on a discovery crawl: the queue is not known ahead of time, outlinks arrive as the crawl goes, and a crash has to leave something resumable behind.

@@ -35,6 +35,7 @@ type recrawlRunIn struct {
 	Format    string        `kit:"flag" default:"parquet" help:"output format: parquet rows with the body inline, or warc"`
 	ShardSize int64         `kit:"flag,name=shard-size" help:"rotate to a new output shard past this much payload"`
 	Prefix    string        `kit:"flag" help:"file name prefix for the output files"`
+	Writers   int           `kit:"flag" help:"output files open at once, each with its own encoder (default 1)"`
 	Batch     int           `kit:"flag" help:"work items fetched between checkpoints (default 2000)"`
 	Shard     int           `kit:"flag" help:"which partition of the work list this process takes, 0-based"`
 	Shards    int           `kit:"flag" default:"1" help:"how many machines are splitting the work list"`
@@ -165,6 +166,14 @@ Examples:
 		}
 		if in.Prefix != "" {
 			cfg.Prefix = in.Prefix
+		}
+		// How many encoders the run writes through. One is right until the timing
+		// line says the writer is busy most of the wall clock, which is where a
+		// wide pool ends up once the sink and not the network is the slowest
+		// thing in the run. The parts rotate together, so the checkpoint moves at
+		// the same rate whatever this is.
+		if in.Writers > 0 {
+			cfg.Writers = in.Writers
 		}
 		if in.Batch > 0 {
 			cfg.Batch = in.Batch
