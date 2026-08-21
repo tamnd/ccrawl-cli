@@ -434,29 +434,63 @@ func (c *Crawler) expand(res *CrawlResult, from FrontierEntry) {
 // classify buckets a fetch error the way refetch does.
 func (c *Crawler) classify(err error) { classifyCrawlErr(err, &c.stats) }
 
+// errClass is which bucket a fetch error falls in.
+//
+// It is a value rather than a counter write because two loops need the same
+// answer and do not share a counter set. The page fetches keep theirs on the
+// run and the robots cache keeps its own, and a breakdown that means one thing
+// in one place and something else in the other is not a breakdown.
+type errClass int
+
+const (
+	errClassOther errClass = iota
+	errClassDNS
+	errClassTimeout
+	errClassRefused
+	errClassSkip
+)
+
+// crawlErrClass reads a fetch error and says which bucket it belongs in. It
+// matches on the message because the errors come from four packages and only
+// some of them are the kind you can compare against.
+func crawlErrClass(err error) errClass {
+	e := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(e, "no such host"),
+		strings.Contains(e, "no addresses found"),
+		strings.Contains(e, "server misbehaving"),
+		strings.Contains(e, "name resolution"):
+		return errClassDNS
+	case strings.Contains(e, "timeout"),
+		strings.Contains(e, "deadline exceeded"),
+		strings.Contains(e, "timed out"):
+		return errClassTimeout
+	case strings.Contains(e, "connection refused"),
+		strings.Contains(e, "connection reset"),
+		strings.Contains(e, "no route to host"),
+		strings.Contains(e, "network is unreachable"):
+		return errClassRefused
+	case strings.Contains(e, "skip"), strings.Contains(e, "congested"):
+		return errClassSkip
+	}
+	return errClassOther
+}
+
 // classifyCrawlErr puts a fetch error in one of the buckets a run reports, so
 // a low yield run can be diagnosed without a second one. It is shared by the
 // crawl and the recrawl, because a failure breakdown that means two different
 // things depending on which loop produced it is not a breakdown.
 func classifyCrawlErr(err error, stats *crawlCounters) {
-	e := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(e, "no such host"),
-		strings.Contains(e, "server misbehaving"),
-		strings.Contains(e, "name resolution"):
+	switch crawlErrClass(err) {
+	case errClassDNS:
 		stats.errDNS.Add(1)
-	case strings.Contains(e, "timeout"),
-		strings.Contains(e, "deadline exceeded"),
-		strings.Contains(e, "timed out"):
+	case errClassTimeout:
 		stats.errTimeout.Add(1)
-	case strings.Contains(e, "connection refused"),
-		strings.Contains(e, "connection reset"),
-		strings.Contains(e, "no route to host"),
-		strings.Contains(e, "network is unreachable"):
+	case errClassRefused:
 		stats.errRefused.Add(1)
-	case strings.Contains(e, "skip"), strings.Contains(e, "congested"):
+	case errClassSkip:
 		stats.errSkip.Add(1)
-	default:
+	case errClassOther:
 		stats.errOther.Add(1)
 	}
 }
