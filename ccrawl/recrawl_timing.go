@@ -142,14 +142,14 @@ func (t RecrawlTiming) PerItem() time.Duration {
 // Timing reports where the run's worker time went.
 func (r *Recrawler) Timing() RecrawlTiming {
 	t := RecrawlTiming{
-		Robots:    time.Duration(r.timers.robots.Load()),
-		Clock:     time.Duration(r.timers.clock.Load()),
-		Fetch:     time.Duration(r.timers.fetch.Load()),
-		Extract:   time.Duration(r.timers.extract.Load()),
-		Write:     time.Duration(r.timers.write.Load()),
-		Sink:      time.Duration(r.timers.sink.Load()),
-		Items:     r.timers.items.Load(),
-		Workers:   r.cfg.Workers,
+		Robots:  time.Duration(r.timers.robots.Load()),
+		Clock:   time.Duration(r.timers.clock.Load()),
+		Fetch:   time.Duration(r.timers.fetch.Load()),
+		Extract: time.Duration(r.timers.extract.Load()),
+		Write:   time.Duration(r.timers.write.Load()),
+		Sink:    time.Duration(r.timers.sink.Load()),
+		Items:   r.timers.items.Load(),
+		Workers: r.cfg.Workers,
 	}
 	switch {
 	case r.timers.wall.Load() > 0:
