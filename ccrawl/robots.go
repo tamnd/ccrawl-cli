@@ -635,7 +635,17 @@ func FetchRobots(ctx context.Context, h *HTTPClient, host, scheme, userAgent str
 	if err != nil {
 		return robotsUnreachable()
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// Drained, not just closed. A connection only goes back in the pool if
+		// its response was read to the end, and the two branches below that do
+		// not parse the body were closing it unread, so the page fetch that
+		// follows a second later opened a second connection to a host we had
+		// just finished talking to. On this work list most hosts answer 4xx to
+		// robots.txt, so that was most of them. The body is a robots.txt, so
+		// reading it out is bytes we have already paid for.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, robotsMaxBytes))
+		_ = resp.Body.Close()
+	}()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		e := parseRobots(resp.Body, userAgent)

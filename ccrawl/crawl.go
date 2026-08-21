@@ -86,6 +86,11 @@ type CrawlConfig struct {
 	// host to one request per delay measures from the wire rather than from its
 	// own dispatch, which are a connection setup apart.
 	OnRequestWritten func(time.Time)
+	// Transport, when set, is the connection layer to fetch through instead of
+	// the package one. A caller that also fetches robots.txt wants both requests
+	// on the same transport, or the page opens a second connection to a host it
+	// finished talking to a second ago. See webpool.go.
+	Transport http.RoundTripper
 }
 
 // DefaultMaxBody is the default cap on a stored response body.
@@ -110,8 +115,12 @@ var sharedTransport = &http.Transport{
 // CrawlURL fetches a single URL and returns a CrawlResult. It does not consult
 // the robots.txt cache; the caller must do that before calling CrawlURL.
 func CrawlURL(ctx context.Context, rawURL string, cfg CrawlConfig) (*CrawlResult, error) {
+	tr := cfg.Transport
+	if tr == nil {
+		tr = sharedTransport
+	}
 	client := &http.Client{
-		Transport: sharedTransport,
+		Transport: tr,
 		Timeout:   cfg.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= cfg.MaxRedirect {

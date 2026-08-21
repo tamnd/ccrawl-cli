@@ -174,6 +174,7 @@ Examples:
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
 		}
 		fmt.Fprintln(os.Stderr, "recrawl run: "+robotsLine(stats))
+		fmt.Fprintln(os.Stderr, "recrawl run: "+dnsLine(r.DNS()))
 		t := r.Timing()
 		fmt.Fprintf(os.Stderr, "recrawl run: %.1f pages a second, %s an item, %s\n",
 			t.Rate(stats.Fetched), t.PerItem().Round(time.Millisecond), t.Line())
