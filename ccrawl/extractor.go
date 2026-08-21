@@ -165,9 +165,15 @@ func htmlToMarkdownH2M(body []byte, pageURL string) string {
 }
 
 // htmlToMarkdownReadability is the engine open-markdown-v2 shipped: yomi's
-// go-readability extraction plus mdconv rendering. It is faster than h2m and
-// keeps less of the page, which on a news article is usually the same text and
-// on a listing page is much less of it.
+// go-readability extraction plus mdconv rendering.
+//
+// It used to say here that it is faster than h2m and keeps less of the page.
+// Measured over 1622 real pages off the domain corpus, neither half of that is
+// true: it takes 35.4 ms a page against h2m's 20.8, it finds content on 1421 of
+// them against h2m's 1504, and what it keeps is 5856 characters a page against
+// 3497. It keeps more of the page, on fewer pages, for more money. The reason
+// to reach for it is that it is the engine open-markdown-v2 shipped, so a shard
+// built with it is comparable with that corpus.
 func htmlToMarkdownReadability(body []byte, pageURL string) string {
 	utf8Body := transcode(body)
 	if len(utf8Body) == 0 {
