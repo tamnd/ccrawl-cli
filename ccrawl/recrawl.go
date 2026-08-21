@@ -41,6 +41,12 @@ type RecrawlConfig struct {
 	// the rotation decision has to be made before then.
 	ShardSize int64
 	Workers   int
+	// Writers is how many output files are open at once, each with its own
+	// encoder and its own goroutine. One is the old behaviour. More than one is
+	// for a run whose timing line says the sink is busy most of the wall clock,
+	// which is where a wide pool ends up once the fetches are no longer the
+	// slowest thing in it.
+	Writers int
 	// Delay is the minimum spacing between two requests to the same host. A
 	// robots.txt Crawl-delay longer than this wins for that host.
 	Delay time.Duration
@@ -90,6 +96,7 @@ func defaultRecrawlConfig() RecrawlConfig {
 		Format:        FormatParquet,
 		ShardSize:     DefaultCaptureShardSize,
 		Workers:       32,
+		Writers:       1,
 		Delay:         time.Second,
 		Robots:        true,
 		RobotsTimeout: 10 * time.Second,
@@ -123,10 +130,10 @@ type Recrawler struct {
 	// rows is w again when the sink takes a built row rather than a raw result,
 	// which is how the text columns the worker filled survive the write.
 	rows captureRowSink
-	// wq carries finished captures to the writer goroutine and wdone closes when
-	// that goroutine has drained. See recrawl_writer.go for why the sink is not
-	// on the worker path any more.
-	wq    chan writeJob
+	// wq carries finished captures to the writer goroutines, one queue each, and
+	// wdone closes when they have all drained. See recrawl_writer.go for why the
+	// sink is not on the worker path any more.
+	wq    []chan writeJob
 	wdone chan struct{}
 	ex    *pageExtractor // nil when the run was asked not to extract
 
@@ -237,7 +244,7 @@ func NewRecrawler(cfg RecrawlConfig, bulk, web *HTTPClient) (*Recrawler, error) 
 		r.rc = NewRobotsCache(DefaultRobotsTTL, cfg.Crawl.UserAgent)
 	}
 	if cfg.OutDir != "" {
-		w, err := NewCaptureSink(cfg.Format, cfg.OutDir, cfg.Prefix, cfg.ShardSize, cfg.Info)
+		w, err := NewCaptureFanout(cfg.Format, cfg.OutDir, cfg.Prefix, cfg.ShardSize, cfg.Info, cfg.Writers)
 		if err != nil {
 			return nil, err
 		}
@@ -623,7 +630,7 @@ func (r *Recrawler) process(ctx context.Context, fi flightItem, emit func(CrawlP
 	}
 
 	queued := false
-	if r.wq != nil {
+	if len(r.wq) > 0 {
 		// Rendered here and written elsewhere. The two used to happen together
 		// under one lock and they are different costs with different fixes, so
 		// they keep their own timers.

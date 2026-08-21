@@ -1023,3 +1023,66 @@ func TestRecrawlAsksEachHostForRobotsOnce(t *testing.T) {
 		t.Fatalf("fetched %d of the 7 pages robots allowed", stats.Fetched)
 	}
 }
+
+// TestRecrawlWithSeveralWritersLosesNothing runs the whole engine through a
+// fanout sink.
+//
+// The unit test beside the fanout proves the sink keeps every row it is handed.
+// This one proves the run hands it every row: with several queues and several
+// writer goroutines, a page that goes into one queue and is retired by another
+// goroutine is the shape a lost row would hide in, and a lost row here shows up
+// as a shard that is missing a URL and a run that reported it fetched.
+func TestRecrawlWithSeveralWritersLosesNothing(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	want := paths(60)
+	parts := writeWorkList(t, srv.URL, want, 4)
+	out := t.TempDir()
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.OutDir = out
+	cfg.Format = FormatParquet
+	cfg.Prefix = "recrawl"
+	cfg.Writers = 3
+	r := newTestRecrawler(t, cfg, parts)
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.OutFiles) != 3 {
+		t.Fatalf("three writers wrote %d files: %v", len(stats.OutFiles), stats.OutFiles)
+	}
+
+	byURL := map[string]int{}
+	for _, f := range stats.OutFiles {
+		rows, err := ReadCaptures(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for _, c := range rows {
+			byURL[c.URL]++
+		}
+	}
+	if len(byURL) != len(want) {
+		t.Fatalf("the shards hold %d distinct URLs, want %d", len(byURL), len(want))
+	}
+	for _, p := range want {
+		switch n := byURL[srv.URL+p]; n {
+		case 1:
+		case 0:
+			t.Fatalf("%s was fetched and is in no shard", p)
+		default:
+			t.Fatalf("%s is in the shards %d times", p, n)
+		}
+	}
+	// The checkpoint has to end where a single writer's would, at the end of the
+	// work list, or a fleet restart replays a run that finished.
+	if ck := r.Checkpoint(); !ck.Done {
+		t.Fatalf("the run finished the work list and the checkpoint says part %d row %d done %v", ck.Part, ck.Row, ck.Done)
+	}
+}

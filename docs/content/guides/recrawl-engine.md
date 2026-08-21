@@ -209,6 +209,52 @@ It is the one phase that is CPU rather than network, so 256 workers doing it in 
 The resume promise moved along with the write.
 A row is retired from the flight set when it is safely with the sink, and the checkpoint never steps past an unretired row, so retiring happens in the writer and not in the worker.
 Retiring in the worker and writing later would let a checkpoint step over a row that is still sitting in the channel, and a kill at that moment loses the page with nothing anywhere saying so.
+It does mean a kill replays more than one batch, because the pool now runs further ahead of the position the checkpoint can safely name, and `replayBound` in the engine writes down exactly how much: the batch, the buffer between the reader and the pool, one row per worker, and the writer queue.
+At the fleet settings that is a fifth of a minute's fetching and it replays rather than skips, which is the direction this is built to fail in.
+
+## One writer is a ceiling too
+
+Taking the sink off the worker path did not make the sink faster, and once the pool stopped queueing for the mutex the writer became the thing everything waits for.
+At 256, 512 and 1024 workers the same run holds 33 to 34 pages a second with the writer busy 91 to 94 percent of the wall clock, and a rate that does not move when you triple the pool is a rate set somewhere else.
+
+What that goroutine does with the time is the interesting part.
+Measured under `/usr/bin/time -v`, the sink costs 6.0 ms of CPU a page, and at 34 pages a second it is holding 27 ms of wall clock to spend it.
+Four fifths of the writer's time is waiting, for a core on a box that is running two other crawlers and for the disk at the end of a shard, and waiting is the kind of work that parallelises.
+
+So `--writers` opens more than one shard at a time, each with its own encoder, its own buffer and its own goroutine, and rows go round them as they arrive.
+Nothing in a Parquet file requires the row beside it to be in the same file, and the published corpus was always a directory of independently readable shards, so a reader sees more files of much the same size and nothing else changes.
+
+The parts rotate together rather than each on its own, and that is a checkpoint decision rather than a filing one.
+A checkpoint may only move when everything behind it is readable, and a Parquet shard is unreadable until its footer is written, so parts rotating independently would have to be caught empty at the same instant for a sync to ever report durable.
+At fleet speed that never happens, and a run whose checkpoint never moves replays from row zero after every restart.
+One part reaching `--shard-size` therefore seals all of them, which costs a few percent of the shard size on the parts that were not yet full and buys back a checkpoint that advances once per rotation exactly as the single writer's does.
+
+Measured on server3 against the live domain list, 20 000 rows a run from a fresh offset each time, on an afternoon when the box was carrying a load average around 25:
+
+| writers | pages a second | queueing to write | idle | peak RSS |
+| --- | --- | --- | --- | --- |
+| 1 | 10.6 | 36% | 13% | 3.1 GB |
+| 2 | 24.3 | 22% | 24% | 4.0 GB |
+| 4 | 29.0 | 13% | 26% | 5.4 GB |
+| 8 | 29.1 | 10% | 27% | 7.7 GB |
+
+The knee is at four, and what moves with it is the shape of the run rather than only the number: workers queueing to reach the sink fall from 36 percent of the pool to 10, and idle rises from 13 percent to 27, which is the pool going back to waiting on the network like it is supposed to.
+
+Then the same pair of settings on the same box two hours later, load average around 14, alternating so neither gets the good half of the afternoon:
+
+| writers | pages a second | writer share | peak RSS |
+| --- | --- | --- | --- |
+| 4 | 27.4 | 24% each | 4.1 GB |
+| 1 | 25.2 | 65% | 2.7 GB |
+| 4 | 25.6 | 23% each | 4.5 GB |
+| 1 | 24.1 | 71% | 2.3 GB |
+
+Six percent, which on this box is noise, for about two gigabytes of resident memory.
+
+Both of those are the same flag doing exactly what it says, and the difference between them is the whole rule for using it.
+The fanout buys back time the writer was spending waiting, so it is worth the memory when the writer is pinned in the high eighties or above and worth nothing at all when it is not.
+That is why the default is one and why the figure to read is the writer share on the timing line rather than the page rate: the rate tells you the run is slow, and the writer share tells you whether this is the reason.
+Raise it one step at a time, since every part is an open encoder with its own zstd workers and its own row buffer, and the memory is real on a box that has none spare.
 
 The frontier lives in `--state`, and it is the resume story.
 The queue, the seen set and the per-host clocks are all in that file, committed as the crawl goes, so a run that is killed halfway through 100 000 pages restarts on the remainder rather than on the whole list.

@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -43,51 +44,86 @@ type writeJob struct {
 	seq  int64
 }
 
-// startWriter launches the one goroutine that owns the sink for the run.
+// startWriter launches the goroutines that own the sink for the run.
 //
 // A run with no sink starts no writer, and then the workers retire their own
 // items, because there is nothing to be durable about.
+//
+// One goroutine per part of the sink, and one queue each, so a part that is slow
+// to encode holds up its own file and not the others. A plain sink is one part
+// and behaves exactly as it did before.
 func (r *Recrawler) startWriter(fl *flight, errs chan<- error, stop func()) {
 	if r.w == nil {
 		return
 	}
 	r.rows, _ = r.w.(captureRowSink)
-	// One item per worker of slack, capped. Slack absorbs a burst of small pages
-	// arriving together; it is not meant to absorb a sink that cannot keep up,
-	// and a run where it is permanently full wants a faster sink and not a
-	// longer queue. It is also part of what a kill replays, see replayBound.
-	r.wq = make(chan writeJob, min(r.cfg.Workers, writeQueueDepth))
+	// The fanout takes a part number, so a goroutine writes only its own file
+	// and takes only its own lock. rowFanout answers this too, through the
+	// fanout it embeds.
+	fan, _ := r.w.(interface{ writeAt(int, writeJob) error })
+	n := r.writers()
+	// One item per worker of slack, spread over the queues and capped. Slack
+	// absorbs a burst of small pages arriving together; it is not meant to absorb
+	// a sink that cannot keep up, and a run where it is permanently full wants a
+	// faster sink and not a longer queue. It is also part of what a kill replays,
+	// see replayBound.
+	depth := max(1, min(r.cfg.Workers, writeQueueDepth)/n)
+	r.wq = make([]chan writeJob, n)
 	r.wdone = make(chan struct{})
-	go func() {
-		defer close(r.wdone)
-		for j := range r.wq {
-			start := time.Now()
-			r.wmu.Lock()
-			var err error
-			if j.rows {
-				err = r.rows.Write(j.row)
-			} else {
-				err = r.w.WriteCapture(j.res)
-			}
-			r.wmu.Unlock()
-			r.timers.add(&r.timers.sink, start)
-			if err != nil {
-				select {
-				case errs <- fmt.Errorf("write capture: %w", err):
+	var wg sync.WaitGroup
+	for i := range n {
+		r.wq[i] = make(chan writeJob, depth)
+		wg.Add(1)
+		go func(i int, q chan writeJob) {
+			defer wg.Done()
+			for j := range q {
+				start := time.Now()
+				var err error
+				switch {
+				case fan != nil:
+					err = fan.writeAt(i, j)
+				case j.rows:
+					r.wmu.Lock()
+					err = r.rows.Write(j.row)
+					r.wmu.Unlock()
 				default:
+					r.wmu.Lock()
+					err = r.w.WriteCapture(j.res)
+					r.wmu.Unlock()
 				}
-				stop()
-				// Keep taking jobs even though none of them will be written.
-				// A writer that returns here leaves every worker blocked on a
-				// send into a channel nobody is reading, and the run hangs
-				// instead of reporting the error it already has. Nothing is
-				// retired from here on, so the checkpoint stays behind the row
-				// that failed.
-				continue
+				r.timers.add(&r.timers.sink, start)
+				if err != nil {
+					select {
+					case errs <- fmt.Errorf("write capture: %w", err):
+					default:
+					}
+					stop()
+					// Keep taking jobs even though none of them will be written.
+					// A writer that returns here leaves every worker blocked on a
+					// send into a channel nobody is reading, and the run hangs
+					// instead of reporting the error it already has. Nothing is
+					// retired from here on, so the checkpoint stays behind the row
+					// that failed.
+					continue
+				}
+				fl.retire(j.seq)
 			}
-			fl.retire(j.seq)
-		}
+		}(i, r.wq[i])
+	}
+	go func() {
+		wg.Wait()
+		close(r.wdone)
 	}()
+}
+
+// writers is how many sink parts, and so how many writer goroutines, the run
+// has. It is clamped rather than validated, since a nonsense value here should
+// slow a run down at worst and never stop it starting.
+func (r *Recrawler) writers() int {
+	if r.cfg.Writers < 1 {
+		return 1
+	}
+	return min(r.cfg.Writers, maxWriters)
 }
 
 // stopWriter closes the queue and waits for the sink to drain.
@@ -99,14 +135,24 @@ func (r *Recrawler) stopWriter() {
 	if r.wq == nil {
 		return
 	}
-	close(r.wq)
+	for _, q := range r.wq {
+		close(q)
+	}
 	<-r.wdone
 	r.wq = nil
 }
 
-// writeQueueDepth is how many finished captures may wait for the sink, capped
-// because the queue is bodies in memory and a page averages 300 KB.
+// writeQueueDepth is how many finished captures may wait for the sink, across
+// all of its parts, capped because the queue is bodies in memory and a page
+// averages 300 KB.
 const writeQueueDepth = 256
+
+// maxWriters is the most sink parts a run will open. It is not a measured
+// ceiling, it is a guard: every part is an open Parquet encoder with its own row
+// buffer and its own zstd workers, so the memory and the file count both grow
+// with it, and past a handful the run is competing with its own fetches for
+// cores.
+const maxWriters = 16
 
 // replayBound is the most work items a kill can cost, which is not --batch.
 //
