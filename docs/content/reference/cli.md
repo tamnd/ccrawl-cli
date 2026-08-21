@@ -949,6 +949,8 @@ ccrawl recrawl run --from open-index/ccrawl-domains --column domain --format war
 | `--delay` | Minimum spacing between two requests to the same host, default `1s`, `0` for none |
 | `--max-pages` | Stop after this many fetches (0 = no limit) |
 | `--no-robots` | Do not check robots.txt |
+| `--no-extract` | Store the body without rendering it to text and Markdown |
+| `--extractor` | Engine that renders a page to Markdown: `h2m`, `readability`, or `raw`, default `h2m` |
 | `--shard-size` | Rotate to a new output shard past this much payload |
 | `--prefix` | File name prefix for the output files |
 | `--batch` | Work items fetched between checkpoints, default 2000 |
@@ -965,6 +967,14 @@ Each fetch becomes one row with the body, the request head and the response head
 The columns are compressed with zstd columnar rather than one page at a time, and on a real sample of 398 homepages, 139 MB of bodies and heads, that is 22.8 MB against the 25.5 MB the same bytes take gzipped a record at a time the way a WARC stores them.
 Eleven percent is not the reason to do it and it is worth saying so plainly: the reason is that a reader can count status codes or pull one column without touching the bodies at all, and the compression is a small bonus on top.
 A 304 is stored as a row with `unchanged` set and no body, which over a corpus where most pages do not move between crawls is the difference between a dataset and a second copy of one.
+
+Every HTML page is also rendered to Markdown and to plain text as it is fetched, into `markdown`, `text`, `title`, `word_count`, `language`, `language_confidence`, `simhash` and `extractor`.
+Those columns are appended after ami's, so a reader written against the older shape reads a newer file unchanged, and the names match open-markdown-v3 where they overlap so a query written for that dataset runs against a capture shard.
+Rendering happens in the worker that fetched the page, while the body is still in memory and before the write lock is taken.
+It is free in the only sense that matters here, which is that the run is waiting on the network and the machine is not: measured against the live domain list at 256 workers, extraction held 0 percent of the pool while fetching held 18 and robots held 39.
+The alternative is a second pass over the published corpus, and at 363 million domain homepages and 6.3 billion indexed URLs that is a few hundred terabytes read back to look at bodies that were in memory a moment earlier.
+A page that is not HTML is left alone rather than fed to an HTML extractor, and `extractor` being empty is how a reader tells a page nobody tried to render from a page that rendered to nothing.
+`--no-extract` turns it off, and a WARC run never pays for it at all, since a WARC record has nowhere to put a Markdown column.
 `--format warc` writes ISO 28500 the way it always did, and it is still the right answer when the output is going into an archive somebody will read with archive tools.
 
 `--shard-size` is how much uncompressed payload goes into one output file before the writer starts the next one, and it defaults to half a gigabyte.

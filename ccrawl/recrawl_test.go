@@ -136,6 +136,27 @@ func newTestRecrawler(t *testing.T, cfg RecrawlConfig, parts string) *Recrawler 
 	return r
 }
 
+// assertRowsBehindCheckpointWereFetched is the invariant every stopped run has
+// to hold: a checkpoint at row N is a promise that rows 0 to N-1 are done. It is
+// checked against what the site was actually asked for rather than against a
+// count, because a concurrent pool can fetch row 7 and be refused row 3, and
+// then the honest checkpoint is 3 and a count would say 5.
+func assertRowsBehindCheckpointWereFetched(t *testing.T, site *recrawlSite, want []string, row int64) {
+	t.Helper()
+	if row < 0 || row > int64(len(want)) {
+		t.Fatalf("the checkpoint reads row %d, which is not a row of a %d row work list", row, len(want))
+	}
+	got := make(map[string]bool, len(want))
+	for _, p := range site.fetched() {
+		got[p] = true
+	}
+	for i := range int(row) {
+		if !got[want[i]] {
+			t.Fatalf("the checkpoint reads row %d but %s at row %d was never fetched, so the resume will skip it", row, want[i], i)
+		}
+	}
+}
+
 func paths(n int) []string {
 	out := make([]string, n)
 	for i := range out {
@@ -270,9 +291,14 @@ func TestRecrawlResumesAfterAKill(t *testing.T) {
 }
 
 // TestRecrawlDoesNotAdvancePastWorkItDidNotDo is the other half of the resume
-// story. A batch cut short by the page limit must leave the checkpoint where it
-// was, because a checkpoint past unfetched rows skips them silently and nobody
-// ever finds out.
+// story. A run cut short by the page limit must not leave a checkpoint past a
+// row it never fetched, because that skips the row silently and nobody ever
+// finds out.
+//
+// It used to rewind to the start of the batch, which was safe and wasteful. The
+// flight set knows which row was actually refused, so the checkpoint now names
+// that row: everything before it was fetched, and the assertion below is that
+// claim rather than an offset.
 func TestRecrawlDoesNotAdvancePastWorkItDidNotDo(t *testing.T) {
 	site := newRecrawlSite()
 	srv := httptest.NewServer(site)
@@ -301,9 +327,10 @@ func TestRecrawlDoesNotAdvancePastWorkItDidNotDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ck.Row != 0 || ck.Part != 0 || ck.Done {
-		t.Fatalf("the run fetched 5 of 20 rows and the checkpoint reads %+v, which claims work it did not do", ck)
+	if ck.Part != 0 || ck.Done {
+		t.Fatalf("the run fetched 5 of 20 rows and the checkpoint reads %+v", ck)
 	}
+	assertRowsBehindCheckpointWereFetched(t, site, want, ck.Row)
 
 	// And the proof that it matters: a second run from that checkpoint covers
 	// the whole list.
@@ -346,10 +373,10 @@ func TestRecrawlMaxPagesIsExact(t *testing.T) {
 	}
 }
 
-// TestRecrawlSmallBatchStillHoldsItsPlace covers the case where the batch is
+// TestRecrawlSmallBatchStillHoldsItsPlace covers the case where the window is
 // small enough that every item is handed to a worker before any of them finish.
-// The send loop then runs to the end and looks like a whole batch, while the
-// last items were refused a page slot and never fetched.
+// The feed loop then runs to the end and looks like it walked the list out,
+// while the last items were refused a page slot and never fetched.
 func TestRecrawlSmallBatchStillHoldsItsPlace(t *testing.T) {
 	site := newRecrawlSite()
 	srv := httptest.NewServer(site)
@@ -377,9 +404,7 @@ func TestRecrawlSmallBatchStillHoldsItsPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ck.Row != 0 {
-		t.Fatalf("the checkpoint sits at row %d after fetching 5 of a 6 row batch", ck.Row)
-	}
+	assertRowsBehindCheckpointWereFetched(t, site, paths(60), ck.Row)
 
 	cfg.MaxPages = 0
 	r2 := newTestRecrawler(t, cfg, parts)
@@ -640,8 +665,8 @@ func TestRecrawlWritesParquetCaptures(t *testing.T) {
 //
 // The stop is the exception, and the one place the shard is sealed whether it is
 // full or not, because a stop is the last chance to seal it. What the checkpoint
-// records there is the boundary of the last batch that finished, never a row
-// past it, so the replay is one batch rather than the whole open shard.
+// records there is the oldest row that never finished, never a row past it, so
+// the replay is what was in the air rather than the whole open shard.
 func TestRecrawlParquetCheckpointHoldsAtAShardBoundary(t *testing.T) {
 	site := newRecrawlSite()
 	srv := httptest.NewServer(site)
@@ -684,14 +709,10 @@ func TestRecrawlParquetCheckpointHoldsAtAShardBoundary(t *testing.T) {
 	if ck.Done {
 		t.Fatalf("a killed run wrote a finished checkpoint: %+v", ck)
 	}
-	// The kill landed inside a batch, so the checkpoint sits on that batch's
-	// boundary and not one row further.
-	if ck.Row%int64(cfg.Batch) != 0 {
-		t.Fatalf("the checkpoint reads row %d, which is not a batch boundary of %d", ck.Row, cfg.Batch)
-	}
 	if ck.Row > int64(n) {
 		t.Fatalf("the checkpoint reads row %d after %d fetches, which claims work it did not do", ck.Row, n)
 	}
+	assertRowsBehindCheckpointWereFetched(t, site, want, ck.Row)
 	// Whatever it does claim has to be readable, which is the gate itself.
 	stored := 0
 	shards, err := filepath.Glob(filepath.Join(cfg.OutDir, "*.parquet"))

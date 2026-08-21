@@ -12,15 +12,22 @@ import (
 	"github.com/parquet-go/parquet-go"
 )
 
-// TestCaptureSchemaMatchesAmi pins the columns and their types.
+// TestCaptureSchemaMatchesAmi pins ami's columns, in ami's order, with ami's
+// types, as the leading columns of ours.
 //
 // The promise the schema makes is that a query written against an ami capture
-// file reads one of ours and the other way round, and that promise is only worth
-// anything if it is checked. A column renamed, retyped, added or dropped here
-// breaks a query somebody else wrote, which is exactly the kind of break that
-// shows up as an empty result rather than an error.
+// file reads one of ours, and that promise is only worth anything if it is
+// checked. A column renamed, retyped, reordered or dropped breaks a query
+// somebody else wrote, which is exactly the kind of break that shows up as an
+// empty result rather than an error.
+//
+// Appending is the one change that does not break it, because Parquet is read
+// by name and a reader that never asks for a column never touches it. So the
+// check is a prefix rather than an equality, and the columns after the prefix
+// are ours: see the text block at the end of Capture. Reordering to slip one in
+// earlier would still fail here, which is the point.
 func TestCaptureSchemaMatchesAmi(t *testing.T) {
-	want := []string{
+	ami := []string{
 		"url:BYTE_ARRAY",
 		"host:BYTE_ARRAY",
 		"status:INT32",
@@ -52,8 +59,27 @@ func TestCaptureSchemaMatchesAmi(t *testing.T) {
 	for _, f := range schema.Fields() {
 		got = append(got, f.Name()+":"+f.Type().Kind().String())
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("the capture schema drifted from ami's\n got: %v\nwant: %v", got, want)
+	if len(got) < len(ami) {
+		t.Fatalf("the capture schema lost columns\n got: %v\nwant it to start with: %v", got, ami)
+	}
+	if strings.Join(got[:len(ami)], "\n") != strings.Join(ami, "\n") {
+		t.Fatalf("the capture schema drifted from ami's\n got: %v\nwant it to start with: %v", got[:len(ami)], ami)
+	}
+
+	// The columns we add on the end are pinned too, so adding one is a decision
+	// somebody makes here rather than a side effect of a struct edit.
+	extra := []string{
+		"title:BYTE_ARRAY",
+		"text:BYTE_ARRAY",
+		"text_length:INT64",
+		"word_count:INT64",
+		"language:BYTE_ARRAY",
+		"language_confidence:DOUBLE",
+		"simhash:INT64",
+		"extractor:BYTE_ARRAY",
+	}
+	if strings.Join(got[len(ami):], "\n") != strings.Join(extra, "\n") {
+		t.Fatalf("the columns past ami's changed\n got: %v\nwant: %v", got[len(ami):], extra)
 	}
 }
 
