@@ -525,7 +525,11 @@ func (rc *RobotsCache) classify(err error) {
 		rc.errTimeout.Add(1)
 	case errClassRefused:
 		rc.errRefused.Add(1)
-	case errClassSkip, errClassOther:
+	case errClassSkip, errClassTLS, errClassOther:
+		// The robots side keeps four buckets rather than the fetch side's six.
+		// A host whose certificate expired is a host that could not be asked,
+		// which is the only distinction this cache acts on, and splitting it
+		// further here would be a breakdown nobody reads.
 		rc.errOther.Add(1)
 	}
 }

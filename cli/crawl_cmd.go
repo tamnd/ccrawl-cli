@@ -326,8 +326,11 @@ Examples:
 			stats.Fetched, stats.Failed, stats.Retried, stats.Disallowed, stats.Discovered,
 			humanBytes(stats.Bytes), len(stats.OutFiles))
 		if stats.Failed > 0 {
-			fmt.Fprintf(os.Stderr, "crawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
-				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
+			fmt.Fprintf(os.Stderr, "crawl run: failures by class: dns %d, timeout %d, refused %d, tls %d, skipped %d, other %d\n",
+				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrTLS, stats.ErrSkip, stats.ErrOther)
+			if line := ccrawl.ErrOtherLine(stats.ErrOther, stats.ErrOtherTop); line != "" {
+				fmt.Fprintln(os.Stderr, "crawl run: "+line)
+			}
 		}
 		fmt.Fprintln(os.Stderr, "crawl run: "+robotsLine(stats))
 		return runErr
