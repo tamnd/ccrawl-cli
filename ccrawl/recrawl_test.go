@@ -743,10 +743,11 @@ func TestRecrawlParquetCheckpointHoldsAtAShardBoundary(t *testing.T) {
 	if got := site.fetched(); len(got) != len(want) {
 		t.Fatalf("the two runs covered %d of %d URLs", len(got), len(want))
 	}
-	// And that the refetch is bounded by the batch the kill threw away rather
-	// than by everything sitting in the shard that had not filled.
-	if over := site.total() - len(want); over > cfg.Batch {
-		t.Fatalf("the resume refetched %d pages, and a batch is %d", over, cfg.Batch)
+	// And that the refetch is bounded by what the pool had in the air when it
+	// was cut off, rather than by everything sitting in the shard that had not
+	// filled. That bound is not just the batch, see replayBound.
+	if over, bound := site.total()-len(want), cfg.replayBound(); over > bound {
+		t.Fatalf("the resume refetched %d pages, and the pool can only have had %d in the air", over, bound)
 	}
 }
 
