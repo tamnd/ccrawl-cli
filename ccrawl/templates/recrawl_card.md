@@ -48,7 +48,7 @@ It is released under the **Open Data Commons Attribution License (ODC-By) v1.0**
 
 ## What is being released?
 
-Every fetch is one row. The body is stored inline, exactly as it came off the wire, so a row is self-contained and a query never has to reach back into a WARC file to see what a page said.
+Every fetch is one row. The body is stored inline, exactly as it came off the wire, so a row is self-contained and a query never has to reach back into a WARC file to see what a page said. Alongside it every HTML page carries the same page rendered to Markdown and to plain text, with the language it is written in and a fingerprint of its content, extracted at fetch time rather than in a pass somebody has to run afterwards.
 
 ```
 data/
@@ -88,11 +88,32 @@ ORDER BY pages DESC;
 ```
 
 ```sql
--- Read the text of one page as it was served
-SELECT url, status, content_type, decode(body) AS html
+-- Read a page as Markdown, no HTML parsing on your side
+SELECT url, title, language, word_count, markdown
 FROM read_parquet('hf://datasets/{{.Repo}}/data/*.parquet')
-WHERE status = 200
+WHERE markdown <> ''
 LIMIT 1;
+```
+
+```sql
+-- What languages the corpus is in, by pages with real text in them
+SELECT language, count(*) AS pages, round(avg(word_count)) AS avg_words
+FROM read_parquet('hf://datasets/{{.Repo}}/data/*.parquet')
+WHERE language <> '' AND language_confidence > 0.8
+GROUP BY language
+ORDER BY pages DESC
+LIMIT 20;
+```
+
+```sql
+-- Near duplicate pages, which templated sites produce a lot of
+SELECT simhash, count(*) AS pages, min(url) AS example
+FROM read_parquet('hf://datasets/{{.Repo}}/data/*.parquet')
+WHERE simhash <> 0
+GROUP BY simhash
+HAVING pages > 1
+ORDER BY pages DESC
+LIMIT 20;
 ```
 
 ```sql
@@ -121,8 +142,9 @@ from datasets import load_dataset
 
 ds = load_dataset("{{.Repo}}", split="train", streaming=True)
 for row in ds:
-    if row["status"] == 200:
-        print(row["url"], len(row["body"]))
+    if row["markdown"]:
+        print(row["url"], row["language"], row["word_count"])
+        print(row["markdown"][:500])
         break
 ```
 
@@ -141,7 +163,7 @@ snapshot_download(
 
 For faster downloads, install `pip install huggingface_hub[hf_transfer]` and set `HF_HUB_ENABLE_HF_TRANSFER=1`.
 
-Bodies are stored raw and can be large, so streaming a slice beats downloading everything unless you really do want all of it.
+Bodies are stored raw and can be large, so streaming a slice beats downloading everything unless you really do want all of it. If all you want is the text, project the `markdown` or `text` column and Parquet will skip the bodies on disk rather than read them and throw them away.
 
 ## Dataset statistics
 {{if .HasRows}}
@@ -172,7 +194,7 @@ A live refetch of a published Common Crawl work list, stored as Parquet with res
 
 - **Freshness** - compare what a page serves today against what the archive recorded
 - **Availability** - measure what fraction of an index still answers, and with what
-- **Content extraction** - the raw body is right there, no WARC seeking
+- **Content extraction** - the raw body is right there, no WARC seeking, and the rendered text is beside it
 - **Infrastructure research** - status, timing, headers and IP per fetch
 - **Training corpora** - a license-clean, current snapshot of real pages
 
@@ -194,7 +216,15 @@ One row is one fetch:
   "ttfb_ms": 142,
   "fetch_duration_ms": 318,
   "final_url": "",
-  "body": "<!doctype html>..."
+  "body": "<!doctype html>...",
+  "title": "Example Domain",
+  "text": "Example Domain This domain is for use in illustrative examples...",
+  "word_count": 28,
+  "language": "eng",
+  "language_confidence": 1.0,
+  "simhash": 13835058055282163712,
+  "extractor": "h2m@v0.2.1",
+  "markdown": "# Example Domain\n\nThis domain is for use in..."
 }
 ```
 
@@ -224,10 +254,13 @@ An index tells you an address existed. It does not tell you what is there now. R
 2. **Split** it by registered domain so a site stays on one machine with one politeness clock
 3. **Ask** `robots.txt` once per host and cache the answer, refusing what it refuses
 4. **Fetch** each entry, recording the body, the headers, the timing and the outcome
-5. **Cut** a new Zstandard Parquet shard once enough payload has gone into the open one
-6. **Commit** each closed shard to the hub with a refreshed ledger and card, then delete it locally
+5. **Render** every HTML page to Markdown and plain text while it is still in memory, and detect its language from the result
+6. **Cut** a new Zstandard Parquet shard once enough payload has gone into the open one
+7. **Commit** each closed shard to the hub with a refreshed ledger and card, then delete it locally
 
-Nothing is rewritten. The body is stored exactly as served, before any decoding, and a failed fetch is kept as a row with its error rather than dropped.
+Nothing is rewritten. The body is stored exactly as served, before any decoding, and a failed fetch is kept as a row with its error rather than dropped. The rendered columns are added beside the body and never in place of it, so anybody who thinks a different extractor would do better can run one over the same bytes.
+
+Rendering happens during the fetch because the fetch is waiting on the network and the machine is not. It costs the crawl nothing measurable, and it saves reading the whole corpus back a second time, which at this size is the difference between a dataset that is usable on the day it publishes and one that is usable months later.
 
 ### Personal and sensitive information
 
@@ -248,7 +281,9 @@ A current, queryable snapshot of real pages makes it possible to study the live 
 - **A point in time.** Each row is what one URL served at one moment, and the web moved on afterwards.
 - **Failures are rows.** Timeouts, DNS failures and refusals are recorded, so filter on `status` and `error` before treating a row as content.
 - **Politeness shapes coverage.** Hosts that rate-limit or refuse are underrepresented on purpose.
-- **Bodies are raw.** No decoding, no charset normalisation, no boilerplate stripping. That is deliberate, but it is work you have to do.
+- **Bodies are raw.** The `body` column is the bytes as served, with no decoding and no charset normalisation. The rendered columns beside it are where the boilerplate has been stripped.
+- **Extraction is one engine's opinion.** `extractor` names the engine and version that produced the text, and a different engine would disagree about where an article starts. Rows fetched months apart may carry different versions.
+- **Only HTML is rendered.** A PDF, an image or a JSON API response keeps its body and leaves the text columns empty, which `extractor` being empty tells you apart from a page that rendered to nothing.
 - **Still growing.** Until every slice reports complete, this is a partial view of the work list.
 
 ## Additional information
@@ -257,7 +292,7 @@ A current, queryable snapshot of real pages makes it possible to study the live 
 
 Released under the [Open Data Commons Attribution License (ODC-By) v1.0](https://opendatacommons.org/licenses/by/1-0/), the same terms the source work list is published under. Please credit [Common Crawl](https://commoncrawl.org) when you use this data.
 
-Content in the `body` column belongs to whoever published the page. Treat it the way you would treat any web content you fetched yourself.
+Content in the `body`, `text` and `markdown` columns belongs to whoever published the page. Treat it the way you would treat any web content you fetched yourself.
 
 Not affiliated with or endorsed by Common Crawl.
 

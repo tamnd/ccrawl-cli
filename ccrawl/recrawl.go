@@ -57,6 +57,14 @@ type RecrawlConfig struct {
 	// the default is a good place to leave it.
 	Batch int
 
+	// Extract renders every captured page into the text and Markdown columns as
+	// it is fetched. On by default, because a corpus of bodies nobody has
+	// extracted is a corpus somebody has to read twice. See recrawl_extract.go.
+	Extract bool
+	// Extractor names the engine, empty for the default. It only matters when
+	// Extract is on.
+	Extractor string
+
 	Crawl CrawlConfig
 	Info  WARCInfo
 }
@@ -80,6 +88,7 @@ func defaultRecrawlConfig() RecrawlConfig {
 		Robots:        true,
 		RobotsTimeout: 10 * time.Second,
 		Batch:         2000,
+		Extract:       true,
 		Crawl:         DefaultCrawlConfig,
 	}
 	// The crawl default is two minutes, which is the right patience for one
@@ -105,10 +114,17 @@ type Recrawler struct {
 
 	wmu sync.Mutex // one writer, so the WARC file is written by one goroutine
 	w   CaptureSink
+	ex  *pageExtractor // nil when the run was asked not to extract
 
 	emu   sync.Mutex // the emit callback is not asked to be concurrency safe
 	pages atomic.Int64
 	stats crawlCounters
+
+	// started and timers are the run's own account of where its worker time
+	// went. See recrawl_timing.go for why a page count on its own is not enough
+	// to tune a fleet with.
+	started time.Time
+	timers  recrawlTimers
 
 	clock *hostClock
 }
@@ -158,6 +174,16 @@ func NewRecrawler(cfg RecrawlConfig, bulk, web *HTTPClient) (*Recrawler, error) 
 		return nil, err
 	}
 	r := &Recrawler{cfg: cfg, h: h, wl: wl, ck: ck, clock: newHostClock()}
+	if cfg.Extract {
+		// The source key is what stamps the extractor version, the same way a
+		// crawl ID does in the conversion pipeline: it names the work list this
+		// text came out of, which is the closest thing a recrawl has to a crawl.
+		ex, err := newPageExtractor(cfg.Extractor, cfg.Source.Key())
+		if err != nil {
+			return nil, err
+		}
+		r.ex = ex
+	}
 	if cfg.Robots {
 		// robots.txt comes off the open web and gets the open web's client, for
 		// the same reasons crawl run does it: the bulk client spaces every
@@ -194,96 +220,204 @@ func (r *Recrawler) Close() error {
 // Run walks the work list to its end, to MaxPages, or until the context is
 // cancelled, whichever comes first.
 //
-// The shape is a batch at a time rather than a single pipeline, and that is the
-// whole resume story. Every item in a batch is fetched and written, the WARC is
-// flushed, and only then does the checkpoint move past them. A kill anywhere in
-// a batch loses the batch and replays it, which refetches at most Batch pages
-// and skips none. A checkpoint written before the flush would do the opposite,
-// and the opposite is silent.
+// The pool is started once and fed for the whole run. It used to be started per
+// batch, with a barrier at the end of each one so the checkpoint could be
+// written between them, and the barrier is what a rate target runs into: a
+// window is only as fast as its slowest item, and one host that accepts a
+// connection and then says nothing holds every other worker at the line.
+// Measured on the live domain list with 256 workers, a 600 page run spent its
+// last 92 seconds finishing four items and reported 87 percent of the pool idle
+// across the run.
+//
+// The resume promise is unchanged and it is now kept by the flight set rather
+// than by the barrier: items are handed out in work list order, the safe
+// position is the oldest one that has not finished, and a kill replays only what
+// was genuinely in the air. See recrawl_flight.go.
 func (r *Recrawler) Run(ctx context.Context, emit func(CrawlPage) error) (CrawlStats, error) {
+	r.started = time.Now()
+	defer func() { r.timers.wall.Store(int64(time.Since(r.started))) }()
+
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	fl := newFlight()
+	// The buffer is what keeps the pool fed while this goroutine is reading the
+	// next window out of Parquet over the network, which is the other way a pool
+	// goes idle with work left to do. One item per worker covers that and no more
+	// on purpose: a buffered item counts as handed out, so a buffer the size of a
+	// window would let the feeder dump the whole window and then checkpoint at the
+	// row it started from, which is a checkpoint that never moves and a kill that
+	// replays two thousand rows.
+	work := make(chan flightItem, r.cfg.Workers)
+	errs := make(chan error, r.cfg.Workers)
+	var wg sync.WaitGroup
+
+	// full says the page limit has been reached, which stops work being handed
+	// out but leaves the fetches already in flight alone. Cancelling the context
+	// here instead would abort them, and pages we asked a server for and then
+	// threw away are neither polite nor what --max-pages 5 means.
+	full := make(chan struct{})
+	closeFull := sync.OnceFunc(func() { close(full) })
+
+	for range r.cfg.Workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range work {
+				select {
+				case <-full:
+					// The run has had its fill. This item was handed out but
+					// never attempted, so like a refused one it stays in the
+					// flight set and the run comes back to it. Skipping here
+					// rather than inside process matters more than it sounds:
+					// the limit is claimed after robots, so a worker draining
+					// the buffer fetches a robots.txt for every row it is
+					// about to throw away. Measured on the live domain list, a
+					// 600 page run went on for another ninety seconds after
+					// its last page and fetched robots for 2300 hosts it was
+					// never going to ask for a page.
+					continue
+				default:
+				}
+				err := r.process(ctx, fi.item, emit)
+				if errors.Is(err, errBatchStopped) {
+					// Refused rather than done, so it stays in the flight set and
+					// the run comes back to exactly this row.
+					closeFull()
+					continue
+				}
+				if errors.Is(err, errItemAbandoned) {
+					continue
+				}
+				if err != nil {
+					errs <- err
+					stop()
+					return
+				}
+				fl.retire(fi.seq)
+			}
+		}()
+	}
+
+	feedErr := r.feed(ctx, fl, work, full)
+	close(work)
+	wg.Wait()
+	close(errs)
+
+	if err := <-errs; err != nil {
+		return r.snapshot(), err
+	}
+	if feedErr != nil {
+		return r.snapshot(), feedErr
+	}
+	return r.snapshot(), r.finishFlight(fl)
+}
+
+// flightItem is a work item with the sequence number that retires it.
+type flightItem struct {
+	item WorkItem
+	seq  int64
+}
+
+// feed reads the work list and hands it to the pool, checkpointing as it goes.
+//
+// It returns when the work list is walked out, when the page limit stops it, or
+// when the run is cancelled. It does not wait for the pool, because the pool is
+// what the caller waits for.
+func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem, full <-chan struct{}) error {
 	buf := make([]WorkItem, r.cfg.Batch)
 	for {
-		if err := ctx.Err(); err != nil {
-			return r.snapshot(), r.finish()
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-full:
+			return nil
+		default:
 		}
-		if r.cfg.MaxPages > 0 && r.pages.Load() >= r.cfg.MaxPages {
-			return r.snapshot(), r.finish()
-		}
-		// Where the batch about to be read starts, which is the position a run
-		// cut off inside that batch has to fall back to.
-		startPart, startRow, _ := r.wl.Position()
 		n, err := r.wl.Next(ctx, buf)
 		if err != nil {
-			return r.snapshot(), err
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
 		}
 		if n == 0 {
-			// The work list is walked out. finish records that, so a supervisor
-			// restarting the unit is told to stop rather than reading the
-			// dataset from the top again.
-			return r.snapshot(), r.finish()
+			return nil // walked out
 		}
-		whole, err := r.fetchBatch(ctx, buf[:n], emit)
-		if err != nil {
-			return r.snapshot(), err
-		}
-		if !whole {
-			// The batch was cut short by the page limit or by a cancel, so part
-			// of it was never fetched. Advancing the checkpoint past it would
-			// claim work that was not done and the next run would skip it without
-			// a word, so the checkpoint falls back to where this batch began and
-			// the batch is replayed whole.
-			//
-			// It falls back rather than staying put. Every batch before this one
-			// was finished, and on a Parquet run those batches are usually sitting
-			// in a shard that has not filled yet, so their checkpoint was held
-			// back too. Sealing here and recording the batch boundary turns a
-			// replay of the whole open shard into a replay of one batch, which is
-			// the difference between --max-pages being usable and being a way to
-			// throw away everything the run just did.
-			return r.snapshot(), r.finishAt(startPart, startRow, false)
-		}
-		// The bytes first, then the claim that they exist.
-		if r.w != nil {
-			r.wmu.Lock()
-			durable, serr := r.w.Sync(false)
-			r.wmu.Unlock()
-			if serr != nil {
-				return r.snapshot(), serr
-			}
-			if !durable {
-				// The sink cannot promise these rows are readable yet, which is
-				// what a Parquet shard says until its footer is written. Leaving
-				// the checkpoint where it is costs a replay of the open shard on
-				// a crash and never costs a gap, and the shard size is the knob
-				// that bounds it.
-				continue
+		for _, it := range spreadItems(buf[:n]) {
+			fi := flightItem{item: it, seq: fl.add(it)}
+			select {
+			case work <- fi:
+			case <-full:
+				return nil
+			case <-ctx.Done():
+				return nil
 			}
 		}
-		part, row, done := r.wl.Position()
-		r.ck.Part, r.ck.Row, r.ck.Done = part, row, done
-		r.ck.Fetched = r.stats.fetched.Load()
-		if err := r.save(); err != nil {
-			return r.snapshot(), err
+		if err := r.checkpoint(fl); err != nil {
+			return err
 		}
 	}
 }
 
-// finish closes out a run that stopped between batches, which is the one place
-// a stop is clean: nothing is in flight, every fetched page is written, and the
-// work list is sitting on a row nobody has read.
+// checkpoint writes down a position it is safe to resume from, if the output
+// says the rows behind it are readable.
+//
+// The safe position is read before the sync rather than after. Read afterwards
+// it could name a row whose page was fetched and written in between, which the
+// sync did not cover, and a checkpoint past unwritten rows is the one failure
+// that is silent. Read first it can only be behind, which costs a refetch.
+func (r *Recrawler) checkpoint(fl *flight) error {
+	part, row, ok := fl.safe()
+	if !ok {
+		part, row, _ = r.wl.Position()
+	}
+	if r.w != nil {
+		r.wmu.Lock()
+		durable, err := r.w.Sync(false)
+		r.wmu.Unlock()
+		if err != nil {
+			return err
+		}
+		if !durable {
+			// The sink cannot promise these rows are readable yet, which is what
+			// a Parquet shard says until its footer is written. Leaving the
+			// checkpoint where it is costs a replay of the open shard on a crash
+			// and never costs a gap, and the shard size is the knob that bounds
+			// it.
+			return nil
+		}
+	}
+	r.ck.Part, r.ck.Row, r.ck.Done = part, row, false
+	r.ck.Fetched = r.stats.fetched.Load()
+	return r.save()
+}
+
+// finishFlight closes out a stopped run at the position the flight set says is
+// safe, which is the oldest item that never finished.
 //
 // The three ways to get here are the end of the work list, the page limit, and a
-// cancel that landed on the boundary. All three used to be handled differently
-// and only the first one sealed the output and moved the checkpoint, so a run
-// with --max-pages fetched its pages, wrote them, and left a checkpoint saying
-// it had done nothing. Restarting it refetched every page and wrote a second
-// copy of all of them, which on a fleet run is the difference between a hundred
-// days and never finishing.
+// cancel. All three used to be handled differently and only the first one sealed
+// the output and moved the checkpoint, so a run with --max-pages fetched its
+// pages, wrote them, and left a checkpoint saying it had done nothing.
+// Restarting it refetched every page and wrote a second copy of all of them,
+// which on a fleet run is the difference between a hundred days and never
+// finishing. They go through one path now.
 //
-// The sync is forced because a stop is the last chance to make the open shard
-// readable. Holding it back for a fuller shard means holding it back forever.
-func (r *Recrawler) finish() error {
+// The work list being walked out is not enough to call a run done: the pool can
+// have been cut off by the page limit or by a cancel with items still unfetched
+// behind the reader. Done is claimed only when the reader reached the end and
+// nothing was left in the air, because a supervisor reads Done as a reason to
+// stop restarting the unit and a wrong one there loses rows for good.
+//
+// The sync inside finishAt is forced because a stop is the last chance to make
+// the open shard readable. Holding it back for a fuller shard means holding it
+// back forever.
+func (r *Recrawler) finishFlight(fl *flight) error {
 	part, row, done := r.wl.Position()
+	if p, rw, ok := fl.safe(); ok && fl.stalled() {
+		part, row, done = p, rw, false
+	}
 	return r.finishAt(part, row, done)
 }
 
@@ -321,86 +455,17 @@ func (r *Recrawler) save() error {
 	return r.ck.Save(r.cfg.StatePath)
 }
 
-// fetchBatch fetches one batch with a fixed pool of workers and returns when
-// every item in it has been dealt with.
-//
-// The barrier at the end of each batch is what makes the checkpoint mean
-// something, and it costs less than it looks like it should: the work list is
-// sorted, so a batch of two thousand rows is two thousand different hosts and
-// the pool is never waiting on one slow site while the rest of the batch sits
-// idle behind it.
-func (r *Recrawler) fetchBatch(ctx context.Context, items []WorkItem, emit func(CrawlPage) error) (bool, error) {
-	work := make(chan WorkItem)
-	var wg sync.WaitGroup
-	errs := make(chan error, r.cfg.Workers)
-	ctx, stop := context.WithCancel(ctx)
-	defer stop()
-
-	// full says the page limit has been reached, which stops the batch being
-	// handed out but leaves the fetches already in flight alone. Cancelling the
-	// context here instead would abort them, and pages we asked a server for and
-	// then threw away are neither polite nor what --max-pages 5 means.
-	full := make(chan struct{})
-	closeFull := sync.OnceFunc(func() { close(full) })
-
-	for range r.cfg.Workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for it := range work {
-				err := r.process(ctx, it, emit)
-				if errors.Is(err, errBatchStopped) {
-					closeFull()
-					continue
-				}
-				if err != nil {
-					errs <- err
-					stop()
-					return
-				}
-			}
-		}()
-	}
-	whole := true
-	for _, it := range items {
-		select {
-		case work <- it:
-			continue
-		case <-full:
-		case <-ctx.Done():
-		}
-		whole = false
-		break
-	}
-	close(work)
-	wg.Wait()
-	close(errs)
-
-	// A batch small enough to be handed out before any worker finishes can reach
-	// the end of the send loop and still contain items the limit refused, so the
-	// question is not whether every item was sent but whether every item was
-	// done. Either signal means some of this batch was not fetched, and a
-	// checkpoint past it would skip those rows for good.
-	select {
-	case <-full:
-		whole = false
-	default:
-	}
-	if ctx.Err() != nil {
-		whole = false
-	}
-	return whole, <-errs
-}
-
 // errBatchStopped is a worker saying the run has had its fill, not that
-// anything went wrong. It stops the batch and, because the batch did not
-// finish, leaves the checkpoint where it was.
+// anything went wrong. The item it was carrying is left unretired, so the run
+// resumes at that row rather than past it.
 var errBatchStopped = errors.New("the page limit was reached")
 
-// process fetches one URL. A failure is counted and moved past rather than
-// retried: the work list is a hundred days long and a site that is down now
-// will be back in the next pass, so blocking on it buys a page and costs a
-// queue.
+// errItemAbandoned is a worker saying the run stopped underneath it. Like the
+// page limit it is not a failure, and like the page limit the item stays in the
+// flight set: a fetch that was cancelled halfway is not a row that was dealt
+// with, and retiring it would move the checkpoint past a page nobody has.
+var errItemAbandoned = errors.New("the run stopped before this item was fetched")
+
 // claimPage takes one of the MaxPages slots and says whether it got one.
 //
 // The slot is claimed rather than checked because thirty two workers reading a
@@ -416,7 +481,14 @@ func (r *Recrawler) claimPage() bool {
 	return r.pages.Add(1) <= r.cfg.MaxPages
 }
 
+// process fetches one URL. A failure is counted and moved past rather than
+// retried: the work list is a hundred days long and a site that is down now
+// will be back in the next pass, so blocking on it buys a page and costs a
+// queue.
 func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPage) error) error {
+	if ctx.Err() != nil {
+		return errItemAbandoned
+	}
 	u, err := url.Parse(it.URL)
 	if err != nil || u.Host == "" {
 		r.stats.failed.Add(1)
@@ -424,14 +496,24 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 		return nil
 	}
 
+	r.timers.items.Add(1)
 	delay := r.cfg.Delay
 	if r.rc != nil {
 		// The deadline covers the fetch and its retries together, so a host that
 		// answers slowly four times in a row costs one budget and not four.
+		start := time.Now()
 		rctx, cancel := context.WithTimeout(ctx, r.cfg.RobotsTimeout)
 		entry := r.rc.Fetch(rctx, r.rh, u.Host, u.Scheme)
 		cancel()
+		r.timers.add(&r.timers.robots, start)
 		if !entry.IsAllowed(u.RequestURI()) {
+			if ctx.Err() != nil {
+				// The robots fetch was cut off by the run stopping rather than by
+				// the host, and a refusal we manufactured is not a row we dealt
+				// with. Leaving it unretired is what makes the resume come back
+				// to it.
+				return errItemAbandoned
+			}
 			if entry.Unreachable {
 				r.stats.unreachable.Add(1)
 			} else {
@@ -443,8 +525,11 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 			delay = entry.CrawlDelay
 		}
 	}
-	if err := r.clock.wait(ctx, u.Host, delay); err != nil {
-		return nil
+	clockStart := time.Now()
+	err = r.clock.wait(ctx, u.Host, delay)
+	r.timers.add(&r.timers.clock, clockStart)
+	if err != nil {
+		return errItemAbandoned
 	}
 
 	if !r.claimPage() {
@@ -452,10 +537,21 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 	}
 	crawlCfg := r.cfg.Crawl
 	crawlCfg.OnRequestWritten = func(t time.Time) { r.clock.stamp(u.Host, t) }
-	res, err := CrawlURL(ctx, it.URL, crawlCfg)
+	fetchStart := time.Now()
+	// The deadline covers the fetch and its retries together, the same way the
+	// robots one does, so a host that answers slowly four times in a row costs one
+	// budget and not four. Without it the timeout is per attempt and the retry
+	// loop multiplies it: measured on the live domain list, a 600 page run reached
+	// its last page after sixty seconds and then took another ninety to exit,
+	// because a handful of items were still working through a thirty second
+	// timeout for the third time.
+	fctx, cancel := context.WithTimeout(ctx, r.cfg.Crawl.Timeout)
+	res, err := CrawlURL(fctx, it.URL, crawlCfg)
+	cancel()
+	r.timers.add(&r.timers.fetch, fetchStart)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return errItemAbandoned
 		}
 		classifyCrawlErr(err, &r.stats)
 		r.stats.failed.Add(1)
@@ -463,9 +559,10 @@ func (r *Recrawler) process(ctx context.Context, it WorkItem, emit func(CrawlPag
 	}
 
 	if r.w != nil {
-		r.wmu.Lock()
-		err = r.w.WriteCapture(res)
-		r.wmu.Unlock()
+		// writeCapture keeps its own two timers, because rendering the page and
+		// writing it are different costs with different fixes and one number
+		// covering both would hide whichever is the problem.
+		err = r.writeCapture(res)
 		if err != nil {
 			return fmt.Errorf("write WARC for %s: %w", it.URL, err)
 		}

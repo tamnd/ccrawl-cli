@@ -107,19 +107,19 @@ func recrawlProgress(t RecrawlTotals) string {
 
 // applyRecrawlKind fills in the sentences that differ between the two repos.
 func applyRecrawlKind(c *recrawlCard, kind string) {
-	common := []string{"common-crawl", "web-crawl", "recrawl", "html", "parquet", "open-data"}
+	common := []string{"common-crawl", "web-crawl", "recrawl", "html", "markdown", "text", "parquet", "open-data"}
 	switch kind {
 	case "urls":
 		c.PrettyName = "Common Crawl URL Recrawl"
-		c.Tagline = "Live refetches of pages from Common Crawl's URL index, with the response body inline"
-		c.What = "Common Crawl publishes which URLs it saw and when, but the page bodies live in WARC archives that are awkward to query and are as old as the crawl that made them. This dataset takes the URL index for a single monthly crawl and fetches the pages again now, storing each response as one Parquet row with the body, the headers, the timing and the outcome all in the same place. It is the same set of addresses, refetched, so you can compare what a page says today against what the archive says it said."
+		c.Tagline = "Live refetches of pages from Common Crawl's URL index, with the body inline and the text already extracted"
+		c.What = "Common Crawl publishes which URLs it saw and when, but the page bodies live in WARC archives that are awkward to query and are as old as the crawl that made them. This dataset takes the URL index for a single monthly crawl and fetches the pages again now, storing each response as one Parquet row with the body, the headers, the timing and the outcome all in the same place, and the page rendered to Markdown and plain text beside them. It is the same set of addresses, refetched, so you can compare what a page says today against what the archive says it said, and read it without parsing any HTML."
 		c.Source = "The work list is [open-index/ccrawl-urls](https://huggingface.co/datasets/open-index/ccrawl-urls), the URL index for one monthly Common Crawl. Every row in this dataset came from fetching one of those URLs."
 		c.Bias = "The work list is whatever Common Crawl indexed, so pages it never reached are not here either. Pages that have moved, expired or gone behind a login since the index was built show up as redirects, 404s and 403s rather than as content, and that is data too, but it means a naive count of rows is not a count of readable pages."
 		c.Tags = append(common, "url-index")
 	default:
 		c.PrettyName = "Common Crawl Domain Recrawl"
-		c.Tagline = "Live fetches of the home page of every ranked domain in Common Crawl's web graph"
-		c.What = "Common Crawl's web graph ranks domains by how central they are, but it does not tell you what those domains actually serve today. This dataset walks that ranking from the top and fetches each domain's home page now, storing the response as one Parquet row with the body, the headers, the timing and the outcome all in the same place. Because the work list is in rank order, the early shards hold the most central domains on the web."
+		c.Tagline = "Live fetches of the home page of every ranked domain in Common Crawl's web graph, rendered to Markdown as they are fetched"
+		c.What = "Common Crawl's web graph ranks domains by how central they are, but it does not tell you what those domains actually serve today. This dataset walks that ranking from the top and fetches each domain's home page now, storing the response as one Parquet row with the body, the headers, the timing and the outcome all in the same place, and the page rendered to Markdown and plain text beside them. Because the work list is in rank order, the early shards hold the most central domains on the web."
 		c.Source = "The work list is [open-index/ccrawl-domains](https://huggingface.co/datasets/open-index/ccrawl-domains), the domain-level ranks from Common Crawl's hyperlink web graph, read in rank order. Every row in this dataset came from fetching one of those domains."
 		c.Bias = "The ranking the work list comes from reflects the link structure Common Crawl observed, which favours well-linked, long-established, commercial and English-language domains. Fetching a home page also says nothing about the rest of the site. A domain that refuses robots or times out is absent rather than empty, so absence here means we did not fetch it, not that nothing is there."
 		c.Tags = append(common, "domain-ranks")
@@ -153,4 +153,12 @@ var captureColumnDocs = [][3]string{
 	{"resp_headers", "VARCHAR", "response headers as JSON"},
 	{"req_headers", "VARCHAR", "request headers as JSON"},
 	{"body", "BLOB", "the response body exactly as served, before any decoding"},
+	{"title", "VARCHAR", "the document title, empty when the page has none"},
+	{"text", "VARCHAR", "the page as plain text, boilerplate stripped"},
+	{"text_length", "BIGINT", "length of the text in bytes"},
+	{"word_count", "BIGINT", "words in the extracted text"},
+	{"language", "VARCHAR", "language of the Markdown, ISO 639-3, detected not declared"},
+	{"language_confidence", "DOUBLE", "how sure the detector is, 0 to 1"},
+	{"simhash", "BIGINT", "fingerprint of the Markdown, for finding near duplicates"},
+	{"extractor", "VARCHAR", "engine and version that rendered the page, as name@version"},
 }

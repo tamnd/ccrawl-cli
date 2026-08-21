@@ -394,33 +394,7 @@ func PackRefetchShard(ctx context.Context, h *HTTPClient, cfg RefetchPackConfig)
 // engine keeps as many distinct hosts in flight as it has workers instead of
 // piling a single host's pages onto one capped connection pool.
 func spreadByHost(urls []string) []string {
-	if len(urls) < 2 {
-		return urls
-	}
-	groups := make(map[string][]string)
-	order := make([]string, 0, len(urls)) // first-seen host order, for determinism
-	for _, u := range urls {
-		host := urlHostname(u)
-		if _, ok := groups[host]; !ok {
-			order = append(order, host)
-		}
-		groups[host] = append(groups[host], u)
-	}
-	if len(order) == 1 {
-		return urls // single host: nothing to spread
-	}
-	out := make([]string, 0, len(urls))
-	for len(out) < len(urls) {
-		for _, host := range order {
-			g := groups[host]
-			if len(g) == 0 {
-				continue
-			}
-			out = append(out, g[0])
-			groups[host] = g[1:]
-		}
-	}
-	return out
+	return spreadHosts(urls, urlHostname)
 }
 
 // classifyFetchErr buckets a fetch error string into the RefetchStats failure

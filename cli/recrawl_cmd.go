@@ -30,6 +30,8 @@ type recrawlRunIn struct {
 	Delay     time.Duration `kit:"flag" default:"1s" help:"minimum spacing between two requests to the same host (0 for none)"`
 	MaxPages  int64         `kit:"flag,name=max-pages" help:"stop after this many fetches (0 = no limit)"`
 	NoRobots  bool          `kit:"flag,name=no-robots" help:"do not check robots.txt, which you had better have a reason for"`
+	NoExtract bool          `kit:"flag,name=no-extract" help:"store the body without rendering it to text and Markdown"`
+	Extractor string        `kit:"flag" help:"engine that renders a page to Markdown: h2m, readability, or raw"`
 	Format    string        `kit:"flag" default:"parquet" help:"output format: parquet rows with the body inline, or warc"`
 	ShardSize int64         `kit:"flag,name=shard-size" help:"rotate to a new output shard past this much payload"`
 	Prefix    string        `kit:"flag" help:"file name prefix for the output files"`
@@ -54,6 +56,12 @@ func registerRecrawlRun(app *kit.App) {
 of Parquet instead of loading it into a frontier. robots.txt is fetched once per
 host and enforced, each host gets one request per --delay, and every fetch is
 written out as a Parquet row with the body inline, or to WARC with --format warc.
+
+Every HTML page is rendered to text and Markdown as it is fetched, into the same
+columns open-markdown uses, so a published shard is usable without a second pass
+over the corpus. The run is waiting on the network anyway, so the rendering fits
+in the gap the fetches leave. Turn it off with --no-extract and pick the engine
+with --extractor.
 
 The run keeps its place in --state, which holds a part number and a row offset
 and nothing else. It is a few hundred bytes whether the work list has a thousand
@@ -99,8 +107,20 @@ Examples:
 		cfg.OutDir = in.Out
 		cfg.Workers = in.App.Workers
 		cfg.Robots = !in.NoRobots
+		cfg.Extract = !in.NoExtract
+		cfg.Extractor = in.Extractor
 		cfg.MaxPages = in.MaxPages
-		cfg.Crawl = ccrawl.DefaultCrawlConfig
+		// cfg.Crawl arrives from DefaultRecrawlConfig with a patience a recrawl
+		// can afford and is not replaced with the crawl default here. It used to
+		// be, and that quietly put the two minute timeout back: a batch does not
+		// checkpoint until its last item is done, so one host that accepts a
+		// connection and then says nothing held a worker for two minutes and the
+		// batch behind it. Measured on the live domain list, a 600 page run spent
+		// its last 92 seconds finishing four items and fetched nothing in that
+		// time. Only --timeout overrides it now, and only when it is set.
+		if in.App.Cfg.Timeout > 0 {
+			cfg.Crawl.Timeout = in.App.Cfg.Timeout
+		}
 		cfg.Info = crawlWARCInfo()
 		cfg.Format = ccrawl.CaptureFormat(strings.ToLower(strings.TrimSpace(in.Format)))
 		if err := cfg.Format.Validate(); err != nil {
@@ -154,6 +174,9 @@ Examples:
 				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
 		}
 		fmt.Fprintln(os.Stderr, "recrawl run: "+robotsLine(stats))
+		t := r.Timing()
+		fmt.Fprintf(os.Stderr, "recrawl run: %.1f pages a second, %s an item, %s\n",
+			t.Rate(stats.Fetched), t.PerItem().Round(time.Millisecond), t.Line())
 		if ck.Done {
 			fmt.Fprintln(os.Stderr, "recrawl run: the work list is finished")
 		}

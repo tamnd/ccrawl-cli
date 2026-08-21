@@ -73,8 +73,9 @@ type Capture struct {
 	// the body cap flag here when it trips.
 	MetaJSON string `parquet:"meta_json"`
 
-	// Filled by ami's Markdown pass. A recrawl leaves them empty, since ccrawl
-	// renders Markdown in its own pipeline against published WARCs.
+	// The rendered page. ami fills these in a Markdown pass of its own and a
+	// recrawl fills them as it fetches, which is the same columns arrived at from
+	// two directions. See recrawl_extract.go for why a recrawl does it inline.
 	Markdown       string `parquet:"markdown"`
 	MarkdownLength int64  `parquet:"markdown_length"`
 
@@ -88,6 +89,29 @@ type Capture struct {
 	RespHeaders string `parquet:"resp_headers"`
 	ReqHeaders  string `parquet:"req_headers"`
 	Body        []byte `parquet:"body"`
+
+	// What the page says, as opposed to what the exchange was. These are the
+	// last columns in the schema and they are appended rather than inserted, so
+	// a reader written against the older shape reads a newer file unchanged:
+	// Parquet is read by name, and a reader that never asks for these never
+	// touches them. Same reasoning as open-markdown-v3, same column names where
+	// they overlap, so a query written for that dataset runs here.
+	//
+	// A run without extraction leaves them empty, which a reader tells from an
+	// empty page by extractor being empty too.
+	Title          string  `parquet:"title"`
+	Text           string  `parquet:"text"`
+	TextLength     int64   `parquet:"text_length"`
+	WordCount      int64   `parquet:"word_count"`
+	Language       string  `parquet:"language"`
+	LangConfidence float64 `parquet:"language_confidence"`
+	// Simhash fingerprints the Markdown, not the body, so two pages that differ
+	// only in a session ID or an ad slot fingerprint the same.
+	Simhash uint64 `parquet:"simhash"`
+	// Extractor is name@version, because extraction changes between releases and
+	// a dataset that only recorded the name cannot answer why two shards built
+	// months apart disagree about the same page.
+	Extractor string `parquet:"extractor"`
 }
 
 // NewCapture turns a fetch into the row that describes it.
@@ -371,6 +395,7 @@ func (w *CaptureWriter) Close() error { return w.seal() }
 // the footer is written and a rotation decision has to be made before then.
 func approxCaptureBytes(c Capture) int64 {
 	return int64(len(c.Body)+len(c.RespHeaders)+len(c.ReqHeaders)+len(c.Markdown)+
+		len(c.Text)+len(c.Title)+len(c.Language)+len(c.Extractor)+
 		len(c.URL)+len(c.FinalURL)+len(c.Host)+len(c.ContentType)+len(c.Digest)+
 		len(c.ETag)+len(c.LastModified)+len(c.Error)+len(c.MetaJSON)) + 128
 }
