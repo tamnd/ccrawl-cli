@@ -89,7 +89,15 @@ type CrawlStats struct {
 	ErrTimeout int64
 	ErrRefused int64
 	ErrSkip    int64
-	ErrOther   int64
+	// ErrTLS is a handshake that did not happen: an expired certificate, a name
+	// that does not match, or a host that answers the hello with an error. It is
+	// its own bucket because on a corpus of every registered domain it is a
+	// substantial one, and because it means something different from a refusal.
+	ErrTLS   int64
+	ErrOther int64
+	// ErrOtherTop is what was in the other bucket, by shape, most common first.
+	// A bucket with a count and no contents is a number nobody can act on.
+	ErrOtherTop []ErrSample
 
 	// OutFiles is what the run wrote, whichever format it wrote. It was called
 	// WARCFiles when WARC was the only thing a run could write.
@@ -134,6 +142,11 @@ type crawlCounters struct {
 	fetched, failed, retried, disallowed, discovered, bytes atomic.Int64
 	unreachable                                             atomic.Int64
 	errDNS, errTimeout, errRefused, errSkip, errOther       atomic.Int64
+	errTLS                                                  atomic.Int64
+	// otherSamples is what is in the bucket marked other, by shape rather than
+	// by host. A count on its own says a tenth of the work list failed for a
+	// reason nobody wrote down, which is not a thing anybody can act on.
+	otherSamples errSamples
 }
 
 // NewCrawler opens the frontier and the WARC writer for a run.
@@ -434,6 +447,11 @@ func (c *Crawler) expand(res *CrawlResult, from FrontierEntry) {
 // classify buckets a fetch error the way refetch does.
 func (c *Crawler) classify(err error) { classifyCrawlErr(err, &c.stats) }
 
+// errOtherReported is how many shapes of unclassified failure a run names on
+// its summary line. Three is what fits on a line and what has so far covered
+// most of the bucket on the live corpora.
+const errOtherReported = 3
+
 // errClass is which bucket a fetch error falls in.
 //
 // It is a value rather than a counter write because two loops need the same
@@ -448,6 +466,7 @@ const (
 	errClassTimeout
 	errClassRefused
 	errClassSkip
+	errClassTLS
 )
 
 // crawlErrClass reads a fetch error and says which bucket it belongs in. It
@@ -472,6 +491,21 @@ func crawlErrClass(err error) errClass {
 		return errClassRefused
 	case strings.Contains(e, "skip"), strings.Contains(e, "congested"):
 		return errClassSkip
+	// The handshake, which on a corpus of every registered domain is a bucket
+	// of its own and not a curiosity. Measured on the live domain list, TLS was
+	// 676 of the 1575 failures that had no class at all, the largest single
+	// thing in there: expired certificates first, then hosts that answer the
+	// hello with an internal error or a plain handshake failure.
+	//
+	// It is worth telling apart from refused because the fix is different and
+	// mostly is not ours. A refusal is a host that will not talk to anybody, and
+	// a handshake failure is a host that is talking and whose certificate expired
+	// four years ago. Neither is a page, and only one of them is a candidate for
+	// falling back to http.
+	case strings.Contains(e, "tls:"),
+		strings.Contains(e, "x509:"),
+		strings.Contains(e, "certificate"):
+		return errClassTLS
 	}
 	return errClassOther
 }
@@ -490,8 +524,11 @@ func classifyCrawlErr(err error, stats *crawlCounters) {
 		stats.errRefused.Add(1)
 	case errClassSkip:
 		stats.errSkip.Add(1)
+	case errClassTLS:
+		stats.errTLS.Add(1)
 	case errClassOther:
 		stats.errOther.Add(1)
+		stats.otherSamples.add(err)
 	}
 }
 
@@ -508,7 +545,9 @@ func (c *Crawler) snapshot() CrawlStats {
 		ErrTimeout:  c.stats.errTimeout.Load(),
 		ErrRefused:  c.stats.errRefused.Load(),
 		ErrSkip:     c.stats.errSkip.Load(),
+		ErrTLS:      c.stats.errTLS.Load(),
 		ErrOther:    c.stats.errOther.Load(),
+		ErrOtherTop: c.stats.otherSamples.top(errOtherReported),
 	}
 	if c.rc != nil {
 		s.Robots = c.rc.Stats()

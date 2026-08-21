@@ -211,8 +211,14 @@ Examples:
 			stats.Fetched, stats.Failed, stats.Disallowed,
 			humanBytes(stats.Bytes), len(stats.OutFiles), cfg.Format, ck.Part, ck.Row)
 		if stats.Failed > 0 {
-			fmt.Fprintf(os.Stderr, "recrawl run: failures by class: dns %d, timeout %d, refused %d, skipped %d, other %d\n",
-				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrSkip, stats.ErrOther)
+			fmt.Fprintf(os.Stderr, "recrawl run: failures by class: dns %d, timeout %d, refused %d, tls %d, skipped %d, other %d\n",
+				stats.ErrDNS, stats.ErrTimeout, stats.ErrRefused, stats.ErrTLS, stats.ErrSkip, stats.ErrOther)
+			// And what other was, by shape. On the domain corpus it is a tenth of
+			// the work list, which is too much of a run to leave with no label on
+			// it when the question being asked is why the rate is what it is.
+			if line := ccrawl.ErrOtherLine(stats.ErrOther, stats.ErrOtherTop); line != "" {
+				fmt.Fprintln(os.Stderr, "recrawl run: "+line)
+			}
 		}
 		// A run with the check off says so in its own summary rather than only in
 		// whatever command line somebody typed a week ago. This is the one line

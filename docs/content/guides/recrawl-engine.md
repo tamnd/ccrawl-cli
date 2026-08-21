@@ -154,6 +154,40 @@ That line only matters when the first one looks wrong, and then it is the whole 
 A run where a tenth of the hosts could not be asked and a run where two thirds of them could not be asked print the same shape of summary, and the difference between them is entirely in this breakdown.
 A name that did not resolve is ours to fix, a connection the kernel would not open is the machine, a timeout is the host or the link to it, and a 5xx is a site that is up and telling us nothing.
 
+## What failed, and what the bucket marked other was
+
+A recrawl of a domain corpus fails a lot, and that is the corpus rather than the crawler: a third of a list of every registered domain does not answer.
+So the run breaks its failures down, and the breakdown is the diagnosis:
+
+```
+recrawl run: 11254 fetched, 8746 failed, 0 disallowed, 1.5 GB, 4 parquet files, at part 1 row 20000
+recrawl run: failures by class: dns 5483, timeout 1234, refused 447, tls 1444, skipped 0, other 138
+```
+
+Four of those are actionable and mean different things.
+A name that did not resolve is the resolver or a dead domain, a timeout is patience, a refusal is a host that will not talk to anybody, and a skip is our own back pressure.
+A handshake failure is a fifth thing: a host that is talking, whose certificate expired four years ago or whose TLS stack answers the hello with an internal error, and it is a bucket of its own because on a corpus of every registered domain it is a large one.
+
+The last bucket used to be a problem.
+Other is everything the classifier does not recognise, and on the live domain list it was 1700 to 2000 of about 7500 failures in a 20 000 row run, which is a tenth of the work list going into a box with no label on it.
+Guessing at more substring matches would have been the wrong fix, so the run says what it saw instead:
+
+```
+recrawl run: the unclassified failures are mostly: tls: failed to verify certificate: N certificate has expired or is not yet valid: current time N is after N 343, remote error: tls: internal error 203, remote error: tls: handshake failure 130, which is 676 of 1575
+```
+
+That is what put the tls bucket in, and the same run repeated after it went from 1575 unclassified to 138:
+
+```
+recrawl run: the unclassified failures are mostly: eof 124, http: server gave http response to https client 9, unexpected eof 3, which is 136 of 138
+```
+
+A bucket that was a tenth of the work list is now a tenth of a percent of it, and what is left in it is named.
+Errors are fingerprinted before they are counted, with the URL, the address, the port and every number replaced, so the same failure on a million hosts counts as one line rather than a million.
+The number of distinct shapes kept is capped, because an error string comes off the wire in the end and a corpus that is a third dead hosts also has hosts that will return whatever they like in a TLS alert.
+Past the cap the tail is dropped and the head is not, which is the right way round for a report about what dominates a bucket.
+The line says how much of the bucket it accounted for, so a top three that explains 676 of 1575 does not read like one that explains all of it.
+
 ## DNS is a per page cost
 
 On a link crawl the frontier keeps coming back to hosts it already knows, so DNS is paid once and amortised over everything after it.

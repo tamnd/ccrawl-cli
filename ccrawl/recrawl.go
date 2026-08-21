@@ -678,7 +678,9 @@ func (r *Recrawler) snapshot() CrawlStats {
 		ErrTimeout:  r.stats.errTimeout.Load(),
 		ErrRefused:  r.stats.errRefused.Load(),
 		ErrSkip:     r.stats.errSkip.Load(),
+		ErrTLS:      r.stats.errTLS.Load(),
 		ErrOther:    r.stats.errOther.Load(),
+		ErrOtherTop: r.stats.otherSamples.top(errOtherReported),
 	}
 	if r.rc != nil {
 		s.Robots = r.rc.Stats()
