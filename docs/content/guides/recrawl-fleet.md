@@ -149,6 +149,24 @@ The summary at the end of a run is written to be read in this order.
 The failure breakdown says what the corpus is costing: on the domain list about 5500 rows in 20000 are names that do not resolve, 1400 are broken TLS handshakes and 1200 time out, and none of that is the machine's fault or something a wider pool fixes.
 The timing line says what the machine is costing: how much of the run the pool spent idle, and how much of it each writer was busy.
 
+## The URL list is sorted by host, and that is its ceiling
+
+The two work lists need different things from the same crawler, and the difference is the order they are in.
+
+The domain list is one row per host, so a batch of it is two thousand different sites and every worker has something to fetch.
+The URL list comes out of Common Crawl's index in SURT order, which is sorted by host and then by path, so a batch of it is one site.
+The politeness delay gives a host one request per second no matter how many workers are free, so a pool reading that list in order runs at one page a second and the rest of the pool waits.
+
+Measured on server3 at 32 workers against the live URL list, before the fix: 596 pages in ten minutes, and all 596 of them from `vkbn.ru`.
+
+The crawler now reads the URL list through a reorder buffer that keeps reading until it holds one host per worker, then hands rows out one host at a time.
+Each site keeps its own pages in work list order, so this is a rotation and not a shuffle, and two runs over the same list hand out the same sequence.
+The domain list is unaffected, because a read of it already satisfies the buffer on the first batch.
+
+The cost is replay after a crash.
+The checkpoint can only name the oldest row that has not finished, so rows held back in the buffer hold the checkpoint back with them, bounded by the buffer at sixteen batches.
+That is a few minutes of refetching on a run measured in months.
+
 ## Memory is the binding constraint, not CPU
 
 This is the thing to know before tuning anything.
