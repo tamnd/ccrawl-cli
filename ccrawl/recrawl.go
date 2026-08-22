@@ -413,6 +413,9 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 	// The reorder buffer sits between the work list and the pool rather than
 	// inside this loop, because the reordering the URL list needs cannot be done
 	// a batch at a time: a batch of that list is one host. See recrawl_spread.go.
+	// The feeder's own life, which is shorter than the run whenever the work list
+	// ends or the page limit fires before the pool has drained.
+	defer func(start time.Time) { r.timers.feed.Store(int64(time.Since(start))) }(time.Now())
 	sp := newHostSpread(r.wl, r.cfg.Workers, r.cfg.Batch)
 	r.spmu.Lock()
 	r.sp = sp
