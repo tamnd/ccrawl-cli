@@ -50,6 +50,16 @@ type recrawlTimers struct {
 	// rows is how many items the feeder handed out, which is the same as items
 	// once the pool has drained and ahead of it while a run is going.
 	rows atomic.Int64
+	// feed is how long the feeder itself was alive, which is not the run.
+	//
+	// The feeder stops as soon as the work list is walked out or the page limit
+	// fires, and the run goes on until the pool has drained. On a probe run those
+	// are very different numbers: measured on server2 with a 400 page limit, the
+	// feeder was done in 22 seconds and the run took 62, because a straggler sat
+	// out the whole 30 second timeout at the end. Taking the feeder's shares
+	// against the run's wall clock there reported a feeder that was doing nothing
+	// for two thirds of its own life, which it was not.
+	feed atomic.Int64
 }
 
 // add records one phase's duration. It is called once per phase per item, so it
@@ -94,12 +104,17 @@ type RecrawlTiming struct {
 
 	// Read is time the feeder spent getting rows out of the work list and Hand is
 	// time it spent waiting for a worker to take one. There is one feeder, so
-	// these are shares of the run's wall clock rather than of the pool, and they
-	// add up to the whole run bar the bookkeeping between them. Read large is a
-	// work list that cannot be read fast enough to fill the pool. Hand large is a
-	// pool that cannot keep up with the work list, which is the healthy case and
-	// the one where the phase shares above are worth reading.
+	// these are shares of a single goroutine's clock rather than of the pool, and
+	// they add up to its whole life bar the bookkeeping between them. Read large
+	// is a work list that cannot be read fast enough to fill the pool. Hand large
+	// is a pool that cannot keep up with the work list, which is the healthy case
+	// and the one where the phase shares above are worth reading.
 	Read, Hand time.Duration
+	// Feed is how long the feeder was alive. It is not Wall: the feeder stops
+	// when the work list ends or the page limit fires and the run carries on
+	// until the pool drains, and on a bounded probe the drain can be most of the
+	// run. Read and Hand are shares of this and the row rate is against it.
+	Feed time.Duration
 	// Rows is how many items the feeder handed out.
 	Rows int64
 	// Wall is how long the run took and Workers is how wide the pool was. The
@@ -175,13 +190,19 @@ func (t RecrawlTiming) writerLine() string {
 // feeder that hands out forty rows a second cannot produce a hundred pages a
 // second however wide the pool is, and when it sits close to the page rate with
 // reading large, the work list is the thing to fix.
+//
+// The line leads with how much of the run the feeder was alive for, because
+// every other number in it is a share of that and not of the run. A feeder that
+// finished early is a run whose tail is the pool draining, and reading the rest
+// of the line as though it covered the whole run reports a feeder asleep at work
+// it had already finished.
 func (t RecrawlTiming) FeedLine() string {
-	if t.Wall <= 0 {
+	if t.Feed <= 0 {
 		return "feeder: nothing measured"
 	}
 	return fmt.Sprintf(
-		"feeder: reading the work list %.0f%% of the run, waiting for a free worker %.0f%%, %.1f rows a second",
-		share(t.Read, t.Wall), share(t.Hand, t.Wall), float64(t.Rows)/t.Wall.Seconds())
+		"feeder: alive for %.0f%% of the run, and in that time reading the work list %.0f%%, waiting for a free worker %.0f%%, %.1f rows a second",
+		share(t.Feed, t.Wall), share(t.Read, t.Feed), share(t.Hand, t.Feed), float64(t.Rows)/t.Feed.Seconds())
 }
 
 // share is one duration as a percentage of another, and zero when there is
@@ -215,6 +236,7 @@ func (r *Recrawler) Timing() RecrawlTiming {
 		Items:   r.timers.items.Load(),
 		Read:    time.Duration(r.timers.read.Load()),
 		Hand:    time.Duration(r.timers.hand.Load()),
+		Feed:    time.Duration(r.timers.feed.Load()),
 		Rows:    r.timers.rows.Load(),
 		Workers: r.cfg.Workers,
 		Writers: r.writers(),

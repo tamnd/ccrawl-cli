@@ -47,8 +47,31 @@ func TestRecrawlFeederSaysWhereItsOwnTimeWent(t *testing.T) {
 	if tm.Hand <= tm.Read {
 		t.Fatalf("one worker against a site that takes 20ms a page spent %s reading and %s waiting to hand out, so the feeder is not attributing the wait to the pool", tm.Read, tm.Hand)
 	}
+	if tm.Feed <= 0 || tm.Feed > tm.Wall {
+		t.Fatalf("the feeder was alive for %s of a %s run, which is not a life it could have had", tm.Feed, tm.Wall)
+	}
 	if line := tm.FeedLine(); !strings.Contains(line, "rows a second") {
 		t.Fatalf("the feeder line reads %q", line)
+	}
+}
+
+// TestFeedLineIsAgainstTheFeedersOwnClock is the trap the first cut of this fell
+// into. A bounded run stops feeding at the page limit and then waits for the
+// pool to drain, and on the probe that found this the drain was 40 seconds of a
+// 62 second run. Sharing the feeder's time against the run's wall clock there
+// reported a feeder idle for two thirds of a life it had already finished.
+func TestFeedLineIsAgainstTheFeedersOwnClock(t *testing.T) {
+	tm := RecrawlTiming{
+		Wall: 100 * time.Second,
+		Feed: 20 * time.Second,
+		Read: 5 * time.Second,
+		Hand: 15 * time.Second,
+		Rows: 400,
+	}
+	got := tm.FeedLine()
+	want := "feeder: alive for 20% of the run, and in that time reading the work list 25%, waiting for a free worker 75%, 20.0 rows a second"
+	if got != want {
+		t.Fatalf("the feeder line reads\n%s\nand should read\n%s", got, want)
 	}
 }
 

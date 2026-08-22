@@ -149,7 +149,9 @@ The summary at the end of a run is written to be read in this order.
 The failure breakdown says what the corpus is costing: on the domain list about 5500 rows in 20000 are names that do not resolve, 1400 are broken TLS handshakes and 1200 time out, and none of that is the machine's fault or something a wider pool fixes.
 The timing line says what the machine is costing: how much of the run the pool spent idle, and how much of it each writer was busy.
 The feeder line under it says what the work list is costing, and it is there because the timing line can say the pool was idle and cannot say why.
-There is one feeder and it has two states, reading the next row off the work list or waiting for a worker to take the row it is holding, so those are shares of the run's wall clock rather than of the pool and they should not be added to the percentages above them.
+There is one feeder and it has two states, reading the next row off the work list or waiting for a worker to take the row it is holding, so those are shares of a single goroutine's clock rather than of the pool and they should not be added to the percentages above them.
+The line leads with how long the feeder was alive because the rest of it is a share of that and not of the run.
+A feeder stops as soon as the work list ends or `--max-pages` fires, and the run carries on until the pool drains, and on a bounded probe that tail can be most of the run: measured on server2 with a 400 page limit, the feeder finished in 22 seconds of a 62 second run because one straggler sat out the whole 30 second timeout at the end.
 Reading large is a work list the run cannot get through fast enough to fill the pool, which is a Parquet and bandwidth problem.
 Waiting for a free worker large is the pool being the constraint, which is the healthy reading and the one where the phase shares are worth acting on.
 The rows a second at the end is the ceiling on the whole run, because no run fetches more pages a second than its feeder hands out rows.
