@@ -76,19 +76,74 @@ This is worth testing once per machine rather than finding out during one.
 
 ## What the numbers in the env file mean
 
-Only three of them are dials, and the run tells you which one is in the way.
+`CCRAWL_WORKERS` is the width of the pool, and it is the only one of these that moves the rate.
 
-`CCRAWL_WORKERS` is the width of the pool.
-The rate is workers times yield over time per page, and on the domain corpus the yield is about 55 percent, so this is the number that moves the rate.
-It is also the number that decides the memory, see below.
+The rate is workers times yield over time per page, and on the domain corpus the yield is about 55 percent.
+Everything else in this file has been measured against the live list and none of it changed the rate, which is the section below.
+Workers is also what decides the memory, so read the memory section before raising it.
 
 `CCRAWL_WRITERS` is how many output files are open at once, each with its own encoder.
 Raise it only when a run reports the writer busy in the high eighties.
-At four writers the share drops to about a quarter each, and the page rate moves by a few percent, so it is headroom rather than speed.
+At four writers the share drops to about a third each, and the page rate moves by a few percent, so it is headroom rather than speed.
 
 `CCRAWL_DNS_LOOKUPS` bounds the lookups in flight.
 Every row of a domain corpus is a name nobody has looked up yet, so DNS is a per page cost there rather than a detail of the fetch.
-The end of a run prints the peak against the bound, and a peak sitting exactly on the bound for a whole run means workers are queueing for a lookup slot and this is the thing to raise.
+The end of a run prints the peak against the bound.
+A peak well under the bound means DNS is not the constraint and raising it will do nothing.
+A peak sitting on the bound does not mean the opposite, which is the trap and is measured below.
+
+`CCRAWL_SHARD_SIZE` is how much payload goes into a shard before it is sealed, counted uncompressed.
+It decides how many files land on the hub and how much work a crash replays, and it does not decide the memory even though a shard buffers in memory until it is sealed.
+
+`CCRAWL_TIMEOUT` is the budget for one fetch and its retries together.
+Leave it at 30 seconds, for the reason below.
+
+## Three dials that look like the ceiling and are not
+
+Each of these was measured on server3 against the live domain list, 20000 rows a run from a fresh row offset, runs alternated so a drift in the box load falls on both settings rather than on one.
+They are written down because all three are things the summary line invites you to turn, and turning any of them wastes a day.
+
+**The DNS bound.** The peak pegs at whatever the bound is set to, so pegging proves there is demand and not that the queue costs anything.
+
+| dns-lookups | pages a second | seconds an item | peak | idle |
+|---|---|---|---|---|
+| 32 | 19.2 | 5.498 | 32 | 27% |
+| 128 | 19.3 | 5.289 | 128 | 29% |
+| 512 | 20.7 | 4.986 | 216 | 28% |
+| 512 | 23.9 | 4.144 | 200 | 31% |
+
+Four times the bound moved the rate by half a percent.
+The two runs at 512 differ from each other by 15 percent, which is the box, so even the gain at 512 is inside the noise.
+
+**The fetch timeout.** Roughly 1250 rows in every 20000 time out at 30 seconds, which looks like a quarter of the pool held for the whole run and returning nothing.
+Cutting it does make each item faster and it does not make the run faster.
+
+| timeout | pages a second | seconds an item | timeouts per 20000 |
+|---|---|---|---|
+| 30s | 29.8 | 4.069 | 1246 |
+| 10s | 28.1 | 4.418 | 1438 |
+| 5s | 25.9 | 3.828 | 3779 |
+| 5s | 28.8 | 3.673 | 3170 |
+| 10s | 27.1 | 4.529 | 1573 |
+| 30s | 25.6 | 4.759 | 1246 |
+
+At five seconds the time per item drops about 15 percent and the timeouts nearly triple, so the yield drops about as much as the item got faster and the two cancel.
+The averages are 27.7, 27.6 and 27.4 pages a second, and the spread inside the 30 second setting alone is 25.6 to 29.8.
+A short timeout does not skip slow pages, it converts them into failures.
+
+**The shard size.** A shard buffers in memory until it is sealed, so a 512 MB target across four writers looks like 2 GB of buffer before a worker holds anything.
+Measured on server2 at 48 workers and 2 writers, alternated:
+
+| shard size | peak resident |
+|---|---|
+| 20 MB | 1.042 GB |
+| 512 MB | 1.177 GB |
+| 512 MB | 1.190 GB |
+| 20 MB | 1.299 GB |
+
+The smallest setting produced the highest peak of the four.
+The spread inside a setting is 25 percent and the difference between settings is 1 percent, so the rows are compressed as they are buffered and the buffer is not where the memory goes.
+The memory is on the worker side, which is the next section.
 
 The summary at the end of a run is written to be read in this order.
 The failure breakdown says what the corpus is costing: on the domain list about 5500 rows in 20000 are names that do not resolve, 1400 are broken TLS handshakes and 1200 time out, and none of that is the machine's fault or something a wider pool fixes.
@@ -106,8 +161,21 @@ This is the thing to know before tuning anything.
 | Free disk | 156 GB | 20 GB | 27 GB |
 
 These are shared machines with other work on them, and the available column is what is actually free rather than what is installed.
-A recrawl at 256 workers and 4 writers peaked at 4.5 GB resident, and at 256 workers and 1 writer at 2.7 GB.
-Neither of those fits in what server1 has free today.
+
+Measured peaks, all on the live domain list:
+
+| workers | writers | shard size | peak resident |
+|---|---|---|---|
+| 48 | 2 | 20 MB to 512 MB | 1.0 to 1.3 GB |
+| 64 | 2 | 20 MB | 1.1 GB |
+| 256 | 1 | 512 MB | 2.7 GB |
+| 256 | 4 | 512 MB | 4.5 GB |
+
+Neither of the 256 worker numbers fits in what server1 has free today.
+
+The rule of thumb between the two ends is roughly 15 to 20 MB of resident memory per worker, over a floor of about a gigabyte that does not move much below 64 workers.
+It is a rule of thumb and not a formula: it is fitted to a handful of points on one corpus, and the page sizes on a different slice of the work list would move it.
+Use it to pick a starting width and then watch the run rather than trusting the arithmetic.
 
 So the width has to be set against the memory the box actually has at the moment, and that means checking `free -g` before raising `CCRAWL_WORKERS` rather than copying a number from another machine.
 `install.sh` writes a `MemoryHigh` of 70 percent of installed RAM into a drop-in per machine.
@@ -134,10 +202,10 @@ The unit gives up after ten starts in ten minutes and stays down, which is delib
 
 **The crawl is running and the rate is much lower than the other two.**
 Read the summary lines rather than the rate.
-A high idle share with a low writer share is the pool waiting on something outside the machine, usually DNS or the network.
 A writer share in the high eighties is the sink, and `CCRAWL_WRITERS` is the answer.
-A DNS peak sitting on the bound is the resolver, and `CCRAWL_DNS_LOOKUPS` is the answer.
-If none of those is it, the box has neighbours and the load average will say so.
+A DNS peak well under the bound rules the resolver out.
+A high idle share with a low writer share is the pool waiting on something outside the machine, and on these machines that is usually the network or the neighbours rather than a setting, so read the load average before changing anything.
+Do not reach for `CCRAWL_DNS_LOOKUPS` or `CCRAWL_TIMEOUT`, which were both measured and neither moved the rate.
 
 **A machine has to be taken out of the fleet.**
 Stop its target, then leave it.
