@@ -1,0 +1,14 @@
+# One handle for the whole machine, so starting and stopping a server is one
+# command in the runbook rather than four that have to be typed in the right
+# order.
+#
+# Which instances it pulls in is decided per machine, by enabling them: an
+# instance unit is WantedBy this target rather than by multi-user, so
+# systemctl enable ccrawl-recrawl@domains puts it here. A box crawling only the
+# domain list and a box crawling both then use the same target.
+
+[Unit]
+Description=every ccrawl recrawl and publisher on this machine
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,74 @@
+# One recrawl on one machine, fetching one shard of one work list.
+#
+# The instance name is the work list: ccrawl-recrawl@domains or
+# ccrawl-recrawl@urls. Everything that differs between the two, and everything
+# that differs between the three machines, lives in the environment file rather
+# than in here, so all three servers run a unit file that is byte for byte the
+# same and a diff between them is always a real difference.
+
+[Unit]
+Description=ccrawl recrawl, %i work list
+Documentation=https://ccrawl.tamnd.dev/guides/recrawl-fleet/
+After=network-online.target
+Wants=network-online.target
+# PartOf, so stopping the machine's target stops this too. Enabling the unit
+# puts it under the target rather than under multi-user, which is what makes
+# ccrawl-recrawl.target mean everything this machine crawls.
+PartOf=ccrawl-recrawl.target
+# A crawl that cannot start is worth retrying for a while and not forever. Ten
+# starts in ten minutes is a binary that is broken rather than a network that is
+# down, and at that point the unit should sit still and be noticed.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ccrawl/recrawl-%i.env
+WorkingDirectory=/var/lib/ccrawl
+ExecStart=/usr/local/bin/ccrawl recrawl run \
+  --from ${CCRAWL_FROM} \
+  --out /var/lib/ccrawl/%i/captures \
+  --state /var/lib/ccrawl/%i/state.json \
+  --shard ${CCRAWL_SHARD} --shards ${CCRAWL_SHARDS} \
+  --workers ${CCRAWL_WORKERS} --writers ${CCRAWL_WRITERS} \
+  --dns-lookups ${CCRAWL_DNS_LOOKUPS} \
+  --delay ${CCRAWL_DELAY} --timeout ${CCRAWL_TIMEOUT} \
+  --shard-size ${CCRAWL_SHARD_SIZE} \
+  ${CCRAWL_EXTRA}
+
+# A finished work list exits 0 and the unit stops, which is the right end for a
+# run that has crawled everything it was given. Anything else is worth another
+# go: a resume costs the batch in flight and nothing more, so restarting is
+# always cheaper than leaving a machine idle until somebody looks at it.
+Restart=on-failure
+RestartSec=15
+# 75 is EX_TEMPFAIL, which the binary uses to ask for a restart it does not
+# consider a failure. Naming it here means an operator reading systemctl status
+# sees a unit that asked to be recycled rather than one that crashed.
+RestartForceExitStatus=75
+SuccessExitStatus=75
+
+# The checkpoint is only written at a batch boundary, so a run given SIGKILL
+# repeats the batch it was in. Ninety seconds is far more than a batch takes to
+# drain and costs nothing on a healthy stop.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# A crawler at this width holds a socket per worker plus the resolver's, and the
+# default of 1024 is reached at about 900 workers.
+LimitNOFILE=1048576
+
+# Memory is the one limit worth setting per machine, because the resident set
+# scales with workers times writers and the three boxes have 5, 11 and 23 GB.
+# install.sh writes the number into a drop-in rather than putting it here, since
+# a unit file that is the same everywhere is the point.
+OOMPolicy=continue
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/ccrawl
+
+[Install]
+WantedBy=ccrawl-recrawl.target
