@@ -292,6 +292,86 @@ func TestWorkListResumesWithoutSkippingOrRepeating(t *testing.T) {
 	}
 }
 
+// countingReaderAt records how many bytes a work list actually pulls out of a
+// part, which over a published dataset is bytes off the network.
+type countingReaderAt struct {
+	ra    io.ReaderAt
+	bytes atomic.Int64
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.ra.ReadAt(p, off)
+	c.bytes.Add(int64(n))
+	return n, err
+}
+
+// countedParts is localParts with a byte counter around the file.
+func countedParts(w *WorkList, dir string, c *countingReaderAt) {
+	localParts(w, dir)
+	inner := w.open
+	w.open = func(ctx context.Context, p int) (io.ReaderAt, int64, error) {
+		ra, size, err := inner(ctx, p)
+		if err != nil {
+			return nil, 0, err
+		}
+		c.ra = ra
+		return c, size, nil
+	}
+}
+
+// TestWorkListResumeDoesNotReadThePartItSkips is the cost of a restart.
+//
+// Resuming used to mean reading every row before the checkpoint and throwing it
+// away, which over ranged HTTP means pulling every byte before it across the
+// network to fetch nothing. A parquet file records the row count of each row
+// group, so a seek can step over whole groups on metadata alone, and the only
+// group that has to be decoded is the one the row lands in.
+//
+// This is measured in bytes off the part rather than in wall clock, because wall
+// clock here is a local file read and the thing being bought is network.
+func TestWorkListResumeDoesNotReadThePartItSkips(t *testing.T) {
+	dir := t.TempDir()
+	const rows = 4000
+	urls := make([]string, rows)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("https://site%04d.example/page", i)
+	}
+	writeURLPart(t, filepath.Join(dir, "part-000.parquet"), urls)
+
+	read := func(at Checkpoint) int64 {
+		t.Helper()
+		var c countingReaderAt
+		w, err := NewWorkList(urlSource(), Shard{Count: 1}, nil, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		countedParts(w, dir, &c)
+		defer w.Close()
+		buf := make([]WorkItem, 1)
+		if n, err := w.Next(context.Background(), buf); err != nil || n != 1 {
+			t.Fatalf("next: %v, n %d", err, n)
+		}
+		return c.bytes.Load()
+	}
+
+	fromStart := read(Checkpoint{})
+	late := Checkpoint{Source: urlSource().Key(), Shards: 1, Row: rows - 20}
+	fromLate := read(late)
+
+	// Reading through the part costs the same bytes wherever the checkpoint
+	// points, because every row before it goes across the wire either way, and
+	// that is what this used to measure: 142069 bytes to resume near the end of
+	// this part and 142069 to read its first row. Seeking pulls the row group
+	// the offset lands in and the footer, which on the same part is 13980.
+	//
+	// Half is the assertion rather than a tenth, because the ratio is really
+	// the row group size over the part size and this test should not break when
+	// somebody picks a different one.
+	if fromLate >= fromStart/2 {
+		t.Errorf("resuming at row %d read %d bytes against %d bytes to read the first row, so the resume is reading its way through the part rather than seeking over it", rows-20, fromLate, fromStart)
+	}
+}
+
 func TestWorkListResumeCountsRowsBeforeTheShardFilter(t *testing.T) {
 	dir := t.TempDir()
 	// Enough domains that every shard of 3 gets some, so the row offset and the
