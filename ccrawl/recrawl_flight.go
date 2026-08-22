@@ -102,22 +102,6 @@ func (f *flight) stalled() bool {
 	return len(f.live) > 0
 }
 
-// spreadItems reorders work items so consecutive ones belong to different hosts,
-// keeping each host's own items in work list order.
-//
-// The domain work list is one row per host and needs none of this. The URL work
-// list is the opposite: it is sorted, so a run of rows shares a host, and the
-// live measurement is stark, 120 consecutive URLs from the published index
-// covered 7 hosts. Handed to the pool in that order, every worker but a handful
-// parks on the politeness clock waiting for the same few sites, and the rate
-// collapses to the number of distinct hosts divided by the delay however many
-// workers there are. Rotating hosts costs one pass over a slice already in
-// memory and is the difference between a wide pool being useful and being
-// decoration.
-func spreadItems(items []WorkItem) []WorkItem {
-	return spreadHosts(items, itemHost)
-}
-
 // itemHost is the host a work item will be fetched from, or the raw URL when it
 // will not parse, so an unparseable item still lands in one group rather than
 // splitting the rotation.

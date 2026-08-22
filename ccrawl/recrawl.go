@@ -150,6 +150,26 @@ type Recrawler struct {
 	clock *hostClock
 	// pool is the connection layer robots.txt and the pages both go through.
 	pool *webPool
+
+	// sp is the reorder buffer the feeder reads through, kept here because the
+	// checkpoint has to ask it where the run really is. See position.
+	spmu sync.Mutex
+	sp   *hostSpread
+}
+
+// position is where a resume would have to start from.
+//
+// It is the buffer's position rather than the work list's whenever there is a
+// buffer, because rows held in it have been read and not handed out, and a
+// checkpoint written past them would lose them for good. See hostSpread.position.
+func (r *Recrawler) position() (part int, row int64, done bool) {
+	r.spmu.Lock()
+	sp := r.sp
+	r.spmu.Unlock()
+	if sp == nil {
+		return r.wl.Position()
+	}
+	return sp.position()
 }
 
 // DNS reports what the run's resolver did. A crawl that cannot resolve a host
@@ -390,8 +410,14 @@ type flightItem struct {
 // when the run is cancelled. It does not wait for the pool, because the pool is
 // what the caller waits for.
 func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem, full <-chan struct{}) error {
-	buf := make([]WorkItem, r.cfg.Batch)
-	for {
+	// The reorder buffer sits between the work list and the pool rather than
+	// inside this loop, because the reordering the URL list needs cannot be done
+	// a batch at a time: a batch of that list is one host. See recrawl_spread.go.
+	sp := newHostSpread(r.wl, r.cfg.Workers, r.cfg.Batch)
+	r.spmu.Lock()
+	r.sp = sp
+	r.spmu.Unlock()
+	for n := 0; ; n++ {
 		select {
 		case <-ctx.Done():
 			return nil
@@ -399,28 +425,31 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 			return nil
 		default:
 		}
-		n, err := r.wl.Next(ctx, buf)
+		it, ok, err := sp.next(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		if n == 0 {
+		if !ok {
 			return nil // walked out
 		}
-		for _, it := range spreadItems(buf[:n]) {
-			fi := flightItem{item: it, seq: fl.add(it)}
-			select {
-			case work <- fi:
-			case <-full:
-				return nil
-			case <-ctx.Done():
-				return nil
-			}
+		fi := flightItem{item: it, seq: fl.add(it)}
+		select {
+		case work <- fi:
+		case <-full:
+			return nil
+		case <-ctx.Done():
+			return nil
 		}
-		if err := r.checkpoint(fl); err != nil {
-			return err
+		// Checkpointing is counted in items handed out rather than in reads,
+		// because a read no longer lines up with a batch: the buffer may swallow
+		// sixteen of them before it is willing to hand anything out.
+		if (n+1)%r.cfg.Batch == 0 {
+			if err := r.checkpoint(fl); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -435,7 +464,7 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 func (r *Recrawler) checkpoint(fl *flight) error {
 	part, row, ok := fl.safe()
 	if !ok {
-		part, row, _ = r.wl.Position()
+		part, row, _ = r.position()
 	}
 	if r.w != nil {
 		r.wmu.Lock()
@@ -479,7 +508,7 @@ func (r *Recrawler) checkpoint(fl *flight) error {
 // the open shard readable. Holding it back for a fuller shard means holding it
 // back forever.
 func (r *Recrawler) finishFlight(fl *flight) error {
-	part, row, done := r.wl.Position()
+	part, row, done := r.position()
 	if p, rw, ok := fl.safe(); ok && fl.stalled() {
 		part, row, done = p, rw, false
 	}
