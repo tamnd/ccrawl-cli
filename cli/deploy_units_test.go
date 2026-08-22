@@ -186,3 +186,30 @@ func TestOptionalUnitVarsAreUnbraced(t *testing.T) {
 		}
 	}
 }
+
+// TestServerNameComesFromTheFleetAndNotTheHostname pins where CCRAWL_SERVER gets
+// its value, because the two candidates look interchangeable and are not.
+//
+// The name goes into every shard file name and into the ledger path, so it is
+// how anybody reading the hub tells which machine produced a file and how the
+// card attributes rows. These boxes call themselves vmi3112167 and vmi3391933,
+// and the fleet calls them server1 and server3, so taking the hostname publishes
+// a number that appears nowhere else and cannot be looked up.
+//
+// It went out that way twice. The check is for the substitution reading a name
+// the script already has rather than asking the far side what it is called.
+func TestServerNameComesFromTheFleetAndNotTheHostname(t *testing.T) {
+	install := readDeploy(t, "install.sh")
+	line := ""
+	for _, l := range strings.Split(install, "\n") {
+		if strings.Contains(l, "s/^CCRAWL_SERVER=") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatal("install.sh no longer rewrites CCRAWL_SERVER, so this test is out of date")
+	}
+	if strings.Contains(line, "hostname") {
+		t.Errorf("install.sh takes CCRAWL_SERVER from hostname: %s", strings.TrimSpace(line))
+	}
+}

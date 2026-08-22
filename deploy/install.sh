@@ -122,10 +122,16 @@ for s in "${SERVERS[@]}"; do
 		# The env file holds this machine's shard number and its tuning, so it
 		# is written once and left alone. A deploy that reset it would silently
 		# undo whatever the last person measured.
+		#
+		# CCRAWL_SERVER is the name this script was given and not the machine's
+		# own hostname. It ends up in every shard file name and in the ledger
+		# path, and these boxes call themselves things like vmi3391933, so
+		# taking the hostname puts a number nobody recognises on the hub and
+		# leaves the fleet with no way to say which file came from where.
 		if [ ! -f /etc/ccrawl/recrawl-$KIND.env ]; then
 			sed -e 's/^CCRAWL_SHARD=.*/CCRAWL_SHARD=$shard/' \
 			    -e 's/^CCRAWL_SHARDS=.*/CCRAWL_SHARDS=${#SERVERS[@]}/' \
-			    -e \"s/^CCRAWL_SERVER=.*/CCRAWL_SERVER=\$(hostname -s)/\" \
+			    -e 's/^CCRAWL_SERVER=.*/CCRAWL_SERVER=$s/' \
 			    /tmp/recrawl-$KIND.env.example > /etc/ccrawl/recrawl-$KIND.env
 			echo 'wrote /etc/ccrawl/recrawl-$KIND.env'
 		else
