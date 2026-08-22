@@ -167,6 +167,19 @@ The cost is replay after a crash.
 The checkpoint can only name the oldest row that has not finished, so rows held back in the buffer hold the checkpoint back with them, bounded by the buffer at sixteen batches.
 That is a few minutes of refetching on a run measured in months.
 
+Measured on server3 against the live URL list, with the domain run going on the same box:
+
+| workers | distinct hosts in a two minute window | fetched pages a second |
+|---|---|---|
+| 32, before the buffer | 1 | 1.0 |
+| 32 | 80 | 6.3 |
+| 96 | | 17.6 |
+| 256 | | 23.3 |
+
+The rate follows the worker count because the worker count is what the buffer reads ahead for, and each worker holding its own host is what turns the one request per second per host into one request per second per worker.
+It stops following it somewhere before 256, where the box runs out of whatever it runs out of first, and 256 workers on the URL list also halved the domain run beside it.
+96 is where server3 is left, as the most rate per unit of memory rather than the most rate.
+
 ## Memory is the binding constraint, not CPU
 
 This is the thing to know before tuning anything.
