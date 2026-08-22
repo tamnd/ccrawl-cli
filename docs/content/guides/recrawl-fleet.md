@@ -212,6 +212,12 @@ So the width has to be set against the memory the box actually has at the moment
 `install.sh` writes a `MemoryHigh` of 70 percent of installed RAM into a drop-in per machine.
 `MemoryHigh` throttles rather than kills, which is the right end for a crawler: a run that slows down is one that carries on, and a run that is OOM killed repeats its batch and may do it again.
 
+The logs are the other thing on the disk, and they were the surprise.
+The run writes a JSON line per page to stdout, which is right for somebody watching a crawl and wrong for a unit that is up for months: an hour of it on server3 is about 390 MB of journal, so a machine would spend half a gigabyte a day recording lines nobody reads.
+The crawl unit sends stdout to `/dev/null` for that reason.
+Nothing an operator uses is lost, because the release the run picked, the failure breakdown, the timing line and every error are on stderr, and `journalctl -u ccrawl-recrawl@domains` still answers the questions it is asked.
+Run the binary by hand when a per page trace is what you want.
+
 Disk is the constraint people expect and it is currently the one that is fine, because the publisher deletes each shard after committing it.
 The number to watch is not the free space, it is whether the free space is flat.
 A capture directory that grows is a publisher that has stopped, and that is the failure below.

@@ -36,6 +36,19 @@ ExecStart=/usr/local/bin/ccrawl recrawl run \
   --shard-size ${CCRAWL_SHARD_SIZE} \
   $CCRAWL_EXTRA
 
+# The run writes one JSON line per page to stdout, which is the right default
+# for somebody watching a crawl and the wrong one for a unit that will be up for
+# months. Measured on server3, an hour of it is about 390 MB of journal, so a
+# fleet machine spends half a gigabyte of disk a day recording lines nobody
+# reads, on boxes that are already at 90 percent.
+#
+# Only stdout is dropped. Everything an operator needs is on stderr already: the
+# release the run picked, the failure breakdown by class, the timing line and
+# every error, so systemctl status and journalctl still answer the questions
+# they are asked. A per page trace is still there for anybody who wants one, by
+# running the binary by hand.
+StandardOutput=null
+
 # A finished work list exits 0 and the unit stops, which is the right end for a
 # run that has crawled everything it was given. Anything else is worth another
 # go: a resume costs the batch in flight and nothing more, so restarting is
