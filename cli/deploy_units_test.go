@@ -14,7 +14,16 @@ import (
 // the three ways it can be wrong that nothing else would catch.
 
 // unitVar matches ${CCRAWL_...} as it appears in an ExecStart line.
-var unitVar = regexp.MustCompile(`\$\{(CCRAWL_[A-Z_]+)\}`)
+// unitVar matches both spellings of a variable in a unit file, because the
+// difference between them is load bearing and both are in use.
+//
+// ${NAME} is substituted as one word, empty value included, so an empty
+// ${CCRAWL_EXTRA} at the end of an ExecStart hands the binary one empty
+// argument and it exits 2 before it does anything. $NAME splits on whitespace
+// and an empty value contributes no words at all, which is what an optional
+// list of extra flags needs. Every required variable uses the braced form so a
+// value with a space in it stays one argument.
+var unitVar = regexp.MustCompile(`\$\{?(CCRAWL_[A-Z_]+)\}?`)
 
 // envAssign matches a NAME=value line in an environment file.
 var envAssign = regexp.MustCompile(`(?m)^(CCRAWL_[A-Z_]+)=`)
@@ -138,5 +147,42 @@ func TestUnitsRestartOnTheRightThings(t *testing.T) {
 	}
 	if strings.Contains(crawl, "hf.env") {
 		t.Error("the crawl unit reads the token file and has no use for a credential")
+	}
+}
+
+// TestOptionalUnitVarsAreUnbraced is the one systemd rule in here that cost a
+// fleet start to learn.
+//
+// ${NAME} is substituted as a single word whether or not it has a value, so an
+// empty ${CCRAWL_EXTRA} on the end of an ExecStart hands the binary one empty
+// argument. Every unit started, every unit exited 2 with "Expected at most 0
+// argument(s), got 1", and the restart limit put both machines down inside a
+// minute. $NAME splits on whitespace instead, and an empty value contributes no
+// words at all, which is what an optional list of flags needs.
+//
+// The rule is checked against the env examples rather than against a list of
+// names, so a variable added later with an empty default is covered without
+// anybody having to remember this.
+func TestOptionalUnitVarsAreUnbraced(t *testing.T) {
+	empty := map[string]bool{}
+	for _, kind := range []string{"domains", "urls"} {
+		for _, line := range strings.Split(readDeploy(t, "env/recrawl-"+kind+".env.example"), "\n") {
+			name, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && strings.HasPrefix(name, "CCRAWL_") && value == "" {
+				empty[name] = true
+			}
+		}
+	}
+	if len(empty) == 0 {
+		t.Fatal("no variable ships with an empty default, so this test is checking nothing")
+	}
+
+	for _, unit := range []string{"systemd/ccrawl-recrawl@.service", "systemd/ccrawl-publish@.service"} {
+		body := readDeploy(t, unit)
+		for name := range empty {
+			if strings.Contains(body, "${"+name+"}") {
+				t.Errorf("%s spells the optional %s braced, which passes one empty argument when it is unset: use $%s", unit, name, name)
+			}
+		}
 	}
 }
