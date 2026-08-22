@@ -24,9 +24,21 @@ import "context"
 // The cost is replay. The checkpoint can only name the oldest item that has not
 // finished, and holding a site's rows back while the rotation works through
 // other sites holds that position back with them, so a kill replays further.
-// That is what the row cap bounds: the checkpoint can fall at most a bufferful
-// behind, and the default is a few minutes of refetching against a run measured
-// in months.
+//
+// The row cap bounds how many rows are held and it does not bound how far back
+// the checkpoint sits, which are different things and it is worth being clear
+// about which one is bought. A big site drains at the one page a second its
+// politeness clock allows however many of its rows are in hand, so its group
+// head barely moves while the reader runs on through everybody else. Measured on
+// the live URL run on server3, the head sat at row 126287 while the reader was
+// at row 489026, a gap of 362739 rows that grows for as long as that site has
+// rows left. The rows in between are fetched and written and committed, so
+// nothing is lost by it, but a kill refetches them.
+//
+// That is the trade the SURT ordering forces and there is no version of it where
+// the checkpoint keeps up. The way out is a work list that is not sorted by
+// host, which is a change to how the URL list is published rather than to how it
+// is read.
 
 // hostSpread is a reorder buffer between the work list and the pool.
 //

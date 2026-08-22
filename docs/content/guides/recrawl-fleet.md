@@ -164,8 +164,12 @@ Each site keeps its own pages in work list order, so this is a rotation and not 
 The domain list is unaffected, because a read of it already satisfies the buffer on the first batch.
 
 The cost is replay after a crash.
-The checkpoint can only name the oldest row that has not finished, so rows held back in the buffer hold the checkpoint back with them, bounded by the buffer at sixteen batches.
-That is a few minutes of refetching on a run measured in months.
+The checkpoint can only name the oldest row that has not finished, so rows held back in the buffer hold the checkpoint back with them.
+The buffer caps how many rows it holds at sixteen batches, and that is not the same as capping how far back the checkpoint sits, which is worth being plain about.
+A big site drains at one page a second whatever the pool is doing, so its rows stay in hand while the reader runs on through everybody else.
+Measured on the live URL run on server3, the oldest row in hand was 126287 while the reader was at 489026, and that gap grows for as long as that site has rows left.
+Nothing is lost by it, since the pages in between are fetched and written and committed as usual, but a kill refetches them.
+The way out is a work list that is not sorted by host, which is a change to how the URL list is published rather than to how it is read.
 
 Measured on server3 against the live URL list, with the domain run going on the same box:
 

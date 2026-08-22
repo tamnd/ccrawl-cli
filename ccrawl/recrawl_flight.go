@@ -70,23 +70,37 @@ func (f *flight) retire(seq int64) {
 
 // safe returns the position to resume from: the oldest item still in flight.
 //
+// Oldest means the lowest position, not the lowest sequence number. Those were
+// the same thing when this file was written, because items were handed out in
+// work list order and the comment at the top of the file says so. They stopped
+// being the same thing when the reorder buffer went in: it holds a site's rows
+// back while the rotation works through other sites, so an item handed out late
+// can carry an early row and the first sequence number in the set is not the
+// first row in it. Picking by sequence there names a position with unfinished
+// rows behind it, which is the one failure this whole file exists to prevent.
+//
+// This is a scan of the set rather than a lookup, and the set is bounded by the
+// pool width, so it is a few hundred comparisons once a checkpoint.
+//
 // The second return is false when nothing is in flight and nothing has been
 // retired either, which is a run that has not started, and the caller should use
 // the work list's own position instead. When the set is empty but items have
 // been retired, the position is one past the last of them, because that one is
-// done and repeating it would be a duplicate for no reason.
+// done and repeating it would be a duplicate for no reason. That last case is
+// only safe next to the reorder buffer's own position, because rows waiting in
+// the buffer have been read and not handed out and this set has never heard of
+// them. See Recrawler.checkpoint, which takes the earlier of the two.
 func (f *flight) safe() (part int, row int64, ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.live) > 0 {
-		var oldest int64 = -1
-		for seq := range f.live {
-			if oldest < 0 || seq < oldest {
-				oldest = seq
+		var oldest *WorkItem
+		for _, it := range f.live {
+			if oldest == nil || it.Part < oldest.Part || (it.Part == oldest.Part && it.Row < oldest.Row) {
+				oldest = it
 			}
 		}
-		it := f.live[oldest]
-		return it.Part, it.Row, true
+		return oldest.Part, oldest.Row, true
 	}
 	if f.pastSet {
 		return f.past.Part, f.past.Row + 1, true

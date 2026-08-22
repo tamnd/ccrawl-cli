@@ -185,6 +185,63 @@ func TestSpreadPositionDoesNotStepOverHeldRows(t *testing.T) {
 	}
 }
 
+// TestFlightSafeIsTheOldestRowAndNotTheFirstHandout pins the premise the reorder
+// buffer broke.
+//
+// The flight set was written when handouts were in work list order, so the first
+// sequence number in the set was also the lowest row in it and picking either
+// gave the same answer. The buffer holds a site's rows back and hands them out
+// later, so an item added second can carry a row that comes first, and picking
+// by sequence names a position with an unfinished row behind it.
+func TestFlightSafeIsTheOldestRowAndNotTheFirstHandout(t *testing.T) {
+	fl := newFlight()
+	fl.add(WorkItem{URL: "https://late.example/", Part: 0, Row: 900})
+	fl.add(WorkItem{URL: "https://early.example/", Part: 0, Row: 100})
+
+	part, row, ok := fl.safe()
+	if !ok {
+		t.Fatal("two items are in flight and the set says it has no position")
+	}
+	if part != 0 || row != 100 {
+		t.Errorf("safe is part %d row %d, want part 0 row 100: row 100 is still in flight and a resume past it never comes back for it", part, row)
+	}
+}
+
+// TestCheckpointStaysBehindRowsHeldInTheBuffer is the regression for the gap
+// this pair of positions can write between them.
+//
+// Rows in the reorder buffer have been read off the work list and never handed
+// to the pool, so the flight set has no idea they exist and reports the run as
+// having got as far as the last row it retired. On the live URL run the two
+// disagreed by 362739 rows and the checkpoint file alternated between them.
+// Whichever one a kill happened to leave behind is where the next run starts, so
+// half the time it started past rows that had been read and never fetched.
+func TestCheckpointStaysBehindRowsHeldInTheBuffer(t *testing.T) {
+	wl := surtOrderedList(t, 4, 40)
+	s := newHostSpread(wl, 4, 8)
+	r := &Recrawler{sp: s}
+
+	// Hand out a few items and finish them, which is what leaves the flight set
+	// empty and its position sitting at the last row it saw.
+	fl := newFlight()
+	for range 3 {
+		it, ok, err := s.next(context.Background())
+		if err != nil || !ok {
+			t.Fatalf("next: %v, ok %v", err, ok)
+		}
+		fl.retire(fl.add(it))
+	}
+	if s.rows == 0 {
+		t.Fatal("the buffer holds nothing, so this test is not checking what it says it checks")
+	}
+
+	_, wantRow, _ := s.position()
+	_, gotRow := r.safePosition(fl)
+	if gotRow > wantRow {
+		t.Errorf("the checkpoint is at row %d with row %d still sitting in the buffer, so those rows are read once and fetched never", gotRow, wantRow)
+	}
+}
+
 // TestSpreadPositionIsTheWorkListOnceItIsEmpty checks the other half, because a
 // position that never says done is a unit that restarts forever.
 func TestSpreadPositionIsTheWorkListOnceItIsEmpty(t *testing.T) {
