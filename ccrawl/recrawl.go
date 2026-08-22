@@ -462,10 +462,7 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 // sync did not cover, and a checkpoint past unwritten rows is the one failure
 // that is silent. Read first it can only be behind, which costs a refetch.
 func (r *Recrawler) checkpoint(fl *flight) error {
-	part, row, ok := fl.safe()
-	if !ok {
-		part, row, _ = r.position()
-	}
+	part, row := r.safePosition(fl)
 	if r.w != nil {
 		r.wmu.Lock()
 		durable, err := r.w.Sync(false)
@@ -508,11 +505,32 @@ func (r *Recrawler) checkpoint(fl *flight) error {
 // the open shard readable. Holding it back for a fuller shard means holding it
 // back forever.
 func (r *Recrawler) finishFlight(fl *flight) error {
-	part, row, done := r.position()
-	if p, rw, ok := fl.safe(); ok && fl.stalled() {
-		part, row, done = p, rw, false
+	_, _, done := r.position()
+	part, row := r.safePosition(fl)
+	return r.finishAt(part, row, done && !fl.stalled())
+}
+
+// safePosition is the earliest row the run cannot prove is finished.
+//
+// There are two places an unfinished row can be and the resume point has to be
+// behind both of them. One is the flight set, which holds rows handed to the
+// pool that have not come back. The other is the reorder buffer, which holds
+// rows read off the work list that have not been handed out at all, and the
+// flight set has never heard of those.
+//
+// Taking one and not the other is how a gap gets written. Measured on the live
+// URL run on server3, the two disagreed by 362739 rows: a site at row 126287 was
+// draining out of the buffer at the one page a second its politeness clock
+// allows while the reader raced on to row 489026, and the checkpoint file
+// alternated between the two depending on which source answered last. Resuming
+// from the high one would have skipped every row that site still had in hand and
+// nothing would ever have gone back for them.
+func (r *Recrawler) safePosition(fl *flight) (part int, row int64) {
+	part, row, _ = r.position()
+	if p, rw, ok := fl.safe(); ok && (p < part || (p == part && rw < row)) {
+		part, row = p, rw
 	}
-	return r.finishAt(part, row, done)
+	return part, row
 }
 
 // finishAt is finish with the position given rather than read off the work list,
