@@ -1,0 +1,56 @@
+# The publisher for one work list on one machine.
+#
+# It runs beside the crawl rather than after it. A hundred day run that
+# published at the end would need a hundred days of disk, and two of the three
+# machines have single digit gigabytes free, so the shards have to leave as they
+# close. It also means the dataset is readable from the first hour instead of
+# the last day.
+
+[Unit]
+Description=ccrawl recrawl publisher, %i work list
+Documentation=https://ccrawl.tamnd.dev/guides/recrawl-fleet/
+After=network-online.target
+Wants=network-online.target
+PartOf=ccrawl-recrawl.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ccrawl/recrawl-%i.env
+# The token is in its own file, owned by root and readable by nobody else, so
+# the crawl unit does not carry a credential it has no use for.
+EnvironmentFile=/etc/ccrawl/hf.env
+WorkingDirectory=/var/lib/ccrawl
+ExecStart=/usr/local/bin/ccrawl recrawl publish \
+  --dir /var/lib/ccrawl/%i/captures \
+  --state /var/lib/ccrawl/%i/state.json \
+  --kind %i \
+  --server ${CCRAWL_SERVER} \
+  --shard ${CCRAWL_SHARD} --shards ${CCRAWL_SHARDS} \
+  --commit-every ${CCRAWL_COMMIT_EVERY} \
+  --watch ${CCRAWL_WATCH}
+
+# Always, unlike the crawl. A publisher with --watch set has no finished state
+# to reach, so any exit at all is something going wrong, and the thing going
+# wrong is usually the hub being briefly unavailable.
+Restart=always
+RestartSec=30
+SuccessExitStatus=75
+
+# Long enough to finish the commit it is in the middle of. A commit killed
+# halfway is not a corrupt dataset, because shards are named by content hash and
+# republishing one is a no-op, but it does waste the upload.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+LimitNOFILE=65536
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/ccrawl
+
+[Install]
+WantedBy=ccrawl-recrawl.target
