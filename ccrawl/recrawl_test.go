@@ -2,6 +2,7 @@ package ccrawl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1085,5 +1086,108 @@ func TestRecrawlWithSeveralWritersLosesNothing(t *testing.T) {
 	// work list, or a fleet restart replays a run that finished.
 	if ck := r.Checkpoint(); !ck.Done {
 		t.Fatalf("the run finished the work list and the checkpoint says part %d row %d done %v", ck.Part, ck.Row, ck.Done)
+	}
+}
+
+// TestRecrawlKeepsFailuresAsRows is the gate on the promise the dataset card
+// makes about what a row is.
+//
+// A shard that holds only the fetches that answered describes a web in which
+// every URL on the work list is alive. On the domain corpus a little over half
+// of every batch fails, most of it names that lapsed since the web graph was
+// built, so a reader counting rows in a shard that dropped them would be wrong
+// about the corpus by a factor of two and have nothing in the file to warn them.
+//
+// The dead half of this work list points at a server that has been closed, which
+// is a refused connection on every platform this builds for and needs no
+// network to produce.
+func TestRecrawlKeepsFailuresAsRows(t *testing.T) {
+	site := newRecrawlSite()
+	srv := httptest.NewServer(site)
+	defer srv.Close()
+
+	dead := httptest.NewServer(site)
+	deadURL := dead.URL
+	dead.Close()
+
+	var urls []string
+	live, gone := map[string]bool{}, map[string]bool{}
+	for _, p := range paths(4) {
+		urls = append(urls, srv.URL+p, deadURL+p)
+		live[srv.URL+p] = true
+		gone[deadURL+p] = true
+	}
+	parts := t.TempDir()
+	writeURLPart(t, filepath.Join(parts, "part-000.parquet"), urls)
+
+	cfg := testRecrawlConfig(filepath.Join(t.TempDir(), "state.json"))
+	cfg.OutDir = t.TempDir()
+	cfg.Format = FormatParquet
+	cfg.Prefix = "recrawl"
+	r := newTestRecrawler(t, cfg, parts)
+	stats, err := r.Run(context.Background(), func(CrawlPage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetched counts pages and Failed counts attempts that never got one, so the
+	// two together are the work list and neither of them alone is the row count.
+	if stats.Fetched != 4 || stats.Failed != 4 {
+		t.Fatalf("the run reported %d fetched and %d failed, want 4 and 4", stats.Fetched, stats.Failed)
+	}
+
+	byURL := map[string]Capture{}
+	for _, f := range stats.OutFiles {
+		rows, err := ReadCaptures(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for _, c := range rows {
+			byURL[c.URL] = c
+		}
+	}
+	if len(byURL) != len(urls) {
+		t.Fatalf("the shards hold %d rows, want %d: a failure was dropped", len(byURL), len(urls))
+	}
+
+	for u := range live {
+		c := byURL[u]
+		if c.Status != 200 || c.Error != "" {
+			t.Fatalf("%s came back status %d error %q, want 200 and no error", u, c.Status, c.Error)
+		}
+	}
+	for u := range gone {
+		c := byURL[u]
+		if c.Status != 0 {
+			t.Fatalf("%s came back status %d, want 0: a row with no response must not claim one", u, c.Status)
+		}
+		if c.Error != "refused" {
+			t.Fatalf("%s came back error %q, want refused", u, c.Error)
+		}
+		if len(c.Body) != 0 || c.Digest != "" {
+			t.Fatalf("%s has %d body bytes and digest %q, and there was no response to take either from", u, len(c.Body), c.Digest)
+		}
+		if c.Host == "" || c.FetchedAt == 0 {
+			t.Fatalf("%s came back host %q fetched_at %d", u, c.Host, c.FetchedAt)
+		}
+		// The class is what groups, and the original text is what diagnoses. A
+		// row that kept only the class throws away the one thing that says which
+		// of the six kinds of refusal this was.
+		var meta map[string]string
+		if err := json.Unmarshal([]byte(c.MetaJSON), &meta); err != nil {
+			t.Fatalf("%s wrote meta_json %q, which does not parse: %v", u, c.MetaJSON, err)
+		}
+		if !strings.Contains(meta["error_detail"], "refused") {
+			t.Fatalf("%s kept error_detail %q, which does not say what happened", u, meta["error_detail"])
+		}
+	}
+
+	// A failure is retired the same as a page, or the resume comes back to a
+	// batch it already dealt with and the run never finishes.
+	if ck := r.Checkpoint(); !ck.Done {
+		t.Fatalf("the run walked the whole work list and the checkpoint says part %d row %d", ck.Part, ck.Row)
 	}
 }

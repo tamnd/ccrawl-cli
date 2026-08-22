@@ -21,7 +21,7 @@ type recrawlCard struct {
 	Progress                     string
 	Bars                         []string
 	Stats                        []recrawlTableRow
-	Columns                      [][3]string
+	Columns                      [][4]string
 }
 
 type recrawlTableRow struct {
@@ -75,7 +75,7 @@ func GenerateRecrawlREADME(repo, kind string, stats []RecrawlStat) string {
 		HasRows:  len(rows) > 0,
 		Servers:  plural(t.Servers, "server"),
 		Files:    plural(t.Files, "shard"),
-		Rows:     fmtInt(t.Rows) + " pages",
+		Rows:     fmtInt(t.Rows) + " rows",
 		Bytes:    humanBytes(t.Bytes),
 		FilesNum: fmtInt(int64(t.Files)),
 		RowsNum:  fmtInt(t.Rows),
@@ -121,44 +121,53 @@ func applyRecrawlKind(c *recrawlCard, kind string) {
 		c.Tagline = "Live fetches of the home page of every ranked domain in Common Crawl's web graph, rendered to Markdown as they are fetched"
 		c.What = "Common Crawl's web graph ranks domains by how central they are, but it does not tell you what those domains actually serve today. This dataset walks that ranking from the top and fetches each domain's home page now, storing the response as one Parquet row with the body, the headers, the timing and the outcome all in the same place, and the page rendered to Markdown and plain text beside them. Because the work list is in rank order, the early shards hold the most central domains on the web."
 		c.Source = "The work list is [open-index/ccrawl-domains](https://huggingface.co/datasets/open-index/ccrawl-domains), the domain-level ranks from Common Crawl's hyperlink web graph, read in rank order. Every row in this dataset came from fetching one of those domains."
-		c.Bias = "The ranking the work list comes from reflects the link structure Common Crawl observed, which favours well-linked, long-established, commercial and English-language domains. Fetching a home page also says nothing about the rest of the site. A domain that refuses robots or times out is absent rather than empty, so absence here means we did not fetch it, not that nothing is there."
+		c.Bias = "The ranking the work list comes from reflects the link structure Common Crawl observed, which favours well-linked, long-established, commercial and English-language domains. Fetching a home page also says nothing about the rest of the site. A large share of the work list no longer resolves at all, since a domain rank computed from a months-old web graph includes names that have since lapsed, and those are rows with an error rather than missing rows."
 		c.Tags = append(common, "domain-ranks")
 	}
 }
 
 // captureColumnDocs documents the capture schema, which is what a recrawl writes
 // and therefore what both recrawl repos publish.
-var captureColumnDocs = [][3]string{
-	{"url", "VARCHAR", "the URL that was requested"},
-	{"host", "VARCHAR", "host of the requested URL"},
-	{"status", "INTEGER", "HTTP status of the response, 0 if the fetch never got one"},
-	{"fetched_at", "BIGINT", "when the fetch happened, unix milliseconds"},
-	{"content_type", "VARCHAR", "Content-Type header as served"},
-	{"body_length", "BIGINT", "length of the body in bytes"},
-	{"digest", "VARCHAR", "SHA-1 of the body, for spotting a page that has not changed"},
-	{"unchanged", "BOOLEAN", "true when the server answered 304 Not Modified"},
-	{"etag", "VARCHAR", "ETag header, empty if the server sent none"},
-	{"last_modified", "VARCHAR", "Last-Modified header, empty if the server sent none"},
-	{"warc_file", "VARCHAR", "WARC file holding this response, empty for a Parquet-only run"},
-	{"warc_offset", "BIGINT", "byte offset of the record in that WARC file"},
-	{"warc_length", "BIGINT", "byte length of the record"},
-	{"error", "VARCHAR", "why the fetch failed, empty when it succeeded"},
-	{"meta_json", "VARCHAR", "extracted page metadata as JSON, empty when nothing was extracted"},
-	{"markdown", "VARCHAR", "the page rendered to Markdown, empty when it was not rendered"},
-	{"markdown_length", "BIGINT", "length of the Markdown in bytes"},
-	{"ttfb_ms", "BIGINT", "time to first byte in milliseconds"},
-	{"fetch_duration_ms", "BIGINT", "total fetch time in milliseconds"},
-	{"final_url", "VARCHAR", "URL after redirects, empty when the request did not move"},
-	{"ip_address", "VARCHAR", "IP the request went to"},
-	{"resp_headers", "VARCHAR", "response headers as JSON"},
-	{"req_headers", "VARCHAR", "request headers as JSON"},
-	{"body", "BLOB", "the response body exactly as served, before any decoding"},
-	{"title", "VARCHAR", "the document title, empty when the page has none"},
-	{"text", "VARCHAR", "the page as plain text, boilerplate stripped"},
-	{"text_length", "BIGINT", "length of the text in bytes"},
-	{"word_count", "BIGINT", "words in the extracted text"},
-	{"language", "VARCHAR", "language of the Markdown, ISO 639-3, detected not declared"},
-	{"language_confidence", "DOUBLE", "how sure the detector is, 0 to 1"},
-	{"simhash", "BIGINT", "fingerprint of the Markdown, for finding near duplicates"},
-	{"extractor", "VARCHAR", "engine and version that rendered the page, as name@version"},
+//
+// The third field is where the value came from, and it is on the card because it
+// changes what a column means. A served column is the site's own answer and is
+// evidence about the site. A computed column is this pipeline's opinion, and a
+// different extractor or a different language detector would produce a different
+// one over the same bytes. A measured column is a number off our clock on our
+// network and says as much about the machine that fetched the page as about the
+// page. Reading all three as though they were the same kind of fact is the
+// mistake this column exists to stop.
+var captureColumnDocs = [][4]string{
+	{"url", "VARCHAR", "asked", "the URL that was requested, straight off the work list"},
+	{"host", "VARCHAR", "computed", "host of the requested URL, parsed from it"},
+	{"status", "INTEGER", "served", "HTTP status of the response, 0 if the fetch never got one"},
+	{"fetched_at", "BIGINT", "measured", "when the fetch happened, unix milliseconds"},
+	{"content_type", "VARCHAR", "served", "Content-Type header as served"},
+	{"body_length", "BIGINT", "computed", "length of the body in bytes"},
+	{"digest", "VARCHAR", "computed", "SHA-1 of the body, for spotting a page that has not changed"},
+	{"unchanged", "BOOLEAN", "served", "true when the server answered 304 Not Modified"},
+	{"etag", "VARCHAR", "served", "ETag header, empty if the server sent none"},
+	{"last_modified", "VARCHAR", "served", "Last-Modified header, empty if the server sent none"},
+	{"warc_file", "VARCHAR", "computed", "WARC file holding this response, empty for a Parquet-only run"},
+	{"warc_offset", "BIGINT", "computed", "byte offset of the record in that WARC file"},
+	{"warc_length", "BIGINT", "computed", "byte length of the record"},
+	{"error", "VARCHAR", "computed", "why the fetch failed, one of dns, timeout, refused, tls, skip, other, empty when it succeeded"},
+	{"meta_json", "VARCHAR", "computed", "extra context as JSON, including error_detail for a failed row"},
+	{"markdown", "VARCHAR", "computed", "the page rendered to Markdown, empty when it was not rendered"},
+	{"markdown_length", "BIGINT", "computed", "length of the Markdown in bytes"},
+	{"ttfb_ms", "BIGINT", "measured", "time to first byte in milliseconds, our clock and our network"},
+	{"fetch_duration_ms", "BIGINT", "measured", "total fetch time in milliseconds"},
+	{"final_url", "VARCHAR", "served", "URL after redirects, empty when the request did not move"},
+	{"ip_address", "VARCHAR", "measured", "IP the request went to, which for a CDN is the nearest edge"},
+	{"resp_headers", "VARCHAR", "served", "response headers as JSON"},
+	{"req_headers", "VARCHAR", "asked", "request headers as JSON, what we sent"},
+	{"body", "BLOB", "served", "the response body exactly as served, before any decoding"},
+	{"title", "VARCHAR", "computed", "the document title, empty when the page has none"},
+	{"text", "VARCHAR", "computed", "the page as plain text, boilerplate stripped"},
+	{"text_length", "BIGINT", "computed", "length of the text in bytes"},
+	{"word_count", "BIGINT", "computed", "words in the extracted text"},
+	{"language", "VARCHAR", "computed", "language of the Markdown, ISO 639-3, detected not declared"},
+	{"language_confidence", "DOUBLE", "computed", "how sure the detector is, 0 to 1"},
+	{"simhash", "BIGINT", "computed", "fingerprint of the Markdown, for finding near duplicates"},
+	{"extractor", "VARCHAR", "computed", "engine and version that rendered the page, as name@version"},
 }
