@@ -213,3 +213,25 @@ func TestServerNameComesFromTheFleetAndNotTheHostname(t *testing.T) {
 		t.Errorf("install.sh takes CCRAWL_SERVER from hostname: %s", strings.TrimSpace(line))
 	}
 }
+
+// TestTheCrawlUnitDropsThePageFirehose pins the one line that keeps a fleet
+// machine's disk from filling with its own logs.
+//
+// The run writes a JSON line per page to stdout. Measured on server3 that is
+// about 390 MB of journal an hour, so a unit that is up for months spends half a
+// gigabyte of disk a day on lines nobody reads, on boxes that are already at 90
+// percent full. Dropping stdout costs nothing an operator uses, because the
+// release the run picked, the failure breakdown, the timing line and every error
+// go to stderr.
+//
+// The publisher is the other half of the check. It logs a line per commit, which
+// is a handful an hour and the only record of what reached the hub, so it must
+// not pick this up by being edited next to the crawl unit.
+func TestTheCrawlUnitDropsThePageFirehose(t *testing.T) {
+	if !strings.Contains(readDeploy(t, "systemd/ccrawl-recrawl@.service"), "\nStandardOutput=null") {
+		t.Error("the crawl unit no longer drops stdout, so a fleet machine logs a line per page for months")
+	}
+	if strings.Contains(readDeploy(t, "systemd/ccrawl-publish@.service"), "StandardOutput=null") {
+		t.Error("the publisher drops stdout, which is where the record of what reached the hub goes")
+	}
+}
