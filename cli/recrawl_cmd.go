@@ -236,6 +236,7 @@ Examples:
 		t := r.Timing()
 		fmt.Fprintf(os.Stderr, "recrawl run: %.1f pages a second, %s an item, %s\n",
 			t.Rate(stats.Fetched), t.PerItem().Round(time.Millisecond), t.Line())
+		fmt.Fprintln(os.Stderr, "recrawl run: "+t.FeedLine())
 		if ck.Done {
 			fmt.Fprintln(os.Stderr, "recrawl run: the work list is finished")
 		}

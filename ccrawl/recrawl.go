@@ -425,7 +425,9 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 			return nil
 		default:
 		}
+		readStart := time.Now()
 		it, ok, err := sp.next(ctx)
+		r.timers.add(&r.timers.read, readStart)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -436,8 +438,11 @@ func (r *Recrawler) feed(ctx context.Context, fl *flight, work chan<- flightItem
 			return nil // walked out
 		}
 		fi := flightItem{item: it, seq: fl.add(it)}
+		handStart := time.Now()
 		select {
 		case work <- fi:
+			r.timers.add(&r.timers.hand, handStart)
+			r.timers.rows.Add(1)
 		case <-full:
 			return nil
 		case <-ctx.Done():

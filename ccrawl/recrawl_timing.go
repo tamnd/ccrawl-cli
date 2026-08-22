@@ -35,6 +35,21 @@ type recrawlTimers struct {
 	sink  atomic.Int64
 	items atomic.Int64
 	wall  atomic.Int64
+
+	// read and hand are the feeder's own two states, and it only has two: it is
+	// either getting the next row out of the work list or waiting for a worker to
+	// take the one it is holding. Neither is worker time, so neither belongs in
+	// the pool's budget, and they are kept because the pool's budget cannot answer
+	// the question they answer. A pool that is idle is either starved or waiting
+	// on the far end, the timing line says which, and when it says starved the
+	// next question is what the feeder was doing instead, which nothing measured
+	// it. Measured on server2 against the live URL list, the pool was 90 percent
+	// idle with the host clock at zero, which rules out politeness and leaves
+	// these two.
+	read, hand atomic.Int64
+	// rows is how many items the feeder handed out, which is the same as items
+	// once the pool has drained and ahead of it while a run is going.
+	rows atomic.Int64
 }
 
 // add records one phase's duration. It is called once per phase per item, so it
@@ -76,6 +91,17 @@ type RecrawlTiming struct {
 	// Items is how many work items went through the pool, which is fetches plus
 	// everything robots refused.
 	Items int64
+
+	// Read is time the feeder spent getting rows out of the work list and Hand is
+	// time it spent waiting for a worker to take one. There is one feeder, so
+	// these are shares of the run's wall clock rather than of the pool, and they
+	// add up to the whole run bar the bookkeeping between them. Read large is a
+	// work list that cannot be read fast enough to fill the pool. Hand large is a
+	// pool that cannot keep up with the work list, which is the healthy case and
+	// the one where the phase shares above are worth reading.
+	Read, Hand time.Duration
+	// Rows is how many items the feeder handed out.
+	Rows int64
 	// Wall is how long the run took and Workers is how wide the pool was. The
 	// two together are the pool's capacity, which is what the phase sums are
 	// worth comparing against.
@@ -139,6 +165,25 @@ func (t RecrawlTiming) writerLine() string {
 	return fmt.Sprintf("%d writers each busy %.0f%% of the run", n, share(t.Sink, time.Duration(n)*t.Wall))
 }
 
+// FeedLine is what the feeder says about itself, and it is a second line rather
+// than more fields on the first one because it is measured against a different
+// clock. The phase shares are shares of the pool, which is workers times wall.
+// These are shares of one goroutine's wall clock, and putting the two sets of
+// percentages in one sentence would invite adding numbers that do not add.
+//
+// The rate is rows a second off the work list. It is the ceiling on the run: a
+// feeder that hands out forty rows a second cannot produce a hundred pages a
+// second however wide the pool is, and when it sits close to the page rate with
+// reading large, the work list is the thing to fix.
+func (t RecrawlTiming) FeedLine() string {
+	if t.Wall <= 0 {
+		return "feeder: nothing measured"
+	}
+	return fmt.Sprintf(
+		"feeder: reading the work list %.0f%% of the run, waiting for a free worker %.0f%%, %.1f rows a second",
+		share(t.Read, t.Wall), share(t.Hand, t.Wall), float64(t.Rows)/t.Wall.Seconds())
+}
+
 // share is one duration as a percentage of another, and zero when there is
 // nothing to take a share of.
 func share(part, whole time.Duration) float64 {
@@ -168,6 +213,9 @@ func (r *Recrawler) Timing() RecrawlTiming {
 		Write:   time.Duration(r.timers.write.Load()),
 		Sink:    time.Duration(r.timers.sink.Load()),
 		Items:   r.timers.items.Load(),
+		Read:    time.Duration(r.timers.read.Load()),
+		Hand:    time.Duration(r.timers.hand.Load()),
+		Rows:    r.timers.rows.Load(),
 		Workers: r.cfg.Workers,
 		Writers: r.writers(),
 	}
