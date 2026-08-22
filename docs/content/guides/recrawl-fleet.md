@@ -241,6 +241,20 @@ Shards are named by a hash of their contents, so a shard that was uploaded and n
 `systemctl status` shows a recent start and a low uptime, repeatedly.
 The unit gives up after ten starts in ten minutes and stays down, which is deliberate: at that point it is the binary or the config rather than the network, and a machine that sits still is one that gets noticed.
 
+A restart is not free, and how much it costs depends on how deep into a part the checkpoint sits.
+Coming back means positioning the reader at the checkpoint row before a single page is fetched.
+That used to mean reading every row before it and throwing it away, which over ranged HTTP pulls every byte before it across the network.
+It seeks now, and the difference is what the depth is worth.
+Measured on server2 against part 0 of the live URL list, which holds 6890137 rows, timing a one page run from a fixed row and alternating the two binaries so drift on a loaded box cancels:
+
+| resume row | before | after |
+|---|---|---|
+| 540000 | 13s, 9s | 7s, 6s |
+| 6000000 | 39s, 43s | 12s, 6s |
+
+So it is worth a few seconds where the fleet sits today and most of a minute near the end of a part, and it grows with depth rather than staying put.
+This matters more than it looks, because a machine that is restarting in a loop pays it on every loop.
+
 **The crawl is running and the rate is much lower than the other two.**
 Read the summary lines rather than the rate.
 A writer share in the high eighties is the sink, and `CCRAWL_WRITERS` is the answer.
