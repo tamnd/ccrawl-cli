@@ -74,10 +74,20 @@ type ResolverStats struct {
 	Lookups  int64 // went to the network
 	Failed   int64 // came back with nothing
 	NXDomain int64 // came back with nothing and every resolver agreed the name is gone
-	// Peak is the most lookups that were ever open at once. Against the bound it
-	// says whether DNS is a queue: a peak sitting on the bound for a whole run
-	// means workers are waiting for a lookup slot, and the bound is then the
-	// thing to raise rather than the worker count.
+	// Peak is the most lookups that were ever open at once.
+	//
+	// It used to say here that a peak sitting on the bound for a whole run means
+	// workers are queueing for a lookup slot and the bound is the thing to raise.
+	// That was measured on the live domain list and it is not true. The peak pegs
+	// at whatever the bound is set to, because on a corpus where every row is a
+	// different host there is always another lookup wanting a slot, so pegging
+	// says there is demand and nothing about whether the queue costs anything.
+	// Going from 32 to 128 moved the page rate by half a percent, from 19.2 to
+	// 19.3, with the peak pegged in both cases.
+	//
+	// What the peak is good for is the other direction. A peak well under the
+	// bound means DNS is not the constraint and raising it will do nothing, which
+	// is worth knowing before anybody spends a run finding out.
 	Peak int64
 }
 
