@@ -416,11 +416,6 @@ func (w *WorkList) Next(ctx context.Context, buf []WorkItem) (int, error) {
 				return n, err
 			}
 			w.rows = r
-			// Skipping is a read rather than a seek, because a row offset is not
-			// a byte offset and parquet has no cheap way to turn one into the
-			// other without an index we do not publish. Reading through is a
-			// column scan of at most one part, which costs seconds against a run
-			// measured in days.
 			if err := w.skipTo(ctx, w.row); err != nil {
 				return n, err
 			}
@@ -527,22 +522,53 @@ func (w *WorkList) readRow(ctx context.Context) (string, error) {
 	return r.dbuf[i].Domain, nil
 }
 
-// skipTo walks the open part forward to a row offset.
+// skipTo positions the open part at a row offset.
+//
+// This used to read the rows and throw them away, on the grounds that a row
+// offset is not a byte offset and parquet cannot turn one into the other without
+// an index. That is not right. A parquet file records how many rows are in each
+// row group, so a seek can step over whole row groups on metadata alone and only
+// decode from the start of the one the row lands in, which is what SeekToRow
+// does.
+//
+// The difference is not decode time, it is bandwidth. The part is read over
+// ranged HTTP, so reading through to the offset pulls every byte before it
+// across the network, and a resume near the end of a part pulls the whole part
+// to fetch nothing. Seeking pulls the row group. That cost was paid on every
+// restart, and on server3 restarts were not rare: the domains run was being OOM
+// killed and coming back several times a day, each time reading its way back to
+// where it already was before it fetched a single page.
+//
+// The buffered rows go with the seek. They are the rows from wherever the reader
+// used to be, and handing them out after moving somewhere else would be a gap
+// and a duplicate in one step.
 func (w *WorkList) skipTo(ctx context.Context, row int64) error {
-	for i := int64(0); i < row; i++ {
-		if _, err := w.readRow(ctx); err != nil {
-			if errors.Is(err, io.EOF) {
-				// The checkpoint points past the end of the part, which is what a
-				// run that finished a part and died before writing the next one
-				// leaves behind. Move on rather than stall.
-				w.rows.Close()
-				w.rows = nil
-				w.part++
-				w.row = 0
-				return nil
-			}
-			return err
-		}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r := w.rows
+	if row <= 0 {
+		return nil
+	}
+	if row >= r.pf.NumRows() {
+		// The checkpoint points past the end of the part, which is what a run
+		// that finished a part and died before writing the next one leaves
+		// behind. Move on rather than stall.
+		r.Close()
+		w.rows = nil
+		w.part++
+		w.row = 0
+		return nil
+	}
+	r.i, r.n = 0, 0
+	var err error
+	if r.url != nil {
+		err = r.url.SeekToRow(row)
+	} else {
+		err = r.domain.SeekToRow(row)
+	}
+	if err != nil {
+		return fmt.Errorf("part %d: seeking to row %d: %w", w.part, row, err)
 	}
 	return nil
 }
