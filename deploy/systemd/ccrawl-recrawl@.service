@@ -34,7 +34,7 @@ ExecStart=/usr/local/bin/ccrawl recrawl run \
   --dns-lookups ${CCRAWL_DNS_LOOKUPS} \
   --delay ${CCRAWL_DELAY} --timeout ${CCRAWL_TIMEOUT} \
   --shard-size ${CCRAWL_SHARD_SIZE} \
-  ${CCRAWL_EXTRA}
+  $CCRAWL_EXTRA
 
 # A finished work list exits 0 and the unit stops, which is the right end for a
 # run that has crawled everything it was given. Anything else is worth another
