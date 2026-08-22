@@ -1,6 +1,7 @@
 package ccrawl
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -138,17 +139,65 @@ func (r *Recrawler) writeCapture(res *CrawlResult, seq int64) {
 	} else {
 		j.res = res
 	}
+	r.queue(j)
+}
 
-	// A plain send, with no escape. The writer drains the queue even after a
-	// write has failed, and the queue is closed only once the pool has stopped,
-	// so there is no arrangement in which this blocks forever.
-	//
-	// The queue is picked by sequence rather than by whichever is emptiest. A
-	// blocked send on a full queue while another sits idle is the cost of that,
-	// and it is the right trade: choosing the emptiest means a shared counter on
-	// the worker path, which is the contention this whole file exists to remove,
-	// and the parts write rows of the same shape and drain at the same rate.
+// writeFailure records a fetch that never produced a response.
+//
+// It is separate from writeCapture because there is nothing to render. The
+// fetch failed before there were any bytes, so the row is the URL, the clock
+// and the reason, and the extractor has nothing to do with it.
+//
+// The row exists at all because a dataset that holds only the fetches that
+// worked is a dataset that cannot answer the question it is most useful for.
+// On the domain list a little over half of every batch fails, most of it names
+// that no longer resolve, and dropping those rows leaves a file in which every
+// domain in the ranking appears to be alive. Keeping them is what makes the
+// difference between the work list and the shard readable, and the error column
+// has been in the schema for exactly this since it was written.
+//
+// Only a run writing rows keeps them. A WARC record is a response and there is
+// no response here, so a WARC run counts the failure on its summary and writes
+// nothing, the same as every other WARC tool.
+func (r *Recrawler) writeFailure(url string, err error, dur time.Duration, seq int64) {
+	c := Capture{
+		URL:        url,
+		Host:       captureHost(url),
+		FetchedAt:  time.Now().UnixMilli(),
+		FetchDurMS: dur.Milliseconds(),
+		Error:      crawlErrClass(err).String(),
+		MetaJSON:   failureMeta(err),
+	}
+	r.queue(writeJob{row: c, rows: true, seq: seq})
+}
+
+// failureMeta carries the original error text beside the classified row.
+//
+// It is marshalled rather than formatted because the text comes from four
+// packages and none of them promise anything about quoting, and a stray
+// backslash in a certificate subject would otherwise write a shard whose
+// meta_json does not parse.
+func failureMeta(err error) string {
+	b, merr := json.Marshal(map[string]string{"error_detail": err.Error()})
+	if merr != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// queue hands a finished job to the writer that owns its sequence.
+//
+// A plain send, with no escape. The writer drains the queue even after a write
+// has failed, and the queue is closed only once the pool has stopped, so there
+// is no arrangement in which this blocks forever.
+//
+// The queue is picked by sequence rather than by whichever is emptiest. A
+// blocked send on a full queue while another sits idle is the cost of that, and
+// it is the right trade: choosing the emptiest means a shared counter on the
+// worker path, which is the contention this whole file exists to remove, and
+// the parts write rows of the same shape and drain at the same rate.
+func (r *Recrawler) queue(j writeJob) {
 	start := time.Now()
-	r.wq[int(seq%int64(len(r.wq)))] <- j
+	r.wq[int(j.seq%int64(len(r.wq)))] <- j
 	r.timers.add(&r.timers.write, start)
 }

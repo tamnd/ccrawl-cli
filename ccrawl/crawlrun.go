@@ -469,6 +469,30 @@ const (
 	errClassTLS
 )
 
+// String names the bucket for a reader rather than for a counter.
+//
+// These words go in the error column of a published capture, and that is the
+// reason they are a fixed vocabulary instead of the error text itself. A Go
+// network error carries the host, the port and often a resolver address, so a
+// column holding those groups into one row per URL and answers nothing. Six
+// words group into six rows and say what the corpus cost. The original text is
+// not thrown away, it goes in meta_json beside the row.
+func (c errClass) String() string {
+	switch c {
+	case errClassDNS:
+		return "dns"
+	case errClassTimeout:
+		return "timeout"
+	case errClassRefused:
+		return "refused"
+	case errClassSkip:
+		return "skip"
+	case errClassTLS:
+		return "tls"
+	}
+	return "other"
+}
+
 // crawlErrClass reads a fetch error and says which bucket it belongs in. It
 // matches on the message because the errors come from four packages and only
 // some of them are the kind you can compare against.

@@ -626,6 +626,14 @@ func (r *Recrawler) process(ctx context.Context, fi flightItem, emit func(CrawlP
 		}
 		classifyCrawlErr(err, &r.stats)
 		r.stats.failed.Add(1)
+		// The failure is a row, not a gap. See writeFailure for why: a shard that
+		// holds only the fetches that worked describes a web where every name in
+		// the work list still resolves, and on this corpus a little over half of
+		// them do not.
+		if r.rows != nil {
+			r.writeFailure(it.URL, err, time.Since(fetchStart), fi.seq)
+			return errItemQueued
+		}
 		return nil
 	}
 
